@@ -198,3 +198,29 @@ async def test_lyric_deadline_leaves_loading_and_discards_late_result(paths, tra
         assert service.store.lyric(tracks[0].id) == ""
     finally:
         await service.close()
+
+
+async def test_shuffle_navigation_rounds_and_queue_edits(service):
+    tracks = [Track(f"kuwo:{i}", f"歌曲 {i}", duration=269) for i in range(10, 15)]
+    await service.dispatch({"op": "play", "tracks": [track.data() for track in tracks]})
+    await loaded(service)
+    await service.dispatch({"op": "mode", "value": "shuffle"})
+    played = [service.current.id]
+    for _ in range(9):
+        await service.dispatch({"op": "next"})
+        await loaded(service)
+        played.append(service.current.id)
+    assert set(played[:5]) == set(played[5:]) == {track.id for track in tracks}
+    await service.dispatch({"op": "prev"})
+    await loaded(service)
+    assert service.current.id == played[-2]
+    await service.dispatch({"op": "next"})
+    await loaded(service)
+    assert service.current.id == played[-1]
+    removed = next(i for i in range(5) if i != service.index)
+    await service.dispatch({"op": "queue_remove", "index": removed})
+    remaining = {track.id for track in service.queue}
+    for _ in range(4):
+        await service.dispatch({"op": "next"})
+        await loaded(service)
+        assert service.current.id in remaining

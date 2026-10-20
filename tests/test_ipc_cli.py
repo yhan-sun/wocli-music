@@ -120,3 +120,23 @@ async def test_cli_local_play_pause_queue_and_json(paths, fake_mpv, tmp_path):
 )
 def test_json_flag_works_at_each_command_depth(argv):
     assert make_parser().parse_args(argv).json is True
+
+
+async def test_cli_rename_delete_collection_and_duplicate_name_error(paths, tracks):
+    from wocli_music.store import Store
+
+    store = Store(paths)
+    store.add_to_playlist("工作", tracks[0])
+    store.add_to_playlist("备份", tracks[0])
+    code, output, error = await run_cli("playlist", "rename", "工作", "通勤", "--json")
+    assert code == 0, error
+    assert json.loads(output)["name"] == "通勤"
+    assert store.playlist("通勤") == [tracks[0]]
+    code, _, error = await run_cli("playlist", "rename", "通勤", "备份", "--json")
+    assert code == 1
+    assert "同名" in json.loads(error)["error"]
+    code, output, error = await run_cli("playlist", "delete", "通勤", "--json")
+    assert code == 0, error
+    assert json.loads(output)["deleted"] == "通勤"
+    assert store.playlist("备份") == [tracks[0]]
+    store.close()

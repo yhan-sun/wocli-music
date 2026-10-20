@@ -91,6 +91,8 @@ def make_parser():
     common(playlist_commands.add_parser("list", help="列出歌单"))
     for action, help in [
         ("create", "新建歌单"),
+        ("rename", "重命名收藏夹"),
+        ("delete", "删除收藏夹及收录关系"),
         ("show", "显示歌曲"),
         ("add", "添加歌曲"),
         ("remove", "移除歌曲"),
@@ -98,6 +100,8 @@ def make_parser():
     ]:
         sub = common(playlist_commands.add_parser(action, help=help))
         sub.add_argument("name")
+        if action == "rename":
+            sub.add_argument("new_name")
         if action in ("add", "remove"):
             sub.add_argument("--id", required=True)
     lyrics = command("lyrics", "查看或导出 LRC 歌词")
@@ -291,6 +295,12 @@ async def run(args):
             elif args.action == "create":
                 store.create_playlist(args.name)
                 data = {"name": args.name}
+            elif args.action == "rename":
+                store.rename_playlist(args.name, args.new_name)
+                data = {"name": args.new_name, "previous": args.name}
+            elif args.action == "delete":
+                store.delete_playlist(args.name)
+                data = {"deleted": args.name}
             elif args.action == "add":
                 track = await by_id(args.id)
                 store.add_to_playlist(args.name, track)
@@ -313,7 +323,7 @@ async def run(args):
                     data = [track.data() for track in tracks]
                     if not args.json:
                         track_table(tracks, title=args.name)
-            if not args.json and args.action in ("create", "add", "remove"):
+            if not args.json and args.action in ("create", "add", "remove", "rename", "delete"):
                 console.print("已更新本地歌单。")
         elif cmd == "lyrics":
             if args.id:

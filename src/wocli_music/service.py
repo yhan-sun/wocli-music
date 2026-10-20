@@ -5,12 +5,12 @@ import contextlib
 import json
 import logging
 import os
-import random
 import signal
 
 from .config import MODES, QUALITIES, Paths, Settings
 from .lyrics import parse_lrc
 from .models import IncompleteAudio, MusicError, Track
+from .order import ShuffleOrder
 from .player import Mpv
 from .provider import KuwoProvider
 from .store import Store
@@ -30,6 +30,8 @@ class MusicService:
         saved = self.store.load("queue", {})
         self.queue = [Track.from_data(t) for t in saved.get("tracks", [])]
         self.index = min(max(saved.get("index", -1), -1), len(self.queue) - 1)
+        self.shuffle = ShuffleOrder()
+        self.shuffle.reset(len(self.queue), self.index)
         self.phase = "stopped"
         self.error = ""
         self.error_code = ""
@@ -109,11 +111,13 @@ class MusicService:
             if task and not task.done():
                 task.cancel()
 
-    def _begin(self, index, quality=None):
+    def _begin(self, index, quality=None, *, advance=False):
         if not 0 <= index < len(self.queue):
             raise MusicError("队列中没有这首歌曲")
         self._cancel_loading()
         self.index = index
+        if not advance:
+            self.shuffle.reset(len(self.queue), index)
         self.phase, self.error, self.actual_quality = "loading", "", ""
         self.error_code, self.error_details = "", []
         self.lyric_text = ""
@@ -198,9 +202,12 @@ class MusicService:
         if not self.queue:
             raise MusicError("播放队列为空")
         mode = self.settings.values["mode"]
-        if mode == "shuffle" and len(self.queue) > 1:
-            choices = [i for i in range(len(self.queue)) if i != self.index]
-            index = random.choice(choices)
+        if mode == "shuffle":
+            index = (
+                self.shuffle.previous()
+                if step < 0
+                else self.shuffle.next(len(self.queue), self.index)
+            )
         else:
             index = self.index + step
         if not 0 <= index < len(self.queue):
@@ -211,7 +218,7 @@ class MusicService:
                 return
             else:
                 raise MusicError("已经是队列的第一首或最后一首")
-        self._begin(index)
+        self._begin(index, advance=True)
 
     async def _stop(self):
         self._cancel_loading()
@@ -266,6 +273,8 @@ class MusicService:
                 self.settings.set(request["key"], request["value"])
                 if request["key"] == "direct":
                     self.provider = KuwoProvider(direct=request["value"])
+                elif request["key"] == "mode":
+                    self.shuffle.reset(len(self.queue), self.index)
                 elif (
                     request["key"] == "volume"
                     and self.player.writer
@@ -277,11 +286,15 @@ class MusicService:
                 if value not in MODES:
                     raise MusicError("无效播放模式")
                 self.settings.set("mode", value)
+                self.shuffle.reset(len(self.queue), self.index)
             elif operation == "queue_add":
                 tracks = [Track.from_data(t) for t in request["tracks"]]
                 self.store.remember(tracks)
                 position = self.index + 1 if request.get("next") else len(self.queue)
                 self.queue[position:position] = tracks
+                if position <= self.index:
+                    self.index += len(tracks)
+                self.shuffle.reset(len(self.queue), self.index)
                 self.persist()
             elif operation == "queue_remove":
                 index = int(request["index"])
@@ -292,10 +305,12 @@ class MusicService:
                 self.queue.pop(index)
                 if index <= self.index:
                     self.index -= 1
+                self.shuffle.reset(len(self.queue), self.index)
                 self.persist()
             elif operation == "queue_clear":
                 await self._stop()
                 self.queue, self.index = [], -1
+                self.shuffle.reset(0, -1)
                 self.persist()
             elif operation == "like":
                 track = Track.from_data(request["track"]) if request.get("track") else self.current

@@ -1,114 +1,132 @@
 import asyncio
+import random
 
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
     Footer,
     Input,
-    Label,
+    OptionList,
     ProgressBar,
     Select,
     Static,
-    TabbedContent,
-    TabPane,
 )
+from textual.widgets.option_list import Option
 
 from .client import Client
-from .config import MODES, Paths, Settings
+from .config import Paths, Settings
+from .dialogs import MODE_LABELS, ConfirmDelete, FolderPicker, LibraryPicker, ModePicker, NameDialog
 from .lyrics import current_line, parse_lrc
 from .models import MusicError, Track, clock
 from .provider import KuwoProvider
 from .store import Store
 
-MODE_LABELS = {
-    "list": "顺序播放",
-    "repeat": "列表循环",
-    "single": "单曲循环",
-    "shuffle": "随机播放",
-}
-
 
 class MusicApp(App):
-    """A keyboard-first workbench. Closing the UI leaves playback running."""
+    """A keyboard-first music library; playback survives closing the interface."""
 
-    TITLE = "wocli · 音乐工作台"
+    TITLE = "wocli · 你的音乐库"
     CSS = """
-    Screen { background: #141b19; color: #e1e6d9; }
-    #masthead { height: 3; padding: 1 2 0 2; }
-    #wordmark { width: 1fr; color: #c0dca0; text-style: bold; }
-    #connection { width: auto; color: #8eaaa0; }
-    #searchbar { height: 4; padding: 0 2; }
-    Input { border: tall #35473d; background: #1d2722; }
-    Input:focus { border: tall #bfdc9e; }
-    #search { width: 1fr; }
-    Button { min-width: 7; border: none; background: #2b3930; color: #e1e6d9; }
-    Button:hover { background: #40543f; }
-    Button:focus { text-style: bold; }
-    #search-button { margin: 1 1; height: 1; background: #bfdc9e; color: #17221a; }
-    #quality { width: 17; }
+    * { scrollbar-background: #18251c; scrollbar-color: #405937;
+        scrollbar-color-hover: #789766; scrollbar-color-active: #bddb92; }
+    Screen { background: #121b16; color: #dce3d2; }
+    #masthead { height: 3; padding: 0 2; align-vertical: middle; }
+    #wordmark { width: 1fr; color: #c2dc9c; text-style: bold; padding-top: 1; }
+    #connection { width: 23; color: #829b87; text-align: right; padding-top: 1; }
+    Button { min-width: 7; height: 3; border: none; background: #26382a; color: #dce3d2; }
+    Button:hover { background: #3b5233; }
+    Button:focus { text-style: bold; background: #405b35; }
+    #library-open { display: none; min-width: 6; margin-right: 1; }
+    #search-open { width: 13; margin-right: 1; }
+    #quality { width: 14; height: 1; margin-top: 1; }
     Select { border: none; }
-    SelectCurrent { border: tall #35473d; background: #1d2722; padding: 0 1; height: 3; }
+    SelectCurrent { background: #1c2b20; border: none; padding: 0 1; }
+    Input { border: tall #425a3b; background: #1b2a1e; }
+    Input:focus { border: tall #bddb92; }
     #body { height: 1fr; padding: 0 2; }
-    #collection { width: 3fr; min-width: 36; padding-right: 2; }
-    #list-status { height: 1; color: #8eaaa0; padding: 0 1; }
-    TabbedContent { height: 1fr; }
-    TabPane { padding: 1 0 0 0; }
-    Tabs { background: #141b19; }
-    Tab { color: #8eaaa0; }
-    Tab.-active { color: #bfdc9e; }
-    Underline > .underline--bar { color: #bfdc9e; background: #bfdc9e; }
-    DataTable { height: 1fr; background: #141b19; }
-    DataTable > .datatable--header { background: #202c25; color: #8eaaa0; text-style: none; }
-    DataTable > .datatable--cursor { background: #354a35; color: #e9f3db; }
-    DataTable:focus > .datatable--cursor { background: #40593c; }
-    #paging { height: 3; align-horizontal: center; }
-    #paging Button { margin: 0 1; }
-    #page { width: auto; margin: 0 2; color: #8eaaa0; }
-    #playlist-actions { height: 3; }
-    #playlist-name { width: 1fr; }
-    #playlist-actions Button { margin: 1 0 0 1; height: 1; }
-    #playlist-songs { height: 2fr; min-height: 1; }
-    #playlist-list { height: 1fr; min-height: 2; }
-    #now { width: 2fr; min-width: 28; background: #1a241f; padding: 1 2; }
-    .eyebrow { height: 2; color: #91a38e; }
-    #song-title { height: auto; max-height: 3; text-style: bold; color: #d6e9bd; margin-bottom: 1; }
-    #song-meta { height: auto; max-height: 4; color: #9bb2a2; }
-    #lyrics { height: 1fr; padding-top: 2; content-align: center middle; }
-    #hint { color: #789081; height: 2; }
-    #transport { height: 6; padding: 1 2; background: #202d25; }
+    #sidebar { width: 23; padding: 1 2 0 0; }
+    .eyebrow { height: 2; color: #81967a; }
+    #library { height: 1fr; padding: 0; border: none; background: #121b16; }
+    #library > .option-list--option { padding: 0 1; }
+    #library > .option-list--option-highlighted { background: #30452c; color: #d8ebba; }
+    #library > .option-list--option-disabled { color: #72836b; }
+    #new-folder { height: 3; width: 1fr; background: #1c2b20; }
+    #folder-management { height: 3; display: none; }
+    #folder-management Button { width: 1fr; min-width: 6; height: 3; background: #1c2b20; }
+    #collection { width: 1fr; padding: 1 2 0 0; min-width: 24; }
+    #view-heading { height: 2; }
+    #view-title { width: 1fr; color: #d9e9c4; text-style: bold; }
+    #view-count { width: auto; color: #829b87; }
+    #list-status { height: 1; color: #829b87; }
+    #searchbar { height: 3; display: none; margin-top: 1; }
+    #search { width: 1fr; }
+    #search-button { width: 8; margin-left: 1; }
+    #list-actions { height: 3; }
+    #list-actions Button { min-width: 6; height: 1; margin: 1 1 0 0; padding: 0 1; }
+    #play-all { background: #bddb92; color: #152014; }
+    #results { height: 1fr; background: #121b16; }
+    DataTable > .datatable--header { background: #1e2c20; color: #8fa482; text-style: none; }
+    DataTable > .datatable--cursor { background: #2b3c27; color: #e4efcc; }
+    DataTable:focus > .datatable--cursor { background: #3b542e; color: #edf5d9; }
+    #empty { height: 1fr; align: center middle; padding: 1; }
+    #empty-title { text-align: center; height: auto; color: #d4e2be; text-style: bold; }
+    #empty-copy { text-align: center; height: auto; margin: 1 0; color: #8b9e80; }
+    #empty-search { width: 18; }
+    #paging { height: 3; align: center middle; }
+    #paging Button { height: 1; margin: 1 1; }
+    #page { width: auto; margin: 1 1; color: #8fa482; }
+    #now { width: 34%; min-width: 29; background: #18251c; padding: 1 2; }
+    #song-title { height: auto; max-height: 3; text-style: bold; color: #d6e9b5; margin-bottom: 1; }
+    #song-meta { height: auto; max-height: 4; color: #94ab91; }
+    #lyrics { height: 1fr; padding-top: 1; content-align: center middle; }
+    #hint { height: 2; color: #71846a; }
+    #transport { height: 6; padding: 1 2; background: #1e2e22; }
     #time-row { height: 1; }
-    #timeline { width: 1fr; padding: 0 2; }
+    #elapsed, #duration { width: 6; color: #a8be96; }
+    #timeline { width: 1fr; padding: 0 1; }
     #timeline Bar { width: 1fr; }
-    #timeline > .bar--bar { color: #bfdc9e; }
-    #elapsed, #duration { width: 6; color: #b8cab2; }
+    #timeline > .bar--bar { color: #bddb92; }
     #controls { height: 3; }
-    #controls Button { margin-right: 1; height: 3; content-align: center middle; }
-    #play-pause { background: #bfdc9e; color: #152019; }
-    #play-mode { min-width: 12; }
-    #volume-label { width: 8; margin-top: 1; text-align: center; }
-    #playback-message { width: 1fr; margin: 1 0 0 1; color: #b8cab2; }
-    Footer { background: #141b19; }
+    #controls Button { height: 3; margin-right: 1; }
+    #play-pause { background: #bddb92; color: #152014; }
+    #favorite { min-width: 5; }
+    #play-mode { min-width: 13; }
+    #volume-down, #volume-up { min-width: 3; }
+    #volume-label { width: 5; padding-top: 1; text-align: center; }
+    #playback-message { width: 1fr; padding-top: 1; margin-left: 1; color: #a8be96; }
+    Footer { background: #121b16; }
     .narrow #now { display: none; }
     .narrow #collection { padding-right: 0; }
-    .narrow #playback-message { display: none; }
-    .tiny #quality, .tiny #volume-down, .tiny #volume-up, .tiny #volume-label { display: none; }
+    .compact #sidebar { width: 20; }
+    .compact #connection, .compact #playback-message { display: none; }
+    .tiny #library-open { display: block; }
+    .tiny #sidebar, .tiny #quality, .tiny #volume-down, .tiny #volume-up,
+    .tiny #volume-label { display: none; }
+    .tiny #body, .tiny #masthead, .tiny #transport { padding-left: 1; padding-right: 1; }
     """
     BINDINGS = [
         Binding("ctrl+f,slash", "search", "搜索"),
         Binding("space", "play_or_toggle", "播放/暂停"),
-        Binding("a", "enqueue", "加入队列"),
-        Binding("f", "favorite", "收藏"),
-        Binding("l", "refresh_lyrics", "刷新歌词"),
-        Binding("ctrl+right", "next", "下一首"),
-        Binding("ctrl+left", "prev", "上一首"),
+        Binding("f", "favorite", "喜欢"),
+        Binding("c", "collect", "收藏到…"),
+        Binding("m", "mode", "播放方式"),
+        Binding("b", "library", "音乐库", show=False),
+        Binding("n", "new_folder", "新建夹", show=False),
+        Binding("r", "rename_folder", "重命名夹", show=False),
+        Binding("delete,backspace", "remove_track", "移出", show=False),
+        Binding("a", "enqueue", "加入队列", show=False),
+        Binding("l", "refresh_lyrics", "刷新歌词", show=False),
+        Binding("ctrl+right", "next", "下一首", show=False),
+        Binding("ctrl+left", "prev", "上一首", show=False),
         Binding("right", "seek_forward", "+5s", show=False),
         Binding("left", "seek_back", "−5s", show=False),
-        Binding("escape", "focus_list", "返回列表", show=False),
+        Binding("escape", "focus_list", "返回", show=False),
         Binding("q,ctrl+q,ctrl+c", "quit", "退出界面"),
     ]
 
@@ -119,27 +137,30 @@ class MusicApp(App):
         self.store = Store(self.paths)
         self.provider = KuwoProvider(direct=direct or self.settings.values["direct"])
         self.client = Client(self.paths)
-        self.rows = {}
+        self.rows = {"results": []}
+        self.search_tracks = []
+        self.active_view = self.store.load("ui.view", "favorites")
+        self.previous_view = self.active_view
         self.state = None
-        self.keyword = ""
-        self.page = 0
-        self.total = 0
+        self.keyword, self.page, self.total = "", 0, 0
         self.search_serial = 0
+        self.search_status = "搜索歌名或歌手 · Esc 返回音乐库"
+        self.search_empty_title = "从一首歌开始"
         self.last_queue = None
-        self.last_lyric_text = None
-        self.lyric_lines = []
-        self.last_lyric_index = None
         self.last_track = None
-        self.polling = False
-        self.selected_playlist = None
+        self.last_lyric_text = None
+        self.last_lyric_index = None
+        self.lyric_lines = []
+        self.favorite_ids = set()
+        self.navigation_signature = None
+        self.table_signature = None
+        self.table_width = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
-            yield Static("W O C L I   /   MUSIC", id="wordmark")
-            yield Static("无需登录 · 本地曲库", id="connection")
-        with Horizontal(id="searchbar"):
-            yield Input(placeholder="搜索歌名 / 歌手，按 Enter 开始", id="search")
-            yield Button("搜索", id="search-button")
+            yield Static("wocli  /  你的音乐库", id="wordmark")
+            yield Button("曲库", id="library-open")
+            yield Button("⌕ 搜索  /", id="search-open")
             yield Select(
                 [
                     ("MP3 · 320k", "320k"),
@@ -149,37 +170,46 @@ class MusicApp(App):
                 ],
                 value=self.settings.values["quality"],
                 allow_blank=False,
+                compact=True,
                 id="quality",
             )
+            yield Static("无需登录 · 本地曲库", id="connection")
         with Horizontal(id="body"):
+            with Vertical(id="sidebar"):
+                yield Static("音 乐 库", classes="eyebrow")
+                yield OptionList(id="library")
+                yield Button("＋ 新建收藏夹", id="new-folder")
+                with Horizontal(id="folder-management"):
+                    yield Button("重命名", id="rename-folder")
+                    yield Button("删除", id="delete-folder")
             with Vertical(id="collection"):
-                yield Static("搜索一首歌，从这里开始。", id="list-status")
-                with TabbedContent(initial="tab-search", id="tabs"):
-                    with TabPane("搜索", id="tab-search"):
-                        yield DataTable(id="results", cursor_type="row", zebra_stripes=False)
-                        with Horizontal(id="paging"):
-                            yield Button("上一页", id="page-prev")
-                            yield Label("—", id="page")
-                            yield Button("下一页", id="page-next")
-                    with TabPane("队列", id="tab-queue"):
-                        yield DataTable(id="queue", cursor_type="row")
-                    with TabPane("收藏", id="tab-favorites"):
-                        yield DataTable(id="favorites", cursor_type="row")
-                    with TabPane("历史", id="tab-history"):
-                        yield DataTable(id="history", cursor_type="row")
-                    with TabPane("歌单", id="tab-playlists"):
-                        with Horizontal(id="playlist-actions"):
-                            yield Input(placeholder="歌单名称", id="playlist-name")
-                            yield Button("创建", id="playlist-create")
-                            yield Button("加入", id="playlist-add")
-                        yield DataTable(id="playlist-list", cursor_type="row")
-                        yield DataTable(id="playlist-songs", cursor_type="row")
+                with Horizontal(id="view-heading"):
+                    yield Static("我喜欢", id="view-title")
+                    yield Static("", id="view-count")
+                yield Static("把喜欢的歌留下来。", id="list-status")
+                with Horizontal(id="searchbar"):
+                    yield Input(placeholder="歌名 / 歌手，Enter 搜索 · Esc 返回", id="search")
+                    yield Button("搜索", id="search-button")
+                with Horizontal(id="list-actions"):
+                    yield Button("▶ 播放全部", id="play-all")
+                    yield Button("⤨ 随机", id="play-shuffled")
+                    yield Button("＋ 收藏到…", id="collect")
+                    yield Button("移出", id="remove-track")
+                yield DataTable(id="results", cursor_type="row")
+                with Vertical(id="empty"):
+                    yield Static("还没有喜欢的歌", id="empty-title")
+                    yield Static("搜索一首歌，按 f 标记喜欢。", id="empty-copy")
+                    yield Button("⌕ 去搜索", id="empty-search")
+                with Horizontal(id="paging"):
+                    yield Button("上一页", id="page-prev")
+                    yield Static("—", id="page")
+                    yield Button("下一页", id="page-next")
             with Vertical(id="now"):
-                yield Static("N O W  P L A Y I N G", classes="eyebrow")
+                yield Static("正 在 播 放", classes="eyebrow")
                 yield Static("留一点时间给音乐。", id="song-title")
                 yield Static("选择歌曲，按 Enter 播放。", id="song-meta")
                 yield Static("歌词会随着音乐在这里出现。", id="lyrics")
-                yield Static("退出界面后，音乐继续播放。", id="hint")
+                yield Static("l 刷新歌词 · 退出后继续播放", id="hint")
         with Vertical(id="transport"):
             with Horizontal(id="time-row"):
                 yield Static("00:00", id="elapsed")
@@ -189,66 +219,60 @@ class MusicApp(App):
                 yield Button("上一首", id="previous")
                 yield Button("播放", id="play-pause")
                 yield Button("下一首", id="next")
-                yield Button("♡ 收藏", id="favorite")
-                yield Button(MODE_LABELS[self.settings.values["mode"]], id="play-mode")
+                yield Button("♡", id="favorite")
+                yield Button(MODE_LABELS[self.settings.values["mode"]] + " ▾", id="play-mode")
                 yield Button("−", id="volume-down")
                 yield Static("60%", id="volume-label")
                 yield Button("+", id="volume-up")
-                yield Static("就绪", id="playback-message")
+                yield Static("选择一首歌，开始听。", id="playback-message")
         yield Footer()
 
     def on_mount(self):
-        for name in ("results", "queue", "favorites", "history", "playlist-songs"):
-            table = self.query_one(f"#{name}", DataTable)
-            table.add_column("#", key="number", width=3)
-            table.add_column("歌曲", key="title", width=24)
-            table.add_column("歌手", key="artist", width=12)
-            table.add_column("时长", key="duration", width=5)
-            self.rows[name] = []
-        self.query_one("#playlist-list", DataTable).add_columns("本地歌单", "歌曲数")
+        self.resize_tables()
         self.refresh_library()
-        saved = self.store.load("queue", {"tracks": []})
-        self.fill_table("queue", [Track.from_data(t) for t in saved["tracks"]])
-        self.query_one("#search", Input).focus()
+        self.show_view(self.active_view)
+        self.query_one("#results").focus()
         self.set_interval(0.5, self.poll)
+        self.set_interval(2, self.refresh_library)
         self.poll()
         self.on_resize()
 
     def on_resize(self):
-        self.screen.set_class(self.size.width < 96, "narrow")
-        self.screen.set_class(self.size.width < 72, "tiny")
+        self.screen_stack[0].set_class(self.size.width < 110, "narrow")
+        self.screen_stack[0].set_class(self.size.width < 100, "compact")
+        self.screen_stack[0].set_class(self.size.width < 68, "tiny")
         self.call_after_refresh(self.resize_tables)
 
     def resize_tables(self):
-        for name, tracks in self.rows.items():
-            table = self.query_one(f"#{name}", DataTable)
-            cursor = table.cursor_row
-            available = max(16, table.size.width - 19)
-            title_width = max(10, int(available * 0.63))
-            artist_width = max(6, available - title_width)
-            table.clear(columns=True)
-            table.add_column("#", key="number", width=3)
-            table.add_column("歌曲", key="title", width=title_width)
-            table.add_column("歌手", key="artist", width=artist_width)
-            table.add_column("时长", key="duration", width=5)
-            self.fill_table(name, tracks)
-            if tracks:
-                table.move_cursor(row=min(cursor, len(tracks) - 1))
+        if not self.query("#results"):
+            return
+        table = self.query_one("#results", DataTable)
+        if self.table_width == table.size.width:
+            return
+        self.table_width = table.size.width
+        available = max(16, table.size.width - 18)
+        title = max(10, int(available * 0.64))
+        cursor = table.cursor_row
+        table.clear(columns=True)
+        self.table_signature = None
+        for label, width in (
+            ("", 3),
+            ("歌曲", title),
+            ("歌手", max(6, available - title)),
+            ("时长", 5),
+        ):
+            table.add_column(label, width=width)
+        self.fill_table("results", self.rows["results"])
+        if table.row_count:
+            table.move_cursor(row=min(cursor, table.row_count - 1))
 
     def on_unmount(self):
         self.store.close()
 
     def check_action(self, action, parameters):
-        if isinstance(self.focused, Input) and action in (
-            "play_or_toggle",
-            "enqueue",
-            "favorite",
-            "refresh_lyrics",
-            "seek_forward",
-            "seek_back",
-            "quit",
-        ):
-            # Ctrl+Q / Ctrl+C remain handled by the priority key hook below.
+        if isinstance(self.screen, ModalScreen):
+            return False
+        if isinstance(self.focused, Input) and action not in ("search", "focus_list"):
             return False
         return True
 
@@ -259,45 +283,179 @@ class MusicApp(App):
 
     def fill_table(self, name, tracks):
         table = self.query_one(f"#{name}", DataTable)
+        current = (self.state or {}).get("track") or {}
+        signature = (
+            [track.data() for track in tracks],
+            current.get("id"),
+            self.favorite_ids.copy(),
+        )
+        if signature == self.table_signature:
+            return
+        self.table_signature = signature
+        previous = self.rows.get(name, [])
         cursor = table.cursor_row
+        identity = previous[cursor].id if cursor < len(previous) else None
         table.clear()
         self.rows[name] = tracks
+        current = (self.state or {}).get("track") or {}
         for i, track in enumerate(tracks):
+            marker = (
+                "▶"
+                if track.id == current.get("id")
+                else "♥"
+                if track.id in self.favorite_ids
+                else str(i + 1)
+            )
             table.add_row(
-                str(i + 1), Text(track.title), Text(track.artist), clock(track.duration), key=str(i)
+                marker, Text(track.title), Text(track.artist), clock(track.duration), key=str(i)
             )
         if tracks:
-            table.move_cursor(row=min(cursor, len(tracks) - 1))
+            row = (
+                cursor
+                if cursor < len(tracks) and tracks[cursor].id == identity
+                else next(
+                    (i for i, track in enumerate(tracks) if track.id == identity),
+                    min(cursor, len(tracks) - 1),
+                )
+            )
+            table.move_cursor(row=row)
+
+    def queue_tracks(self):
+        queue = (
+            self.state["queue"]
+            if self.state
+            else self.store.load("queue", {"tracks": []})["tracks"]
+        )
+        return [Track.from_data(track) for track in queue]
 
     def refresh_library(self):
-        self.fill_table("favorites", self.store.favorites())
-        self.fill_table("history", self.store.history())
-        table = self.query_one("#playlist-list", DataTable)
-        table.clear()
-        for playlist in self.store.playlists():
-            table.add_row(Text(playlist["name"]), str(playlist["count"]), key=playlist["name"])
+        if not self.query("#library"):
+            return
+        self.resize_tables()
+        favorites, folders = self.store.favorites(), self.store.playlists()
+        self.favorite_ids = {track.id for track in favorites}
+        options = [
+            Option(f"♥ 我喜欢   {len(favorites)}", id="favorites"),
+            Option(f"≡ 播放队列   {len(self.queue_tracks())}", id="queue"),
+            Option("◷ 最近播放", id="history"),
+            None,
+            Option("我的收藏夹", id="folder-label", disabled=True),
+        ]
+        options += [
+            Option(Text(f"  {folder['name']}  {folder['count']}"), id="playlist:" + folder["name"])
+            for folder in folders
+        ]
+        signature = [(option.id, str(option.prompt)) for option in options if option is not None]
+        if signature != self.navigation_signature:
+            nav = self.query_one("#library", OptionList)
+            highlighted = (
+                nav.get_option_at_index(nav.highlighted).id
+                if nav.highlighted is not None
+                else self.active_view
+            )
+            nav.clear_options().add_options(options)
+            self.navigation_signature = signature
+            self.highlight_view(highlighted if nav.has_focus else self.active_view)
+        self.show_view(self.active_view, persist=False)
+
+    def highlight_view(self, view=None):
+        nav = self.query_one("#library", OptionList)
+        for i in range(nav.option_count):
+            if nav.get_option_at_index(i).id == (view or self.active_view):
+                nav.highlighted = i
+                break
+
+    def show_view(self, view, *, persist=True):
+        titles = {
+            "favorites": "我喜欢",
+            "queue": "播放队列",
+            "history": "最近播放",
+            "search": "搜索音乐",
+        }
+        descriptions = {
+            "favorites": "f 喜欢 / 取消喜欢 · c 收进收藏夹",
+            "queue": "按 Enter 从选中歌曲继续播放 · Delete 移出",
+            "history": "最近听过的歌，也值得再听一次。",
+            "search": "搜索歌名或歌手 · Esc 返回音乐库",
+        }
+        try:
+            tracks = (
+                self.store.favorites()
+                if view == "favorites"
+                else self.queue_tracks()
+                if view == "queue"
+                else self.store.history()
+                if view == "history"
+                else self.search_tracks
+                if view == "search"
+                else self.store.playlist(view.removeprefix("playlist:"))
+            )
+        except MusicError:
+            view, tracks = "favorites", self.store.favorites()
+        changed = view != self.active_view
+        self.active_view = view
+        if persist and view != "search":
+            self.store.save("ui.view", view)
+        self.query_one("#view-title", Static).update(
+            Text(titles.get(view, view.removeprefix("playlist:")))
+        )
+        count = self.total if view == "search" else len(tracks)
+        self.query_one("#view-count", Static).update(f"{count:,} 首")
+        self.query_one("#list-status", Static).update(
+            self.search_status
+            if view == "search"
+            else descriptions.get(view, "你的本地收藏夹 · c 添加歌曲 · r 重命名")
+        )
+        self.query_one("#searchbar").display = view == "search"
+        self.query_one("#paging").display = view == "search" and bool(tracks)
+        self.query_one("#page", Static).update(
+            f"{self.page + 1} / {max(1, (self.total + 19) // 20)}"
+        )
+        self.query_one("#page-prev", Button).disabled = self.page == 0
+        self.query_one("#page-next", Button).disabled = (self.page + 1) * 20 >= self.total
+        self.query_one("#folder-management").display = view.startswith("playlist:")
+        self.query_one("#remove-track").display = view in ("favorites", "queue") or view.startswith(
+            "playlist:"
+        )
+        for identity in ("play-all", "play-shuffled", "collect", "remove-track"):
+            self.query_one(f"#{identity}", Button).disabled = not tracks
+        self.fill_table("results", tracks)
+        self.query_one("#results").display = bool(tracks)
+        self.query_one("#empty").display = not tracks
+        self.query_one("#empty-title", Static).update(
+            "还没有喜欢的歌"
+            if view == "favorites"
+            else self.search_empty_title
+            if view == "search"
+            else "这里还没有歌曲"
+        )
+        self.query_one("#empty-copy", Static).update(
+            "输入歌名或歌手，按 Enter 搜索。"
+            if view == "search"
+            else "搜索歌曲，按 c 选择这个收藏夹。"
+            if view.startswith("playlist:")
+            else "搜索一首歌，按 f 标记喜欢。"
+        )
+        self.query_one("#empty-search").display = view != "search"
+        if persist or changed:
+            self.highlight_view()
+        if changed:
+            self.query_one("#results", DataTable).move_cursor(row=0)
+        self.call_after_refresh(self.resize_tables)
+
+    @on(OptionList.OptionSelected, "#library")
+    def library_selected(self, event):
+        if event.option.id and event.option.id != "folder-label":
+            self.show_view(event.option.id)
+            self.query_one("#results").focus()
 
     def selected(self) -> Track | None:
-        focused = self.focused
-        if isinstance(focused, DataTable) and focused.id in self.rows:
-            tracks = self.rows[focused.id]
-            return tracks[focused.cursor_row] if focused.cursor_row < len(tracks) else None
-        active = self.query_one("#tabs", TabbedContent).active
-        name = {
-            "tab-search": "results",
-            "tab-queue": "queue",
-            "tab-favorites": "favorites",
-            "tab-history": "history",
-            "tab-playlists": "playlist-songs",
-        }.get(active)
-        if name:
-            tracks = self.rows[name]
-            index = self.query_one(f"#{name}", DataTable).cursor_row
-            return tracks[index] if index < len(tracks) else None
-        return None
+        tracks = self.rows["results"]
+        index = self.query_one("#results", DataTable).cursor_row
+        return tracks[index] if 0 <= index < len(tracks) else None
 
     @on(Input.Submitted, "#search")
-    def search_submitted(self, event):
+    def search_submitted(self):
         self.start_search()
 
     @on(Select.Changed, "#quality")
@@ -309,8 +467,6 @@ class MusicApp(App):
     async def save_quality(self, value):
         try:
             state = await self.client.request("status", autostart=False)
-            if not self.query("#connection"):
-                return
             if state:
                 await self.client.request("config", key="quality", value=value)
             else:
@@ -323,81 +479,255 @@ class MusicApp(App):
         keyword = self.query_one("#search", Input).value.strip()
         if keyword:
             self.keyword, self.page = keyword, 0
+            self.show_view("search")
             self.fetch_results()
 
     @work(exclusive=True, group="search")
     async def fetch_results(self):
         self.search_serial += 1
-        serial = self.search_serial
-        self.query_one("#tabs", TabbedContent).active = "tab-search"
-        self.query_one("#list-status", Static).update("正在搜索…")
+        serial, keyword, page = self.search_serial, self.keyword, self.page
+        self.search_status = "正在搜索…"
+        self.show_view("search", persist=False)
         try:
-            total, tracks = await asyncio.to_thread(
-                self.provider.search, self.keyword, self.page, 20
-            )
+            total, tracks = await asyncio.to_thread(self.provider.search, keyword, page, 20)
             if serial != self.search_serial:
                 return
-            self.total = total
+            self.total, self.search_tracks = total, tracks
             self.store.remember(tracks)
-            self.fill_table("results", tracks)
-            self.query_one("#list-status", Static).update(
-                Text(
-                    f"{self.keyword}  ·  {total:,} 首"
-                    if tracks
-                    else "没有找到歌曲，试试歌手或其他关键词。"
-                )
+            self.search_status = Text(
+                f"{keyword} · {total:,} 首" if tracks else "没有找到歌曲，试试歌手或其他关键词。"
             )
-            self.query_one("#page", Label).update(f"{self.page + 1} / {max(1, (total + 19) // 20)}")
-            self.query_one("#page-prev", Button).disabled = self.page == 0
-            self.query_one("#page-next", Button).disabled = (self.page + 1) * 20 >= total
-            self.query_one("#results", DataTable).focus()
+            self.search_empty_title = "没有找到匹配的歌" if not tracks else ""
+            # Keep results when a modal is open; the library renders them on return.
+            if self.active_view == "search" and self.query("#results"):
+                self.show_view("search", persist=False)
+                if tracks:
+                    self.query_one("#results", DataTable).move_cursor(row=0)
+                    self.query_one("#results").focus()
         except MusicError as error:
-            self.query_one("#list-status", Static).update(Text(str(error), style="#e2a194"))
+            self.search_status = Text(str(error), style="#e2a194")
+            if self.active_view == "search" and self.query("#results"):
+                self.show_view("search", persist=False)
 
-    @on(DataTable.RowSelected)
-    def row_selected(self, event):
-        if event.data_table.id == "playlist-list":
-            self.selected_playlist = str(event.row_key.value)
-            self.query_one("#playlist-name", Input).value = self.selected_playlist
-            self.fill_table("playlist-songs", self.store.playlist(self.selected_playlist))
-            self.query_one("#playlist-songs", DataTable).focus()
-        elif event.data_table.id in self.rows:
-            self.play_selection()
+    @on(DataTable.RowSelected, "#results")
+    def row_selected(self):
+        self.play_selection()
 
     @work(exclusive=True, group="play")
-    async def play_selection(self):
-        track = self.selected()
-        if not track:
+    async def play_selection(self, *, all_tracks=False, shuffle=False):
+        tracks = list(self.rows["results"])
+        index = 0 if all_tracks else self.query_one("#results", DataTable).cursor_row
+        if not tracks:
             self.notify("先搜索或选择一首歌。")
             return
+        if shuffle:
+            index = random.randrange(len(tracks))
+        queue_view = self.active_view == "queue"
+        quality = self.query_one("#quality", Select).value
         try:
-            if isinstance(self.focused, DataTable) and self.focused.id == "queue":
-                await self.client.request(
-                    "play",
-                    index=self.focused.cursor_row,
-                    quality=self.query_one("#quality", Select).value,
-                )
-            elif isinstance(self.focused, DataTable) and self.focused.id in (
-                "playlist-songs",
-                "favorites",
-            ):
-                await self.client.request(
-                    "play",
-                    tracks=[t.data() for t in self.rows[self.focused.id]],
-                    index=self.focused.cursor_row,
-                    quality=self.query_one("#quality", Select).value,
-                )
-            else:
-                await self.client.request(
-                    "play",
-                    tracks=[track.data()],
-                    index=0,
-                    quality=self.query_one("#quality", Select).value,
-                )
-            self.last_track = None
+            if shuffle:
+                await self.client.request("mode", value="shuffle")
+            self.state = await self.client.request(
+                "play",
+                index=index,
+                quality=quality,
+                **({} if queue_view else {"tracks": [track.data() for track in tracks]}),
+            )
+            self.render_state(self.state)
             self.poll()
         except MusicError as error:
             self.notify(str(error), severity="error", markup=False)
+
+    def action_library(self):
+        def choose(view):
+            if view:
+                self.show_view(view)
+                self.query_one("#results").focus()
+
+        self.push_screen(LibraryPicker(self.store.playlists()), choose)
+
+    def action_search(self):
+        if self.active_view != "search":
+            self.previous_view = self.active_view
+        self.show_view("search")
+        self.query_one("#search").focus()
+
+    def action_focus_list(self):
+        if self.active_view == "search":
+            self.show_view(self.previous_view)
+        self.query_one("#results").focus()
+
+    def action_collect(self):
+        track = self.selected() or (
+            Track.from_data(self.state["track"]) if self.state and self.state["track"] else None
+        )
+        if not track:
+            self.notify("先选择一首歌，再加入收藏夹。")
+            return
+
+        def collect(result):
+            if result:
+                name, _ = result
+                self.store.add_to_playlist(name, track)
+                self.store.save("ui.last_folder", name)
+                self.refresh_library()
+                self.notify(f"已收进「{name}」。", markup=False)
+
+        self.push_screen(
+            FolderPicker(
+                track,
+                self.store.playlists(),
+                self.store.playlists_for_track(track.id),
+                self.store.load("ui.last_folder"),
+            ),
+            collect,
+        )
+
+    def action_new_folder(self):
+        def create(name):
+            if name:
+                self.store.create_playlist(name)
+                self.refresh_library()
+                self.show_view("playlist:" + name)
+
+        self.push_screen(
+            NameDialog(existing=[folder["name"] for folder in self.store.playlists()]), create
+        )
+
+    def action_rename_folder(self):
+        if not self.active_view.startswith("playlist:"):
+            return
+        old = self.active_view.removeprefix("playlist:")
+
+        def rename(name):
+            if name and name != old:
+                self.store.rename_playlist(old, name)
+                self.active_view = "playlist:" + name
+                self.store.save("ui.view", self.active_view)
+                if self.store.load("ui.last_folder") == old:
+                    self.store.save("ui.last_folder", name)
+                self.refresh_library()
+
+        self.push_screen(
+            NameDialog("重命名收藏夹", old, [folder["name"] for folder in self.store.playlists()]),
+            rename,
+        )
+
+    def delete_folder(self):
+        if not self.active_view.startswith("playlist:"):
+            return
+        name = self.active_view.removeprefix("playlist:")
+
+        def remove(confirmed):
+            if confirmed:
+                self.store.delete_playlist(name)
+                self.show_view("favorites")
+                self.refresh_library()
+
+        self.push_screen(ConfirmDelete(name), remove)
+
+    def action_remove_track(self):
+        track = self.selected()
+        if not track:
+            return
+        if self.active_view == "favorites":
+            if self.store.is_favorite(track.id):
+                self.store.favorite(track)
+        elif self.active_view.startswith("playlist:"):
+            self.store.remove_from_playlist(self.active_view.removeprefix("playlist:"), track.id)
+        elif self.active_view == "queue":
+            self.control("queue_remove", index=self.query_one("#results", DataTable).cursor_row)
+            return
+        self.refresh_library()
+
+    def action_mode(self):
+        mode = self.state["mode"] if self.state else self.settings.values["mode"]
+        self.push_screen(
+            ModePicker(mode), lambda value: self.control("mode", value=value) if value else None
+        )
+
+    @on(Button.Pressed)
+    def button_pressed(self, event):
+        actions = {
+            "library-open": self.action_library,
+            "search-open": self.action_search,
+            "empty-search": self.action_search,
+            "search-button": self.start_search,
+            "play-pause": self.action_play_or_toggle,
+            "collect": self.action_collect,
+            "new-folder": self.action_new_folder,
+            "rename-folder": self.action_rename_folder,
+            "delete-folder": self.delete_folder,
+            "remove-track": self.action_remove_track,
+            "play-mode": self.action_mode,
+        }
+        identity = event.button.id
+        if identity in actions:
+            actions[identity]()
+        elif identity == "play-all":
+            self.play_selection(all_tracks=True)
+        elif identity == "play-shuffled":
+            self.play_selection(all_tracks=True, shuffle=True)
+        elif identity in ("page-prev", "page-next"):
+            self.page += -1 if identity == "page-prev" else 1
+            self.fetch_results()
+        elif identity in ("previous", "next"):
+            self.control("prev" if identity == "previous" else "next")
+        elif identity == "favorite":
+            self.toggle_favorite(
+                Track.from_data(self.state["track"]) if self.state and self.state["track"] else None
+            )
+        elif identity in ("volume-down", "volume-up"):
+            value = self.state["volume"] if self.state else self.settings.values["volume"]
+            self.control(
+                "volume", value=max(0, min(100, value + (5 if identity == "volume-up" else -5)))
+            )
+
+    def toggle_favorite(self, track):
+        if not track:
+            self.notify("先选择一首歌。")
+            return
+        liked = self.store.favorite(track)
+        self.refresh_library()
+        if self.state:
+            self.render_state(self.state)
+        self.notify("已加入我喜欢。" if liked else "已取消喜欢。")
+
+    def action_favorite(self):
+        self.toggle_favorite(self.selected())
+
+    def action_enqueue(self):
+        if track := self.selected():
+            self.control("queue_add", tracks=[track.data()])
+
+    def action_play_or_toggle(self):
+        if self.focused and self.focused.id == "results":
+            track, current = self.selected(), (self.state or {}).get("track")
+            if track and (
+                not current
+                or current["id"] != track.id
+                or self.state["phase"] in ("stopped", "error")
+            ):
+                self.play_selection()
+                return
+        if self.state and self.state["phase"] in ("playing", "paused"):
+            self.control("toggle")
+        elif self.state and self.state["queue"]:
+            self.control("play")
+        else:
+            self.play_selection()
+
+    def action_next(self):
+        self.control("next")
+
+    def action_prev(self):
+        self.control("prev")
+
+    def action_seek_forward(self):
+        self.control("seek", seconds=5)
+
+    def action_seek_back(self):
+        self.control("seek", seconds=-5)
 
     @work(exclusive=True, group="poll")
     async def poll(self):
@@ -406,7 +736,7 @@ class MusicApp(App):
             if state:
                 self.state = state
                 self.render_state(state)
-            else:
+            elif self.query("#connection"):
                 self.query_one("#connection", Static).update("无需登录 · 本地曲库")
                 if self.state:
                     self.state = None
@@ -428,7 +758,7 @@ class MusicApp(App):
             state.get("track") or {}
         ).get("id"):
             state["lyrics_status"] = "loading"
-        self.query_one("#connection", Static).update("无需登录 · 播放服务已连接")
+        self.query_one("#connection", Static).update("无需登录 · 已连接")
         track = state["track"]
         if track != self.last_track:
             self.last_track = track
@@ -454,8 +784,10 @@ class MusicApp(App):
             if state["phase"] == "error"
             else "播放"
         )
-        self.query_one("#favorite", Button).label = "♥ 已收藏" if state["liked"] else "♡ 收藏"
-        self.query_one("#play-mode", Button).label = MODE_LABELS[state["mode"]]
+        self.query_one("#favorite", Button).label = (
+            "♥" if track and self.store.is_favorite(track["id"]) else "♡"
+        )
+        self.query_one("#play-mode", Button).label = MODE_LABELS[state["mode"]] + " ▾"
         self.query_one("#volume-label", Static).update(f"{state['volume']}%")
         message = {
             "loading": "正在解析音源…",
@@ -470,7 +802,7 @@ class MusicApp(App):
         self.last_error = state["error"]
         if state["queue"] != self.last_queue:
             self.last_queue = state["queue"]
-            self.fill_table("queue", [Track.from_data(t) for t in state["queue"]])
+            self.refresh_library()
         if state["lyrics"] != self.last_lyric_text:
             self.last_lyric_text = state["lyrics"]
             self.lyric_lines = parse_lrc(state["lyrics"])
@@ -536,100 +868,7 @@ class MusicApp(App):
         try:
             self.state = await self.client.request(operation, **arguments)
             self.render_state(self.state)
-            if operation == "like":
+            if operation in ("like", "queue_add", "queue_remove"):
                 self.refresh_library()
         except MusicError as error:
             self.notify(str(error), severity="error", markup=False)
-
-    @on(Button.Pressed)
-    def button_pressed(self, event):
-        identity = event.button.id
-        if identity == "search-button":
-            self.start_search()
-        elif identity in ("page-prev", "page-next"):
-            self.page += -1 if identity == "page-prev" else 1
-            self.fetch_results()
-        elif identity == "play-pause":
-            self.action_play_or_toggle()
-        elif identity in ("previous", "next"):
-            self.control("prev" if identity == "previous" else "next")
-        elif identity == "favorite":
-            self.action_favorite()
-        elif identity == "play-mode":
-            mode = self.state["mode"] if self.state else self.settings.values["mode"]
-            self.control("mode", value=MODES[(MODES.index(mode) + 1) % len(MODES)])
-        elif identity in ("volume-down", "volume-up"):
-            value = self.state["volume"] if self.state else self.settings.values["volume"]
-            self.control(
-                "volume", value=max(0, min(100, value + (5 if identity == "volume-up" else -5)))
-            )
-        elif identity in ("playlist-create", "playlist-add"):
-            name = self.query_one("#playlist-name", Input).value.strip()
-            try:
-                if identity == "playlist-create":
-                    self.store.create_playlist(name)
-                else:
-                    track = self.selected()
-                    if not track and self.state and self.state["track"]:
-                        track = Track.from_data(self.state["track"])
-                    if not track:
-                        raise MusicError("先播放一首歌或选择歌单中的歌曲，再加入歌单。")
-                    self.store.add_to_playlist(name, track)
-                    self.fill_table("playlist-songs", self.store.playlist(name))
-                self.refresh_library()
-                self.notify("已更新本地歌单。")
-            except MusicError as error:
-                self.notify(str(error), severity="warning", markup=False)
-
-    def action_search(self):
-        self.query_one("#search", Input).focus()
-
-    def action_focus_list(self):
-        active = self.query_one("#tabs", TabbedContent).active
-        name = {
-            "tab-search": "results",
-            "tab-queue": "queue",
-            "tab-favorites": "favorites",
-            "tab-history": "history",
-            "tab-playlists": "playlist-list",
-        }[active]
-        self.query_one(f"#{name}", DataTable).focus()
-
-    def action_play_or_toggle(self):
-        if isinstance(self.focused, DataTable) and self.focused.id in self.rows:
-            track = self.selected()
-            current = self.state["track"] if self.state else None
-            if track and (
-                not current
-                or current["id"] != track.id
-                or self.state["phase"] in ("stopped", "error")
-            ):
-                self.play_selection()
-                return
-        if self.state and self.state["phase"] in ("playing", "paused"):
-            self.control("toggle")
-        elif self.state and self.state["queue"]:
-            self.control("play")
-        else:
-            self.play_selection()
-
-    def action_enqueue(self):
-        if track := self.selected():
-            self.control("queue_add", tracks=[track.data()])
-            self.notify("已加入播放队列。")
-
-    def action_favorite(self):
-        track = self.selected() if isinstance(self.focused, DataTable) else None
-        self.control("like", **({"track": track.data()} if track else {}))
-
-    def action_next(self):
-        self.control("next")
-
-    def action_prev(self):
-        self.control("prev")
-
-    def action_seek_forward(self):
-        self.control("seek", seconds=5)
-
-    def action_seek_back(self):
-        self.control("seek", seconds=-5)

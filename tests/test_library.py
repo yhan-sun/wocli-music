@@ -47,3 +47,41 @@ def test_settings_validation_and_persistence(paths):
         settings.set("quality", "imaginary")
     settings.set("quality", "128k")
     assert Settings(paths).values["quality"] == "128k"
+
+
+def test_rename_delete_preserve_membership_order_and_other_collections(paths, tracks):
+    store = Store(paths)
+    for track in tracks:
+        store.add_to_playlist("通勤", track)
+        store.add_to_playlist("备份", track)
+    store.favorite(tracks[0])
+    store.rename_playlist("通勤", "路上")
+    assert store.playlist("路上") == tracks
+    assert store.playlists_for_track(tracks[0].id) == {"路上", "备份"}
+    with pytest.raises(MusicError):
+        store.rename_playlist("路上", "备份")
+    assert store.playlist("路上") == tracks
+    store.delete_playlist("路上")
+    assert store.playlist("备份") == tracks
+    assert store.favorites() == [tracks[0]]
+    store.close()
+
+
+def test_shuffle_rounds_and_previous_follow_actual_history():
+    from wocli_music.order import ShuffleOrder
+
+    order = ShuffleOrder()
+    order.reset(5, 0)
+    played = [0]
+    for _ in range(4):
+        played.append(order.next(5, played[-1]))
+    assert set(played) == set(range(5))
+    assert order.previous() == played[-2]
+    assert order.next(5, played[-2]) == played[-1]
+    for _ in range(10):
+        played.append(order.next(5, played[-1]))
+    assert set(played[5:10]) == set(range(5))
+    assert set(played[10:15]) == set(range(5))
+    assert all(left != right for left, right in zip(played, played[1:], strict=False))
+    order.reset(1, 0)
+    assert order.next(1, 0) == 0

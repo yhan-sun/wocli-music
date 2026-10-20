@@ -97,6 +97,29 @@ class Store:
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO playlists VALUES (?)", (name,))
 
+    def rename_playlist(self, name: str, new_name: str):
+        self.playlist(name)
+        if not new_name.strip() or len(new_name) > 100:
+            raise MusicError("收藏夹名称应为 1 到 100 个字符")
+        if name == new_name:
+            return
+        if self.db.execute("SELECT 1 FROM playlists WHERE name=?", (new_name,)).fetchone():
+            raise MusicError("已存在同名收藏夹")
+        with self.db:
+            self.db.execute("UPDATE playlists SET name=? WHERE name=?", (new_name, name))
+            self.db.execute("UPDATE members SET name=? WHERE name=?", (new_name, name))
+
+    def delete_playlist(self, name: str):
+        self.playlist(name)
+        with self.db:
+            self.db.execute("DELETE FROM members WHERE name=?", (name,))
+            self.db.execute("DELETE FROM playlists WHERE name=?", (name,))
+
+    def playlists_for_track(self, identity: str) -> set[str]:
+        return {
+            row[0] for row in self.db.execute("SELECT name FROM members WHERE id=?", (identity,))
+        }
+
     def playlist(self, name: str) -> list[Track]:
         if not self.db.execute("SELECT 1 FROM playlists WHERE name=?", (name,)).fetchone():
             raise MusicError(f"找不到本地歌单：{name}")
