@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wocli-music"
+version = "0.1.0"
+description = "无需登录的酷我终端音乐播放器"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["rich>=14,<16", "textual>=6,<7"]
+
+[project.scripts]
+wocli = "wocli_music.cli:main"
+wocli-music = "wocli_music.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.11", "build>=1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wocli_music"]
