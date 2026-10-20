@@ -21,6 +21,7 @@ from .models import (
     AudioUnavailable,
     IncompleteAudio,
     MusicError,
+    NetworkError,
     Stream,
     Track,
     clean,
@@ -91,7 +92,7 @@ class KuwoProvider:
                 detail = f"HTTP {error.code}"
             else:
                 detail = type(error).__name__
-            raise MusicError(f"音源请求失败（{detail}），请检查网络或使用 --direct") from error
+            raise NetworkError(f"音源请求失败（{detail}），请检查网络或使用 --direct") from error
 
     def _read(self, url, **kwargs) -> bytes:
         with self._open(url, **kwargs) as response:
@@ -290,6 +291,8 @@ class KuwoProvider:
         if not errors or all(isinstance(error, AudioUnavailable) for error in errors):
             raise AudioUnavailable("当前音源未提供这首歌的播放地址，请选择其他歌曲。", failures)
         detail = "；".join(failures)
+        if errors and all(isinstance(error, NetworkError) for error in errors):
+            raise NetworkError("音源网络请求失败，请稍后重试")
         raise MusicError(f"该歌曲当前无法播放。{detail}")
 
     def lyrics(self, track: Track) -> str:

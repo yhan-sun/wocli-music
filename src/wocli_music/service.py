@@ -8,8 +8,9 @@ import os
 import signal
 
 from .config import MODES, QUALITIES, Paths, Settings
+from .downloads import Downloads
 from .lyrics import parse_lrc
-from .models import IncompleteAudio, MusicError, Track
+from .models import IncompleteAudio, MusicError, NetworkError, Track
 from .order import ShuffleOrder
 from .player import Mpv
 from .provider import KuwoProvider
@@ -17,6 +18,8 @@ from .store import Store
 
 log = logging.getLogger(__name__)
 LYRICS_TIMEOUT = 22
+SOURCE_TIMEOUT = 45
+RETRY_DELAY = 0.8
 
 
 class MusicService:
@@ -24,6 +27,7 @@ class MusicService:
         self.paths = paths
         self.settings = Settings(paths)
         self.store = Store(paths)
+        self.downloads = Downloads(self.store)
         self.provider = provider or KuwoProvider(direct=self.settings.values["direct"])
         self.player = player_factory(paths, self._player_event)
         self.player.direct = self.settings.values["direct"]
@@ -43,6 +47,9 @@ class MusicService:
         self.lyric_text = ""
         self.lyrics_status = "idle"
         self.lyrics_error = ""
+        self.lyrics_generation = 0
+        self.retry_attempt = 0
+        self.requested_quality = self.settings.values["quality"]
         self.lock = asyncio.Lock()
         self.shutdown = asyncio.Event()
         self.entry_id = None
@@ -58,6 +65,9 @@ class MusicService:
     def status(self):
         current = self.current
         return {
+            "downloads": self.downloads.status(),
+            "retry_attempt": self.retry_attempt,
+            "requested_quality": self.requested_quality,
             "phase": self.phase,
             "track": current.data() if current else None,
             "position": self.player.properties["time-pos"],
@@ -105,24 +115,35 @@ class MusicService:
             elif event.get("reason") == "error":
                 self.phase, self.error = "error", "音频读取中断，请重试或选择其他音质"
 
-    def _cancel_loading(self):
+    def _cancel_loading(self, *, lyrics=True):
         self.generation += 1
-        for task in (self.play_task, self.lyric_task):
+        if lyrics:
+            self.lyrics_generation += 1
+        for task in (self.play_task, self.lyric_task if lyrics else None):
             if task and not task.done():
                 task.cancel()
 
-    def _begin(self, index, quality=None, *, advance=False):
+    def _begin(self, index, quality=None, *, advance=False, retry=False):
         if not 0 <= index < len(self.queue):
             raise MusicError("队列中没有这首歌曲")
-        self._cancel_loading()
+        self._cancel_loading(lyrics=not retry)
         self.index = index
         if not advance:
             self.shuffle.reset(len(self.queue), index)
         self.phase, self.error, self.actual_quality = "loading", "", ""
         self.error_code, self.error_details = "", []
-        self.lyric_text = ""
-        self.lyrics_status = "idle"
-        self.lyrics_error = ""
+        self.retry_attempt = 0
+        self.requested_quality = quality or self.settings.values["quality"]
+        if not retry:
+            self.lyric_text = self.store.lyric(self.current.id)
+            if not parse_lrc(self.lyric_text):
+                self.lyric_text = ""
+            self.lyrics_error = ""
+            self.lyrics_status = "ready" if self.lyric_text else "loading"
+            if not self.lyric_text:
+                self._start_lyrics()
+        if retry and self.lyrics_status == "idle" and not self.lyric_text:
+            self._start_lyrics()
         self.player.properties.update({"time-pos": 0, "duration": 0})
         self.persist()
         self.play_task = asyncio.create_task(
@@ -134,7 +155,16 @@ class MusicService:
             # Stop old audio before a potentially slow network lookup.
             if self.player.writer and not self.player.writer.is_closing():
                 await self.player.command("stop")
-            stream = await asyncio.to_thread(self.provider.stream, track, quality)
+            for attempt in range(2):
+                self.retry_attempt = attempt + 1
+                try:
+                    async with asyncio.timeout(SOURCE_TIMEOUT):
+                        stream = await asyncio.to_thread(self.provider.stream, track, quality)
+                    break
+                except (NetworkError, TimeoutError, ConnectionError):
+                    if attempt == 1:
+                        raise
+                    await asyncio.sleep(RETRY_DELAY)
             if generation != self.generation:
                 return
             if self.player.direct != self.settings.values["direct"]:
@@ -149,20 +179,17 @@ class MusicService:
                 raise IncompleteAudio("音频时长明显短于歌曲信息，可能只有试听片段，已停止播放")
             self.actual_quality, self.phase = stream.quality, "playing"
             self.store.played(track)
-            self.lyric_text = self.store.lyric(track.id)
-            if not parse_lrc(self.lyric_text):
-                self.lyric_text = ""
-            self.lyrics_status = "ready" if self.lyric_text else "loading"
-            if not self.lyric_text:
-                self.lyric_task = asyncio.create_task(self._lyrics(track, generation))
         except asyncio.CancelledError:
             raise
         except Exception as error:
             if generation == self.generation:
                 self.phase = "error"
-                self.lyrics_status = "idle"
                 self.error = (
-                    str(error) if isinstance(error, MusicError) else "播放失败，请查看 service.log"
+                    "音源请求超时，请重试"
+                    if isinstance(error, TimeoutError)
+                    else str(error)
+                    if isinstance(error, MusicError)
+                    else "播放失败，请查看 service.log"
                 )
                 self.error_code = getattr(error, "code", "playback_error")
                 self.error_details = getattr(error, "details", [])
@@ -176,25 +203,50 @@ class MusicService:
                 else:
                     log.exception("Could not load track %s", track.id)
 
-    async def _lyrics(self, track, generation):
+    def _start_lyrics(self):
+        if self.lyric_task and not self.lyric_task.done():
+            self.lyric_task.cancel()
+        self.lyrics_generation += 1
+        self.lyrics_status, self.lyrics_error = "loading", ""
+        self.lyric_task = asyncio.create_task(self._lyrics(self.current, self.lyrics_generation))
+
+    async def _lyrics(self, track, lyric_generation):
         try:
             async with asyncio.timeout(LYRICS_TIMEOUT):
                 text = await asyncio.to_thread(self.provider.lyrics, track)
             if not isinstance(text, str) or not parse_lrc(text):
                 text = ""
-            if generation == self.generation:
-                self.lyric_text = text
-                self.lyrics_status = "ready" if text else "unavailable"
+            if (
+                lyric_generation == self.lyrics_generation
+                and self.current
+                and self.current.id == track.id
+            ):
+                if text:
+                    self.lyric_text = text
+                    self.lyrics_status = "ready"
+                elif self.lyric_text:
+                    self.lyrics_status = "ready"
+                    self.lyrics_error = "未获取到新歌词，继续显示已有歌词。"
+                else:
+                    self.lyrics_status = "unavailable"
                 if text:
                     self.store.lyric(track.id, text)
         except TimeoutError:
-            if generation == self.generation:
-                self.lyrics_status = "unavailable"
+            if (
+                lyric_generation == self.lyrics_generation
+                and self.current
+                and self.current.id == track.id
+            ):
+                self.lyrics_status = "ready" if self.lyric_text else "unavailable"
                 self.lyrics_error = "歌词获取超时，按 l 重试。"
             log.warning("Lyrics timed out for %s", track.id)
         except Exception:
-            if generation == self.generation:
-                self.lyrics_status = "unavailable"
+            if (
+                lyric_generation == self.lyrics_generation
+                and self.current
+                and self.current.id == track.id
+            ):
+                self.lyrics_status = "ready" if self.lyric_text else "unavailable"
                 self.lyrics_error = "歌词获取失败，按 l 重试。"
             log.warning("Lyrics unavailable for %s", track.id, exc_info=True)
 
@@ -247,6 +299,38 @@ class MusicService:
                     self.queue = tracks
                     self.store.remember(tracks)
                 self._begin(index, quality)
+            elif operation == "retry":
+                if not self.current:
+                    raise MusicError("请先选择一首歌")
+                if self.phase == "loading":
+                    return self.status()
+                quality = request.get("quality", self.requested_quality)
+                if quality not in QUALITIES:
+                    raise MusicError("无效音质")
+                self._begin(self.index, quality, advance=True, retry=True)
+            elif operation == "lyrics_retry":
+                if not self.current:
+                    raise MusicError("请先播放一首歌")
+                if self.lyrics_status != "loading":
+                    self._start_lyrics()
+            elif operation == "download":
+                quality = request.get("quality", self.settings.values["quality"])
+                if quality not in QUALITIES:
+                    raise MusicError("无效音质")
+                directory = request.get("directory")
+                if not isinstance(directory, str) or not directory.strip():
+                    raise MusicError("请选择下载目录")
+                self.downloads.start(
+                    self.provider,
+                    Track.from_data(request["track"]),
+                    directory,
+                    quality,
+                    bool(request.get("lyrics", True)),
+                )
+            elif operation == "download_cancel":
+                self.downloads.cancel(request["id"])
+            elif operation == "download_retry":
+                self.downloads.retry(request["id"], self.provider)
             elif operation in ("pause", "resume", "toggle"):
                 if self.phase not in ("playing", "paused"):
                     raise MusicError("当前没有正在播放的音乐")
@@ -351,6 +435,7 @@ class MusicService:
         for task in self.event_tasks:
             task.cancel()
         await asyncio.gather(*pending, *self.event_tasks, return_exceptions=True)
+        await self.downloads.close()
         await self.player.close()
         self.persist()
         self.store.close()

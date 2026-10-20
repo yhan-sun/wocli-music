@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -22,11 +24,11 @@ MODE_DESCRIPTIONS = {
 }
 
 DIALOG_CSS = """
-NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker { align: center middle; background: #0c1410 80%; }
+NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker, TrackActions, DownloadDialog, DownloadList, QualityPicker { align: center middle; background: #0c1410 80%; }
 .dialog { width: 62; max-width: 94%; height: auto; max-height: 92%;
     background: #1a2720; border: round #627d58; padding: 1 2; }
 .dialog-title { height: auto; text-style: bold; color: #d5e8b4; margin-bottom: 1; }
-.dialog-caption { height: auto; max-height: 3; color: #9bad9b; margin-bottom: 1; }
+.dialog-caption { height: auto; max-height: 5; color: #9bad9b; margin-bottom: 1; }
 .dialog-error { height: auto; color: #e5a58d; }
 .dialog-footer { height: auto; color: #91a18d; margin-top: 1; }
 .dialog Input { background: #142019; border: tall #526b49; }
@@ -39,6 +41,11 @@ NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker { align: cent
 .dialog .danger { background: #b96650; color: #faf0de; }
 #folder-new { display: none; }
 #folder-new.visible { display: block; }
+DownloadDialog .dialog-caption { margin-bottom: 0; max-height: 2; }
+DownloadDialog .dialog-actions { height: 1; margin-top: 1; }
+DownloadDialog Select { height: 1; margin-bottom: 1; }
+#download-quality SelectCurrent { height: 1; border: none; }
+DownloadDialog Checkbox { height: 1; margin-bottom: 1; }
 """
 
 
@@ -270,6 +277,234 @@ class LibraryPicker(ModalScreen[str | None]):
                 id="view-options",
             )
             yield Static("↑ ↓ 选择 · Enter 打开 · Esc 返回", classes="dialog-footer")
+
+    def on_mount(self):
+        self.query_one(OptionList).focus()
+
+    @on(OptionList.OptionSelected)
+    def selected(self, event):
+        self.dismiss(event.option.id)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class TrackActions(ModalScreen[str | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "返回")]
+
+    def __init__(self, track, *, liked=False, removable=False):
+        super().__init__()
+        self.track, self.liked, self.removable = track, liked, removable
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static(Text(self.track.title), classes="dialog-title")
+            yield Static(Text(self.track.artist), classes="dialog-caption")
+            options = [
+                Option("▶  从这首开始播放", id="play"),
+                Option("＋  加入播放队列", id="enqueue"),
+                Option("♥  取消喜欢" if self.liked else "♡  标记喜欢", id="like"),
+                Option("□  收藏到…", id="collect"),
+            ]
+            if not self.track.path:
+                options.append(Option("↓  下载音频与歌词…", id="download"))
+            if self.removable:
+                options.append(Option("−  从当前列表移出", id="remove"))
+            yield OptionList(*options, id="track-options")
+            yield Static("↑ ↓ 选择 · Enter 执行 · Esc 返回", classes="dialog-footer")
+
+    def on_mount(self):
+        self.query_one(OptionList).focus()
+
+    @on(OptionList.OptionSelected)
+    def selected(self, event):
+        self.dismiss(event.option.id)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class DownloadDialog(ModalScreen[dict | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "取消")]
+
+    def __init__(self, track, directory, quality):
+        super().__init__()
+        self.track, self.directory, self.quality = track, directory, quality
+
+    def compose(self):
+        from textual.widgets import Checkbox
+
+        with Vertical(classes="dialog"):
+            yield Static("下载歌曲", classes="dialog-title")
+            yield Static(Text(f"{self.track.title}\n{self.track.artist}"), classes="dialog-caption")
+            yield Static("保存到目录", classes="dialog-caption")
+            yield Input(
+                value=self.directory, placeholder="下载目录的完整路径", id="download-directory"
+            )
+            yield Select(
+                [
+                    ("最佳可用", "best"),
+                    ("FLAC 无损", "flac"),
+                    ("MP3 320k", "320k"),
+                    ("MP3 128k", "128k"),
+                ],
+                value=self.quality,
+                allow_blank=False,
+                compact=True,
+                id="download-quality",
+            )
+            yield Checkbox("同时保存 LRC 歌词", value=True, compact=True, id="download-lyrics")
+            yield Static("后台下载，退出界面后继续；同名文件会保留。", classes="dialog-caption")
+            yield Static("", id="dialog-error", classes="dialog-error")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("取消", id="cancel")
+                yield Button("开始下载", id="download-start", classes="primary")
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        from textual.widgets import Checkbox
+
+        if event.button.id != "download-start":
+            self.dismiss(None)
+            return
+        directory = self.query_one("#download-directory", Input).value.strip()
+        if not directory:
+            self.query_one("#dialog-error", Static).update("请输入保存目录")
+            return
+        self.dismiss(
+            dict(
+                directory=str(Path(directory).expanduser().resolve()),
+                quality=self.query_one("#download-quality", Select).value,
+                lyrics=self.query_one("#download-lyrics", Checkbox).value,
+            )
+        )
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+DOWNLOAD_PHASES = {
+    "queued": "等待下载",
+    "resolving": "解析音源",
+    "downloading": "下载中",
+    "lyrics": "保存歌词",
+    "done": "已完成",
+    "error": "失败",
+    "cancelled": "已取消",
+}
+
+
+class DownloadList(ModalScreen[tuple | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "返回")]
+
+    def __init__(self, get_jobs):
+        super().__init__()
+        self.get_jobs = get_jobs
+        self.jobs = []
+        self.signature = None
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static("下载任务", classes="dialog-title")
+            yield OptionList(id="download-options")
+            yield Static(
+                "暂无下载。在歌曲操作中选择下载，或按 d。",
+                id="download-detail",
+                classes="dialog-caption",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("返回", id="cancel")
+                yield Button("取消任务", id="cancel-job")
+                yield Button("重试下载", id="retry-job", classes="primary")
+
+    def on_mount(self):
+        self.refresh_jobs()
+        self.set_interval(0.5, self.refresh_jobs)
+        self.query_one(OptionList).focus()
+
+    def refresh_jobs(self):
+        self.jobs = list(reversed(self.get_jobs()))
+        signature = [
+            (job["id"], job["phase"], job["received"], job.get("error")) for job in self.jobs
+        ]
+        options = self.query_one(OptionList)
+        if signature != self.signature:
+            cursor = options.highlighted or 0
+            previous = options.get_option_at_index(cursor).id if options.option_count else None
+            options.clear_options().add_options(
+                [
+                    Option(
+                        Text(f"{DOWNLOAD_PHASES[job['phase']]} · {job['track']['title']}"),
+                        id=job["id"],
+                    )
+                    for job in self.jobs
+                ]
+            )
+            if self.jobs:
+                options.highlighted = next(
+                    (i for i, job in enumerate(self.jobs) if job["id"] == previous),
+                    min(cursor, len(self.jobs) - 1),
+                )
+            self.signature = signature
+        self.details()
+
+    @on(OptionList.OptionHighlighted)
+    def details(self):
+        cursor = self.query_one(OptionList).highlighted
+        job = self.jobs[cursor] if cursor is not None and cursor < len(self.jobs) else None
+        if job:
+            size = f"{job['received'] / 1048576:.1f} / {job['total'] / 1048576:.1f} MB"
+            content = job["error"] or job.get("warning") or size
+            if job["path"]:
+                content += "\n" + job["path"]
+            self.query_one("#download-detail", Static).update(Text(content))
+        self.query_one("#cancel-job", Button).disabled = not job or job["phase"] not in (
+            "queued",
+            "resolving",
+            "downloading",
+            "lyrics",
+        )
+        self.query_one("#retry-job", Button).disabled = not job or job["phase"] not in (
+            "error",
+            "cancelled",
+        )
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        cursor = self.query_one(OptionList).highlighted
+        if event.button.id == "cancel" or cursor is None:
+            self.dismiss(None)
+        else:
+            self.dismiss(
+                (
+                    "download_cancel" if event.button.id == "cancel-job" else "download_retry",
+                    self.jobs[cursor]["id"],
+                )
+            )
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class QualityPicker(ModalScreen[str | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "返回")]
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static("选择音质并重试", classes="dialog-title")
+            yield Static("将重新解析当前歌曲，保留播放队列。", classes="dialog-caption")
+            yield OptionList(
+                Option("最佳可用 · 自动选择可用档位", id="best"),
+                Option("FLAC 无损", id="flac"),
+                Option("MP3 320k", id="320k"),
+                Option("MP3 128k", id="128k"),
+                id="quality-options",
+            )
+            yield Static("↑ ↓ 选择 · Enter 重试 · Esc 取消", classes="dialog-footer")
 
     def on_mount(self):
         self.query_one(OptionList).focus()

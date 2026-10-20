@@ -154,7 +154,8 @@ async def test_unavailable_source_details_are_exposed_without_starting_audio(pat
         assert state["phase"] == "error"
         assert state["error_code"] == "incomplete_audio"
         assert len(state["error_details"]) == 2
-        assert state["lyrics_status"] == "idle"
+        await service.lyric_task
+        assert service.status()["lyrics_status"] == "ready"
         assert service.player.loads == []
     finally:
         await service.close()
@@ -224,3 +225,139 @@ async def test_shuffle_navigation_rounds_and_queue_edits(service):
         await service.dispatch({"op": "next"})
         await loaded(service)
         assert service.current.id in remaining
+
+
+async def test_transient_audio_failure_retries_once_without_replacing_queue(
+    paths, tracks, monkeypatch
+):
+    from wocli_music.models import NetworkError
+
+    class Flaky(FakeProvider):
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, track, quality):
+            self.calls += 1
+            if self.calls == 1:
+                raise NetworkError("网络暂时中断")
+            return super().stream(track, quality)
+
+    monkeypatch.setattr("wocli_music.service.RETRY_DELAY", 0)
+    provider = Flaky()
+    service = MusicService(paths, provider=provider, player_factory=FakePlayer)
+    try:
+        await service.dispatch({"op": "play", "tracks": [track.data() for track in tracks]})
+        await loaded(service)
+        assert provider.calls == 2
+        assert service.phase == "playing"
+        assert service.queue == tracks
+        assert service.index == 0
+        assert service.status()["retry_attempt"] == 2
+    finally:
+        await service.close()
+
+
+async def test_audio_retry_keeps_current_track_when_selection_changes_and_guards_busy(
+    service, tracks
+):
+    await service.dispatch({"op": "play", "tracks": [t.data() for t in tracks], "index": 1})
+    await loaded(service)
+    await service.dispatch({"op": "retry", "quality": "best"})
+    task = service.play_task
+    await service.dispatch({"op": "retry"})
+    assert service.play_task is task
+    await loaded(service)
+    assert service.queue == tracks
+    assert service.current == tracks[1]
+    assert service.status()["requested_quality"] == "best"
+
+
+async def test_lyrics_retry_is_independent_bounded_and_keeps_cached_lines(
+    paths, tracks, monkeypatch
+):
+    class Slow(FakeProvider):
+        def lyrics(self, track):
+            time.sleep(0.06)
+            return "[00:01]too late"
+
+    monkeypatch.setattr("wocli_music.service.LYRICS_TIMEOUT", 0.01)
+    service = MusicService(paths, provider=Slow(), player_factory=FakePlayer)
+    try:
+        service.store.lyric(tracks[0].id, "[00:01]cached line")
+        await service.dispatch({"op": "play", "tracks": [tracks[0].data()]})
+        await loaded(service)
+        loads = list(service.player.loads)
+        await service.dispatch({"op": "lyrics_retry"})
+        task = service.lyric_task
+        await service.dispatch({"op": "lyrics_retry"})
+        assert service.lyric_task is task
+        await task
+        assert service.lyrics_status == "ready"
+        assert "超时" in service.lyrics_error
+        assert service.lyric_text == "[00:01]cached line"
+        assert service.phase == "playing"
+        assert service.player.loads == loads
+        await asyncio.sleep(0.08)
+        assert service.lyric_text == "[00:01]cached line"
+    finally:
+        await service.close()
+
+
+async def test_source_deadline_exhausts_once_and_stop_discards_late_audio(
+    paths, tracks, monkeypatch
+):
+    class Slow(FakeProvider):
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, track, quality):
+            self.calls += 1
+            time.sleep(0.06)
+            return super().stream(track, quality)
+
+    monkeypatch.setattr("wocli_music.service.SOURCE_TIMEOUT", 0.01)
+    monkeypatch.setattr("wocli_music.service.RETRY_DELAY", 0)
+    provider = Slow()
+    service = MusicService(paths, provider=provider, player_factory=FakePlayer)
+    try:
+        await service.dispatch({"op": "play", "tracks": [tracks[0].data()]})
+        await loaded(service)
+        assert provider.calls == 2
+        assert service.phase == "error"
+        assert "超时" in service.error
+        await asyncio.sleep(0.08)
+        assert service.player.loads == []
+        await service.dispatch({"op": "retry"})
+        await service.dispatch({"op": "stop"})
+        await asyncio.sleep(0.08)
+        assert service.phase == "stopped"
+        assert service.player.loads == []
+    finally:
+        await service.close()
+
+
+async def test_retrying_audio_does_not_restart_inflight_lyrics(paths, tracks):
+    import threading
+
+    release = threading.Event()
+
+    class SlowLyrics(FakeProvider):
+        def lyrics(self, track):
+            release.wait(2)
+            return "[00:01]one independent lyric request"
+
+    service = MusicService(paths, provider=SlowLyrics(), player_factory=FakePlayer)
+    try:
+        await service.dispatch({"op": "play", "tracks": [tracks[0].data()]})
+        await loaded(service)
+        task = service.lyric_task
+        await service.dispatch({"op": "retry", "quality": "best"})
+        await loaded(service)
+        assert service.lyric_task is task
+        release.set()
+        await task
+        assert service.lyrics_status == "ready"
+        assert service.lyric_text.endswith("one independent lyric request")
+    finally:
+        release.set()
+        await service.close()

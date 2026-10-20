@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from textual.widgets import DataTable, Input, Select, Static
 
@@ -61,7 +63,7 @@ async def test_tui_search_play_and_responsive_layout(paths, service, tracks, siz
         search.value = ""
         await pilot.press("q", "space", "a", "f")
         assert search.value == "q af"
-        if size[0] < 110:
+        if size[0] < 120:
             assert not app.query_one("#now").display
         assert app.query_one("#play-pause").region.x >= 0
         assert app.query_one("#favorite").region.right <= size[0]
@@ -95,13 +97,13 @@ async def test_tui_replaces_lyric_loading_when_playback_fails(paths, service, tr
         service.index = 0
         service.phase = "loading"
         app.render_state(service.status())
-        assert "正在解析音源" in str(app.query_one("#lyrics", Static).render())
+        assert "解析中" in str(app.query_one("#current-song", Static).render())
         service.phase = "error"
         service.error = "该版本仅返回试听或不完整音频，未获取到可播放的完整版。"
         service.error_code = "incomplete_audio"
         app.render_state(service.status())
-        content = str(app.query_one("#lyrics", Static).render())
-        assert "试听" in content
+        content = str(app.query_one("#notice", Static).render())
+        assert "完整音频" in content
         assert "正在加载" not in content
         assert "音乐仍在继续" not in content
         assert str(app.query_one("#play-pause").label) == "重试"
@@ -132,7 +134,7 @@ async def test_refresh_lyrics_while_playing_updates_display_without_changing_pla
 
     app = MusicApp(paths=paths)
     app.client = UIClient(service)
-    app.provider = LyricsProvider()
+    service.provider = LyricsProvider()
     service.queue = [tracks[0]]
     service.index = 0
     service.phase = "playing"
@@ -146,6 +148,8 @@ async def test_refresh_lyrics_while_playing_updates_display_without_changing_pla
         await pilot.press("l")
         await pilot.pause()
         await app.workers.wait_for_complete()
+        await service.lyric_task
+        app.render_state(service.status())
         assert service.phase == "playing"
         assert service.player.loads == []
         assert "新的歌词" in str(app.query_one("#lyrics", Static).render())
@@ -346,3 +350,211 @@ async def test_search_completion_while_modal_is_open_is_retained(paths, service,
         app.refresh_library()
         assert app.rows["results"] == tracks
         assert "2 首" in str(app.query_one("#list-status", Static).render())
+
+
+async def test_space_always_controls_current_song_and_single_click_only_selects(
+    paths, service, tracks
+):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.search_tracks = tracks
+    async with app.run_test(size=(123, 41)) as pilot:
+        app.show_view("search")
+        app.query_one("#results", DataTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await service.play_task
+        app.poll()
+        await pilot.pause()
+        table = app.query_one("#results", DataTable)
+        await pilot.click("#results", offset=(7, 2))
+        await pilot.pause()
+        assert table.cursor_row == 1
+        assert service.current == tracks[0]
+        await pilot.press("space")
+        await pilot.pause()
+        assert service.phase == "paused"
+        assert service.current == tracks[0]
+        await pilot.press("enter")
+        await pilot.pause()
+        await service.play_task
+        assert service.current == tracks[1]
+        await pilot.click("#results", offset=(7, 1), times=2)
+        await pilot.pause()
+        await service.play_task
+        assert service.current == tracks[0]
+
+
+async def test_narrow_terminal_can_open_lyrics_and_retry_failed_audio(paths, service, tracks):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    service.queue, service.index = tracks, 1
+    service.phase, service.error = "error", "网络请求失败"
+    service.lyrics_status = "unavailable"
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        app.poll()
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert app.query_one("#now").display
+        assert not app.query_one("#collection").display
+        assert app.query_one("#retry-audio").region.bottom <= 24
+        await pilot.click("#retry-audio")
+        await pilot.pause()
+        await service.play_task
+        assert service.current == tracks[1]
+        assert service.phase == "playing"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one("#collection").display
+
+
+@pytest.mark.parametrize("size", [(123, 41), (80, 26), (60, 24)])
+async def test_download_dialog_starts_pinned_track_and_background_task(
+    paths, service, tracks, tmp_path, size
+):
+    from test_downloads import DownloadProvider
+
+    service.provider = DownloadProvider()
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.search_tracks = tracks
+    async with app.run_test(size=size) as pilot:
+        app.show_view("search")
+        app.query_one("#results", DataTable).move_cursor(row=1)
+        app.action_download()
+        await pilot.pause()
+        assert "夜曲" in str(app.screen.query_one(".dialog-caption").render())
+        app.screen.query_one("#download-directory", Input).value = str(tmp_path / "saved")
+        await pilot.click("#download-quality")
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app.screen.query_one("#download-quality", Select).value == "128k"
+        await pilot.click("#download-start")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await asyncio.gather(*service.downloads.tasks.values())
+        job = service.downloads.status()[0]
+        assert job["track"]["id"] == tracks[1].id
+        assert job["quality"] == "128k"
+        assert job["phase"] == "done"
+        assert service.player.loads == []
+        app.poll()
+        await pilot.pause()
+        app.action_downloads()
+        await pilot.pause()
+        assert "夜曲" in str(
+            app.screen.query_one("#download-options").get_option_at_index(0).prompt
+        )
+
+
+async def test_song_actions_can_collect_without_changing_playback(paths, service, tracks):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.store.add_to_playlist("通勤", tracks[0])
+    app.search_tracks = tracks
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.show_view("search")
+        app.query_one("#results", DataTable).move_cursor(row=1)
+        app.query_one("#results").focus()
+        await pilot.press("x")
+        await pilot.pause()
+        menu = app.screen.query_one("#track-options")
+        menu.highlighted = 3
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ == "FolderPicker"
+        await pilot.click("#save")
+        await pilot.pause()
+        assert app.store.playlist("通勤") == tracks
+        assert service.player.loads == []
+
+
+async def test_download_survives_ui_exit(paths, service, tracks, tmp_path):
+    import threading
+
+    from test_downloads import DownloadProvider
+
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(DownloadProvider):
+        def download(self, *args, **kwargs):
+            entered.set()
+            release.wait(2)
+            return super().download(*args, **kwargs)
+
+    service.provider = Slow()
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    try:
+        async with app.run_test(size=(100, 32)) as pilot:
+            app.control(
+                "download",
+                track=tracks[0].data(),
+                directory=str(tmp_path / "saved"),
+                quality="best",
+            )
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            assert await asyncio.to_thread(entered.wait, 1)
+        release.set()
+        await asyncio.gather(*service.downloads.tasks.values())
+        assert service.downloads.status()[0]["phase"] == "done"
+    finally:
+        release.set()
+
+
+async def test_loading_transport_can_cancel_without_late_playback(paths, service, tracks):
+    import threading
+
+    from conftest import FakeProvider
+
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(FakeProvider):
+        def stream(self, track, quality):
+            entered.set()
+            release.wait(2)
+            return super().stream(track, quality)
+
+    service.provider = Slow()
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    try:
+        async with app.run_test(size=(100, 32)) as pilot:
+            await service.dispatch({"op": "play", "tracks": [tracks[0].data()]})
+            app.state = service.status()
+            app.render_state(app.state)
+            assert str(app.query_one("#play-pause").label) == "取消加载"
+            assert await asyncio.to_thread(entered.wait, 1)
+            await pilot.click("#play-pause")
+            await pilot.pause()
+            release.set()
+            await pilot.pause(0.05)
+            assert service.phase == "stopped"
+            assert service.player.loads == []
+    finally:
+        release.set()
+
+
+async def test_quality_picker_retries_current_without_replacing_queue(paths, service, tracks):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    service.queue, service.index = tracks, 1
+    service.phase, service.error = "error", "播放失败"
+    async with app.run_test(size=(60, 24)) as pilot:
+        app.state = service.status()
+        app.render_state(app.state)
+        app.action_now()
+        await pilot.pause()
+        await pilot.click("#retry-best")
+        await pilot.pause()
+        menu = app.screen.query_one("#quality-options")
+        menu.highlighted = 3
+        await pilot.press("enter")
+        await pilot.pause()
+        await service.play_task
+        assert service.current == tracks[1]
+        assert service.queue == tracks
+        assert service.requested_quality == "128k"

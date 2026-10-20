@@ -9,6 +9,10 @@ class MusicError(Exception):
     """An actionable error safe to display in the terminal."""
 
 
+class NetworkError(MusicError):
+    """A transient source request failure that may be retried."""
+
+
 class AudioUnavailable(MusicError):
     code = "source_unavailable"
 
