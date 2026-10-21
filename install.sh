@@ -264,6 +264,7 @@ main() {
         cp -f "$extract_dir/wocli" "$INSTALL_DIR/wocli"
         chmod +x "$INSTALL_DIR/wocli"
         xattr -d com.apple.quarantine "$INSTALL_DIR/wocli" 2>/dev/null || true
+        codesign -s - --force "$INSTALL_DIR/wocli" 2>/dev/null || true
     else
         # Linux: keep lib/ adjacent to binary for ALSA rpath
         local share_dir
