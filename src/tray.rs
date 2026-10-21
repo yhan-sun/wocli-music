@@ -305,42 +305,55 @@ mod macos {
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
-            let item_toggle = create_item("▶ 播放 / 暂停", TAG_TOGGLE, target_obj);
+            let item_toggle = create_item("播放 / 暂停", TAG_TOGGLE, target_obj);
             let _: () = msg_send![menu, addItem: item_toggle];
 
-            let item_prev = create_item("⏮ 上一首", TAG_PREV, target_obj);
+            let item_prev = create_item("上一首", TAG_PREV, target_obj);
             let _: () = msg_send![menu, addItem: item_prev];
 
-            let item_next = create_item("⏭ 下一首", TAG_NEXT, target_obj);
+            let item_next = create_item("下一首", TAG_NEXT, target_obj);
             let _: () = msg_send![menu, addItem: item_next];
 
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
-            let item_mode = create_item("🔁 播放模式: 列表循环", TAG_MODE, target_obj);
+            let item_mode = create_item("模式: 列表循环", TAG_MODE, target_obj);
             let _: () = msg_send![menu, addItem: item_mode];
 
-            let item_vol_up = create_item("🔊 音量 +10%", TAG_VOL_UP, target_obj);
+            let item_vol_up = create_item("音量 +10%", TAG_VOL_UP, target_obj);
             let _: () = msg_send![menu, addItem: item_vol_up];
 
-            let item_vol_down = create_item("🔉 音量 -10%", TAG_VOL_DOWN, target_obj);
+            let item_vol_down = create_item("音量 -10%", TAG_VOL_DOWN, target_obj);
             let _: () = msg_send![menu, addItem: item_vol_down];
 
-            let item_lyrics_bar = create_item("💬 任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
+            let item_lyrics_bar = create_item("任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
             let _: () = msg_send![menu, addItem: item_lyrics_bar];
 
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
-            let item_tui = create_item("🖥️ 打开终端播放器", TAG_TUI, target_obj);
+            let item_tui = create_item("打开终端播放器", TAG_TUI, target_obj);
             let _: () = msg_send![menu, addItem: item_tui];
 
-            let item_quit = create_item("🚪 退出", TAG_QUIT, target_obj);
+            let item_quit = create_item("退出", TAG_QUIT, target_obj);
             let _: () = msg_send![menu, addItem: item_quit];
 
             let _: () = msg_send![status_item, setMenu: menu];
 
-            let init_title = NSString::alloc(nil).init_str("🎵 wocli");
+            // 优先使用 macOS 原生 SF Symbol 矢量单色模板图标 (music.note)，自适应深浅色模式
+            let symbol_name = NSString::alloc(nil).init_str("music.note");
+            let symbol_img: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: symbol_name
+                accessibilityDescription: nil
+            ];
+            if symbol_img != nil {
+                let _: () = msg_send![symbol_img, setTemplate: YES];
+                let _: () = msg_send![button, setImage: symbol_img];
+                let _: () = msg_send![button, setImagePosition: 3usize]; // NSImageLeading
+            }
+
+            let init_title = NSString::alloc(nil).init_str("wocli");
             let _: () = msg_send![button, setTitle: init_title];
 
             // 2. 桌面 / 任务栏悬浮透明歌词窗口 (NSPanel)
@@ -515,17 +528,18 @@ mod macos {
                     set_item_title(
                         item_toggle,
                         if phase == "playing" {
-                            "⏸ 暂停"
+                            "暂停"
                         } else {
-                            "▶ 播放"
+                            "播放"
                         },
                     );
-                    set_item_title(item_mode, &format!("🔁 模式: {}", mode_label(mode)));
-                    set_item_title(item_vol_up, &format!("🔊 音量: {vol}% (+10%)"));
+                    set_item_title(item_mode, &format!("模式: {}", mode_label(mode)));
+                    set_item_title(item_vol_up, &format!("音量 +10% (当前 {vol}%)"));
+                    set_item_title(item_vol_down, "音量 -10%");
                     set_item_title(
                         item_lyrics_bar,
                         &format!(
-                            "💬 任务栏歌词: {}",
+                            "任务栏歌词: {}",
                             if lyrics_bar_enabled {
                                 "开启"
                             } else {
@@ -537,12 +551,12 @@ mod macos {
                     // 顶部菜单栏标题：精简显示，避免被 MacBook 刘海屏挤出屏幕
                     let menu_bar_title = if phase == "playing" {
                         let short_title: String = title.chars().take(12).collect();
-                        format!("🎵 {short_title}")
+                        short_title
                     } else if phase == "paused" {
                         let short_title: String = title.chars().take(12).collect();
-                        format!("⏸ {short_title}")
+                        format!("{short_title} (暂停)")
                     } else {
-                        "🎵 wocli".to_string()
+                        "wocli".to_string()
                     };
 
                     if menu_bar_title != last_title {
@@ -581,10 +595,10 @@ mod macos {
                     }
                 } else {
                     set_item_title(item_status, "后台未运行");
-                    if last_title != "🎵 wocli" {
-                        let ns_title = NSString::alloc(nil).init_str("🎵 wocli");
+                    if last_title != "wocli" {
+                        let ns_title = NSString::alloc(nil).init_str("wocli");
                         let _: () = msg_send![button, setTitle: ns_title];
-                        last_title = "🎵 wocli".to_string();
+                        last_title = "wocli".to_string();
                     }
                     if !last_bar_text.is_empty() {
                         let empty = NSString::alloc(nil).init_str("");
@@ -892,7 +906,7 @@ mod windows {
 
         STATE.with(|st| {
             if let Some(state) = st.borrow().as_ref() {
-                let header = format!("🎵 {} · {}", state.current_title, state.current_artist);
+                let header = format!("{} · {}", state.current_title, state.current_artist);
                 AppendMenuW(
                     hmenu,
                     MF_STRING | MF_DISABLED,
@@ -900,7 +914,7 @@ mod windows {
                     to_wide(&header).as_ptr(),
                 );
 
-                let lyric_item = format!("💬 {}", state.current_text);
+                let lyric_item = state.current_text.clone();
                 AppendMenuW(
                     hmenu,
                     MF_STRING | MF_DISABLED,
@@ -911,24 +925,24 @@ mod windows {
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
                 let toggle_label = if state.phase == "playing" {
-                    "⏸ 暂停"
+                    "暂停"
                 } else {
-                    "▶ 播放"
+                    "播放"
                 };
                 AppendMenuW(hmenu, MF_STRING, CMD_TOGGLE, to_wide(toggle_label).as_ptr());
-                AppendMenuW(hmenu, MF_STRING, CMD_PREV, to_wide("⏮ 上一首").as_ptr());
-                AppendMenuW(hmenu, MF_STRING, CMD_NEXT, to_wide("⏭ 下一首").as_ptr());
+                AppendMenuW(hmenu, MF_STRING, CMD_PREV, to_wide("上一首").as_ptr());
+                AppendMenuW(hmenu, MF_STRING, CMD_NEXT, to_wide("下一首").as_ptr());
 
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
-                let mode_str = format!("🔁 模式: {}", mode_label(&state.current_mode));
+                let mode_str = format!("模式: {}", mode_label(&state.current_mode));
                 AppendMenuW(hmenu, MF_STRING, CMD_MODE, to_wide(&mode_str).as_ptr());
 
-                let vol_str = format!("🔊 音量: {}% (点击 +10%)", state.current_volume);
+                let vol_str = format!("音量: {}% (点击 +10%)", state.current_volume);
                 AppendMenuW(hmenu, MF_STRING, CMD_VOL_UP, to_wide(&vol_str).as_ptr());
 
                 let lb_str = format!(
-                    "💬 任务栏歌词: {}",
+                    "任务栏歌词: {}",
                     if state.lyrics_bar_enabled {
                         "开启 (点击关闭)"
                     } else {
@@ -943,13 +957,13 @@ mod windows {
                     hmenu,
                     MF_STRING,
                     CMD_TUI,
-                    to_wide("🖥️ 打开控制终端").as_ptr(),
+                    to_wide("打开控制终端").as_ptr(),
                 );
                 AppendMenuW(
                     hmenu,
                     MF_STRING,
                     CMD_QUIT,
-                    to_wide("🚪 退出播放器").as_ptr(),
+                    to_wide("退出播放器").as_ptr(),
                 );
             }
         });
