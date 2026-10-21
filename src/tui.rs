@@ -665,9 +665,13 @@ impl App {
                     _ => {}
                 },
                 Popup::Jobs(index) => match key.code {
-                    KeyCode::Up => *index = index.saturating_sub(1),
-                    KeyCode::Down => {
+                    KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
                         *index = (*index + 1).min(self.state.downloads.len().saturating_sub(1))
+                    }
+                    KeyCode::Home | KeyCode::Char('g') => *index = 0,
+                    KeyCode::End | KeyCode::Char('G') => {
+                        *index = self.state.downloads.len().saturating_sub(1)
                     }
                     KeyCode::Char('r') | KeyCode::Char('c') => {
                         if let Some(job) = self.state.downloads.get(*index) {
@@ -735,6 +739,12 @@ impl App {
             KeyCode::Char('l') => Some(Action::Control(json!({"op":"lyrics_retry"}))),
             KeyCode::Char('c') => self.current().map(Action::Collect),
             KeyCode::Char('x') => self.current().map(Action::Song),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::Page(1))
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::Page(-1))
+            }
             KeyCode::Char('d') => self.current().map(Action::Download),
             KeyCode::Char('f') => self
                 .current()
@@ -745,6 +755,8 @@ impl App {
             KeyCode::Char(' ') => Some(Action::Toggle),
             KeyCode::Char('+') | KeyCode::Char('=') => Some(Action::Volume(5)),
             KeyCode::Char('-') => Some(Action::Volume(-5)),
+            KeyCode::Char('[' | '<') => Some(Action::Control(json!({"op":"prev"}))),
+            KeyCode::Char(']' | '>') => Some(Action::Control(json!({"op":"next"}))),
             KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::Control(
                     json!({"op":if key.code==KeyCode::Left {"prev"}else{"next"}}),
@@ -755,6 +767,25 @@ impl App {
             )),
             KeyCode::PageUp => Some(Action::Page(-1)),
             KeyCode::PageDown => Some(Action::Page(1)),
+            KeyCode::Home | KeyCode::Char('g') => {
+                if self.nav_focus {
+                    self.nav.select(Some(0));
+                } else {
+                    self.selected = 0;
+                    self.table.select((!self.rows.is_empty()).then_some(0));
+                }
+                None
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if self.nav_focus {
+                    let len = self.navigation().len();
+                    self.nav.select(Some(len.saturating_sub(1)));
+                } else {
+                    self.selected = self.rows.len().saturating_sub(1);
+                    self.table.select((!self.rows.is_empty()).then_some(self.selected));
+                }
+                None
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.nav_focus = !self.nav_focus;
                 if self.nav_focus {
@@ -1559,7 +1590,7 @@ impl App {
             Popup::Input { title, .. } => (title.as_str(), 7),
             Popup::Download { .. } => ("下载歌曲", 13),
             Popup::Jobs(_) => ("下载任务", 18),
-            Popup::Help => ("快捷键", 20),
+            Popup::Help => ("快捷键", 22),
         };
         let outer = frame.area();
         let width = outer.width.saturating_sub(4).min(66);
@@ -1622,7 +1653,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),10,1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\n← →  跳转 5 秒\nCtrl+← →  上一首 / 下一首\n+ −  音量\nn  新建收藏夹   r  重命名\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ]  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ −  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -1993,5 +2024,47 @@ mod interaction_tests {
             .unwrap()
             .iter()
             .any(|(name, _)| name == "旅途"));
+    }
+    #[test]
+    fn vim_navigation_and_media_shortcuts() {
+        let (_root, mut app, rx) = setup();
+        for i in 1..=5 {
+            let t = Track {
+                id: format!("id-{i}"),
+                title: format!("Title {i}"),
+                ..Track::default()
+            };
+            app.store.favorite(&t).unwrap();
+        }
+        app.reload().unwrap();
+        assert_eq!(app.rows.len(), 5);
+
+        // j down, k up
+        assert_eq!(app.selected, 0);
+        app.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.selected, 1);
+        app.key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.selected, 0);
+
+        // G to bottom, g to top
+        app.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.selected, 4);
+        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.selected, 0);
+
+        // [ prev, ] next
+        app.key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "prev");
+
+        app.key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "next");
     }
 }
