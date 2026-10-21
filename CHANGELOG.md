@@ -1,6 +1,26 @@
 # 更新日志
 
-## 0.2.5 — 2026-10-21
+## 0.3.0 — 2026-10-21
+
+- **P0 真正的渐进式流式播放与边下边播（Progressive Audio Streaming）**：
+  - 新增 `src/stream.rs`：实现基于原子条件变量通知的 `ProgressiveReader`（支持 `Read + Seek`）与预缓冲机制（`PREBUFFER_SIZE = 128KB`）。
+  - Symphonia 解码器仅需读取前 16KB 元数据即可立即起播，首播/切歌发声延迟从数秒骤降至 **< 200ms**，后续音频流在后台静默缓冲。
+  - 网络断开或异常时自动回退并妥善回收临时流句柄。
+- **后台常驻服务有界线程池与并发限流（Bounded Concurrency & Stability）**：
+  - 新增 `src/pool.rs`：固定容量轻量工作线程池 `WorkerPool` 取代原无界 `thread::spawn`，规范歌词、任务与流式任务的调度与生命周期。
+  - 引入 `ConnectionLimiter`（基于原子 CAS 操作的高性能并发连接门禁，默认最大 16 客户端并发），防止 IPC 客户端泛洪与连接泄漏。
+- **模块化音源抽象设计（Modular Provider Trait Architecture）**：
+  - 抽象并规范统一音源接口 `MusicProvider` Trait（`src/provider/`），解耦公开在线协议解析、本地音频扫描与未来扩展源。
+- **彻底移除历史 Python 遗留实现（100% Pure Rust）**：
+  - 完全清理 `src/wocli_music/`、`pyproject.toml` 及过时构建脚本，代码库瘦身 5,100+ 行，成为真正的单二进制纯 Rust 终端音乐播放器。
+- **键盘优先与 Vim 风格终端交互（Keyboard-First & Vim Navigation）**：
+  - 支持 `j` / `k` 上下移动曲目。
+  - 支持 `g` / `G` 快速跳转至列表顶部 / 底部。
+  - 支持 `[` / `]`（或 `<` / `>`）快速切换上一首 / 下一首曲目。
+  - 支持 `Ctrl+U` / `Ctrl+D` 半屏 / 翻页滚动。
+  - 统一更新 TUI 快捷键帮助弹窗与交互提示。
+- **国际化与英文文档（English Documentation）**：
+  - 新增全面英文文档 `README_EN.md`，面向全球开源社区展示原生 Rust 架构与特性。
 
 - 移除状态栏小图标与右键菜单中全部 emoji，改为纯净原生排版设计。
 - macOS 菜单栏接入系统原生 SF Symbol 单色矢量模板图标（`music.note`），自适应深浅色模式与视网膜高分屏。

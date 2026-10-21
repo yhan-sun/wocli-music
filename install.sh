@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="yhan-sun/wocli-music"
-DEFAULT_TAG="v0.2.5"
+DEFAULT_TAG="v0.3.0"
 TMPDIR_CLEANUP=""
 
 cleanup() {
