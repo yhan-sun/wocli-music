@@ -231,7 +231,23 @@ mod macos {
     extern "C" fn on_menu_action(_this: &Object, _cmd: Sel, sender: id) {
         unsafe {
             let tag: isize = msg_send![sender, tag];
-            PENDING_ACTION.store(tag as u32, Ordering::Relaxed);
+            PENDING_ACTION.store(tag as u32, Ordering::SeqCst);
+            let app = NSApp();
+            let empty_event: id = msg_send![
+                class!(NSEvent),
+                otherEventWithType: 14isize // NSEventTypeApplicationDefined
+                location: cocoa::foundation::NSPoint::new(0.0, 0.0)
+                modifierFlags: 0usize
+                timestamp: 0.0f64
+                windowNumber: 0isize
+                context: nil
+                subtype: 0i16
+                data1: 0isize
+                data2: 0isize
+            ];
+            if empty_event != nil {
+                let _: () = msg_send![app, postEvent: empty_event atStart: YES];
+            }
         }
     }
 
@@ -637,8 +653,8 @@ mod macos {
                     let _: () = msg_send![lyrics_window, orderOut: nil];
                 }
 
-                // 3. 处理 Cocoa 事件（0.25 秒超时自动循环）
-                let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.25];
+                // 3. 处理 Cocoa 事件（0.08 秒超时自动循环，消除事件响应延迟）
+                let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.08];
                 let mode_str = NSString::alloc(nil).init_str("kCFRunLoopDefaultMode");
                 let event: id = msg_send![
                     app,
@@ -681,13 +697,14 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
         DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, PeekMessageW,
-        PostQuitMessage, RegisterClassW, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-        SetWindowPos, ShowWindow, TrackPopupMenuEx, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-        HMENU, IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE,
-        SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-        SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY,
-        WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
+        SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenuEx,
+        TranslateMessage, CS_HREDRAW, CS_VREDRAW, HMENU, IDI_APPLICATION, LWA_COLORKEY,
+        MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN,
+        TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_PAINT,
+        WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -749,6 +766,7 @@ mod windows {
                             let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
                         }
                     });
+                    SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
                 } else if event == WM_RBUTTONUP {
                     show_menu(hwnd);
                 }
@@ -757,6 +775,7 @@ mod windows {
             WM_COMMAND => {
                 let cmd = (wparam & 0xFFFF) as usize;
                 handle_command(hwnd, cmd);
+                SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
                 0
             }
             WM_DESTROY => {
@@ -1157,7 +1176,7 @@ mod windows {
                 });
             });
 
-            SetTimer(hwnd, TIMER_ID, 250, None);
+            SetTimer(hwnd, TIMER_ID, 100, None);
 
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) > 0 {

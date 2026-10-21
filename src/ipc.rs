@@ -103,6 +103,7 @@ pub fn connect(paths: &Paths) -> Result<Stream> {
         .ok_or_else(|| Error::new("后台授权信息缺失"))?
         .trim();
     let mut tcp = TcpStream::connect(("127.0.0.1", port))?;
+    let _ = tcp.set_nodelay(true);
     tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
     tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
     tcp.write_all(format!("{token}\n").as_bytes())?;

@@ -1,5 +1,5 @@
 use crate::model::{Error, Result, Track};
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     fs::File,
     path::Path,
@@ -76,9 +76,19 @@ impl Player {
             self.duration = count as f64 / rate;
         } else {
             if self.stream.is_none() {
-                let mut stream = OutputStreamBuilder::open_default_stream()
+                let stream = rodio::OutputStreamBuilder::from_default_device()
+                    .and_then(|b| {
+                        b.with_buffer_size(rodio::cpal::BufferSize::Fixed(512))
+                            .open_stream()
+                    })
+                    .or_else(|_| {
+                        rodio::OutputStreamBuilder::from_default_device().and_then(|b| {
+                            b.with_buffer_size(rodio::cpal::BufferSize::Fixed(1024))
+                                .open_stream()
+                        })
+                    })
+                    .or_else(|_| rodio::OutputStreamBuilder::open_default_stream())
                     .map_err(|_| Error::coded("audio_device", "无法打开系统音频输出设备"))?;
-                stream.log_on_drop(false);
                 self.stream = Some(stream);
             }
             let sink = Sink::connect_new(self.stream.as_ref().unwrap().mixer());
@@ -115,7 +125,6 @@ impl Player {
         self.duration
     }
     pub fn pause(&mut self, paused: bool) {
-        let position = self.position();
         if let Some(sink) = &self.sink {
             if paused {
                 sink.pause();
@@ -123,6 +132,7 @@ impl Player {
                 sink.play();
             }
         }
+        let position = self.position();
         self.base = position;
         self.started = Instant::now();
         self.paused = paused;

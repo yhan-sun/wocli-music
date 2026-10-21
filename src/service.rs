@@ -1085,6 +1085,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_nodelay(true);
                         if let Some(guard) = limiter_clone.acquire() {
                             let tx = tx.clone();
                             let token_auth = expected_token.clone();
