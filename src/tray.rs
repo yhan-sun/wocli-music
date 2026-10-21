@@ -1,10 +1,15 @@
 #![allow(unexpected_cfgs)]
+#![allow(unused_imports)]
 
+#[cfg(any(target_os = "macos", windows))]
 use crate::ipc;
 use crate::lyrics;
-use crate::model::{clock, mode_label, Error, Result};
+#[cfg(any(target_os = "macos", windows))]
+use crate::model::{clock, mode_label};
+use crate::model::{Error, Result};
 use crate::store::Paths;
 use fs2::FileExt;
+#[cfg(any(target_os = "macos", windows))]
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
