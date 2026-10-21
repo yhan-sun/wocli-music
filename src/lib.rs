@@ -6,6 +6,7 @@ pub mod lyrics;
 pub mod model;
 pub mod order;
 pub mod player;
+pub mod pool;
 pub mod provider;
 pub mod service;
 pub mod store;

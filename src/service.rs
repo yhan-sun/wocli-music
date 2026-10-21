@@ -20,7 +20,7 @@ use std::{
         mpsc::{self, Receiver, Sender},
         Arc,
     },
-    thread::{self, JoinHandle},
+    thread,
     time::Duration,
 };
 
@@ -123,7 +123,7 @@ struct Service {
     job_queue: VecDeque<String>,
     job_active: Option<(String, u64)>,
     job_sequence: u64,
-    workers: Vec<JoinHandle<()>>,
+    pool: crate::pool::WorkerPool,
     quit: Arc<AtomicBool>,
 }
 impl Service {
@@ -170,7 +170,7 @@ impl Service {
             job_queue: VecDeque::new(),
             job_active: None,
             job_sequence: 0,
-            workers: vec![],
+            pool: crate::pool::WorkerPool::new(4),
             quit,
         })
     }
@@ -256,10 +256,10 @@ impl Service {
         self.lyric_error.clear();
         let provider = Provider::new(self.settings.direct || self.direct_override);
         let tx = self.tx.clone();
-        self.workers.push(thread::spawn(move || {
+        self.pool.execute(move || {
             let result = provider.lyrics(&track);
             let _ = tx.send(Event::Lyrics(generation, serial, result));
-        }));
+        });
     }
     fn begin(&mut self, index: usize, quality: String) -> Result<()> {
         if index >= self.queue.len() {
@@ -296,7 +296,7 @@ impl Service {
             .join("cache-rust")
             .join(format!("play-{}-{generation}", std::process::id()));
         self.persist()?;
-        self.workers.push(thread::spawn(move || {
+        self.pool.execute(move || {
             let result = (|| {
                 if !track.path.is_empty() {
                     return Ok((PathBuf::from(&track.path), "local".into()));
@@ -363,7 +363,7 @@ impl Service {
             if tx.send(Event::Ready(generation, result)).is_err() {
                 let _ = fs::remove_file(&target);
             }
-        }));
+        });
         Ok(())
     }
     fn advance(&mut self, previous: bool, automatic: bool) -> Result<()> {
@@ -488,7 +488,7 @@ impl Service {
         self.job_active = Some((id.clone(), serial));
         let tx = self.tx.clone();
         let provider = Provider::new(self.settings.direct || self.direct_override);
-        self.workers.push(thread::spawn(move || {
+        self.pool.execute(move || {
             let result = (|| {
                 let stream = provider.stream(&job.track, &job.requested_quality, &cancelled)?;
                 let basename = format!(
@@ -560,7 +560,7 @@ impl Service {
                 Ok((path.to_string_lossy().into_owned(), warning))
             })();
             let _ = tx.send(Event::JobDone(id, serial, result));
-        }));
+        });
     }
     fn dispatch(&mut self, request: Value) -> Result<Value> {
         let op = request["op"].as_str().unwrap_or_default();
@@ -1028,6 +1028,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
     let mut service = Service::new(paths.clone(), tx.clone(), quit.clone())?;
     let listening = quit.clone();
+    let limiter = Arc::new(crate::pool::ConnectionLimiter::new(16));
 
     #[cfg(unix)]
     let acceptor = {
@@ -1036,13 +1037,19 @@ pub fn run(paths: Paths) -> Result<()> {
         let _ = fs::set_permissions(paths.socket(), fs::Permissions::from_mode(0o600));
         listener.set_nonblocking(true)?;
         let tx = tx.clone();
+        let limiter_clone = limiter.clone();
         thread::spawn(move || {
             while !listening.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let _ = stream.set_nonblocking(false);
-                        let tx = tx.clone();
-                        thread::spawn(move || handle(Stream::Unix(stream), tx));
+                        if let Some(guard) = limiter_clone.acquire() {
+                            let tx = tx.clone();
+                            thread::spawn(move || {
+                                let _guard = guard;
+                                handle(Stream::Unix(stream), tx);
+                            });
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(15))
@@ -1064,34 +1071,38 @@ pub fn run(paths: Paths) -> Result<()> {
         listener.set_nonblocking(true)?;
         let tx = tx.clone();
         let expected_token = token;
+        let limiter_clone = limiter.clone();
         thread::spawn(move || {
             while !listening.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_nonblocking(false);
-                        let tx = tx.clone();
-                        let token_auth = expected_token.clone();
-                        thread::spawn(move || {
-                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                            let mut bytes = Vec::new();
-                            let mut b = [0u8; 1];
-                            let mut ok = false;
-                            while stream.read(&mut b).is_ok_and(|n| n > 0) {
-                                if b[0] == b'\n' {
-                                    ok = true;
-                                    break;
+                        if let Some(guard) = limiter_clone.acquire() {
+                            let tx = tx.clone();
+                            let token_auth = expected_token.clone();
+                            thread::spawn(move || {
+                                let _guard = guard;
+                                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                                let mut bytes = Vec::new();
+                                let mut b = [0u8; 1];
+                                let mut ok = false;
+                                while stream.read(&mut b).is_ok_and(|n| n > 0) {
+                                    if b[0] == b'\n' {
+                                        ok = true;
+                                        break;
+                                    }
+                                    if b[0] != b'\r' {
+                                        bytes.push(b[0]);
+                                    }
+                                    if bytes.len() > 128 {
+                                        break;
+                                    }
                                 }
-                                if b[0] != b'\r' {
-                                    bytes.push(b[0]);
+                                if ok && String::from_utf8_lossy(&bytes) == token_auth {
+                                    handle(Stream::Tcp(stream), tx);
                                 }
-                                if bytes.len() > 128 {
-                                    break;
-                                }
-                            }
-                            if ok && String::from_utf8_lossy(&bytes) == token_auth {
-                                handle(Stream::Tcp(stream), tx);
-                            }
-                        });
+                            });
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(15))
@@ -1111,7 +1122,6 @@ pub fn run(paths: Paths) -> Result<()> {
                 service.error = Some(error);
             }
         }
-        service.workers.retain(|w| !w.is_finished());
     }
     service.stop();
     for control in service.job_controls.values() {
@@ -1119,9 +1129,7 @@ pub fn run(paths: Paths) -> Result<()> {
     }
     let _ = service.persist();
     let _ = fs::remove_file(paths.socket());
-    for worker in service.workers {
-        let _ = worker.join();
-    }
+    drop(service);
     let _ = acceptor.join();
     eprintln!("{} 后台已退出", now());
     Ok(())
