@@ -86,6 +86,18 @@ pub fn start(paths: &Paths) -> Result<()> {
     let exe = std::env::current_exe()?;
     #[cfg(unix)]
     {
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(paths.runtime.join("tray.log"))
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(|_| std::process::Stdio::null());
+        let err_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(paths.runtime.join("tray.log"))
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(|_| std::process::Stdio::null());
         let mut cmd = Command::new(&exe);
         cmd.arg("tray")
             .arg("run")
@@ -93,8 +105,8 @@ pub fn start(paths: &Paths) -> Result<()> {
             .arg(&paths.home)
             .env("WOCLI_HOME", &paths.home)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(log_file)
+            .stderr(err_file);
         use std::os::unix::process::CommandExt;
         unsafe {
             cmd.pre_exec(|| {
@@ -191,10 +203,11 @@ pub fn run(paths: Paths) -> Result<()> {
 mod macos {
     use super::*;
     use cocoa::appkit::{
-        NSApp, NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar,
+        NSApp, NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered,
+        NSStatusBar, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
     use cocoa::base::{id, nil, NO, YES};
-    use cocoa::foundation::{NSAutoreleasePool, NSString};
+    use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
     use objc::declare::ClassDecl;
     use objc::runtime::{Class, Object, Sel};
     use objc::{class, msg_send, sel, sel_impl};
@@ -246,6 +259,7 @@ mod macos {
             msg_send![item, initWithTitle:title_ns action:sel!(onAction:) keyEquivalent:key_ns];
         let _: () = msg_send![item, setTarget: target];
         let _: () = msg_send![item, setTag: tag];
+        let _: () = msg_send![item, retain];
         item
     }
 
@@ -256,19 +270,25 @@ mod macos {
 
     pub fn run_tray(paths: Paths) -> Result<()> {
         unsafe {
-            let pool = NSAutoreleasePool::new(nil);
+            let _root_pool = NSAutoreleasePool::new(nil);
             let app = NSApp();
             app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+            let _: () = msg_send![app, finishLaunching];
 
             let target_obj: id = msg_send![target_class(), alloc];
             let target_obj: id = msg_send![target_obj, init];
+            let _: () = msg_send![target_obj, retain];
 
+            // 1. 顶部菜单栏 StatusItem
             let status_bar = NSStatusBar::systemStatusBar(nil);
             let status_item = status_bar.statusItemWithLength_(-1.0); // NSVariableStatusItemLength
+            let _: () = msg_send![status_item, retain];
             let button: id = msg_send![status_item, button];
+            let _: () = msg_send![button, retain];
 
             let menu: id = msg_send![class!(NSMenu), alloc];
             let menu: id = msg_send![menu, init];
+            let _: () = msg_send![menu, retain];
 
             let item_info = create_item("wocli-music", TAG_INFO, target_obj);
             let _: () = msg_send![item_info, setEnabled: NO];
@@ -306,7 +326,7 @@ mod macos {
             let item_vol_down = create_item("🔉 音量 -10%", TAG_VOL_DOWN, target_obj);
             let _: () = msg_send![menu, addItem: item_vol_down];
 
-            let item_lyrics_bar = create_item("💬 状态栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
+            let item_lyrics_bar = create_item("💬 任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
             let _: () = msg_send![menu, addItem: item_lyrics_bar];
 
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
@@ -323,9 +343,68 @@ mod macos {
             let init_title = NSString::alloc(nil).init_str("🎵 wocli");
             let _: () = msg_send![button, setTitle: init_title];
 
-            pool.drain();
+            // 2. 桌面 / 任务栏悬浮透明歌词窗口 (NSPanel)
+            let screen: id = msg_send![class!(NSScreen), mainScreen];
+            let (screen_w, _screen_h) = if screen != nil {
+                let f: NSRect = msg_send![screen, frame];
+                (f.size.width, f.size.height)
+            } else {
+                (1440.0, 900.0)
+            };
+
+            let bar_w = 800.0f64;
+            let bar_h = 56.0f64;
+            let bar_x = (screen_w - bar_w) / 2.0;
+            let bar_y = 60.0f64; // 悬浮于 macOS Dock 之上
+
+            let rect = NSRect::new(NSPoint::new(bar_x, bar_y), NSSize::new(bar_w, bar_h));
+            let lyrics_window: id = msg_send![class!(NSPanel), alloc];
+            let lyrics_window: id = msg_send![
+                lyrics_window,
+                initWithContentRect: rect
+                styleMask: NSWindowStyleMask::NSBorderlessWindowMask
+                backing: NSBackingStoreBuffered
+                defer: NO
+            ];
+            let _: () = msg_send![lyrics_window, retain];
+
+            let clear_color: id = msg_send![class!(NSColor), clearColor];
+            let _: () = msg_send![lyrics_window, setBackgroundColor: clear_color];
+            let _: () = msg_send![lyrics_window, setOpaque: NO];
+            let _: () = msg_send![lyrics_window, setHasShadow: NO];
+            let _: () = msg_send![lyrics_window, setLevel: 101]; // NSFloatingWindowLevel 置顶
+            let _: () = msg_send![lyrics_window, setIgnoresMouseEvents: YES]; // 鼠标点击穿透
+            let behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary;
+            let _: () = msg_send![lyrics_window, setCollectionBehavior: behavior];
+
+            let content_view: id = msg_send![lyrics_window, contentView];
+            let lyrics_label: id = msg_send![class!(NSTextField), alloc];
+            let label_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(bar_w, bar_h));
+            let lyrics_label: id = msg_send![lyrics_label, initWithFrame: label_rect];
+            let _: () = msg_send![lyrics_label, retain];
+
+            let _: () = msg_send![lyrics_label, setBezeled: NO];
+            let _: () = msg_send![lyrics_label, setDrawsBackground: NO];
+            let _: () = msg_send![lyrics_label, setEditable: NO];
+            let _: () = msg_send![lyrics_label, setSelectable: NO];
+            let font: id = msg_send![class!(NSFont), boldSystemFontOfSize: 22.0f64];
+            let _: () = msg_send![lyrics_label, setFont: font];
+            let text_color: id = msg_send![class!(NSColor), whiteColor];
+            let _: () = msg_send![lyrics_label, setTextColor: text_color];
+            let _: () = msg_send![lyrics_label, setAlignment: 1usize]; // 居中对齐
+
+            let shadow: id = msg_send![class!(NSShadow), alloc];
+            let shadow: id = msg_send![shadow, init];
+            let shadow_color: id = msg_send![class!(NSColor), colorWithSRGBRed:0.0f64 green:0.0f64 blue:0.0f64 alpha:0.85f64];
+            let _: () = msg_send![shadow, setShadowColor: shadow_color];
+            let _: () = msg_send![shadow, setShadowOffset: NSSize::new(1.0, -2.0)];
+            let _: () = msg_send![shadow, setShadowBlurRadius: 4.0f64];
+            let _: () = msg_send![lyrics_label, setShadow: shadow];
+            let _: () = msg_send![content_view, addSubview: lyrics_label];
 
             let mut last_title = String::new();
+            let mut last_bar_text = String::new();
             let mut current_mode = "list".to_string();
             let mut current_volume = 60u8;
             let mut lyrics_bar_enabled = true;
@@ -393,6 +472,7 @@ mod macos {
                             let _ = Command::new("osascript").args(["-e", &script]).spawn();
                         }
                         TAG_QUIT => {
+                            let _: () = msg_send![lyrics_window, orderOut: nil];
                             let _ = super::stop(&paths);
                             let _ = ipc::request(&paths, json!({"op":"shutdown"}), false);
                             break;
@@ -401,7 +481,7 @@ mod macos {
                     }
                 }
 
-                // 2. 轮询后台状态并刷新菜单与状态栏歌词
+                // 2. 轮询后台状态并刷新菜单、状态栏与悬浮歌词
                 if let Ok(Some(st)) = ipc::request(&paths, json!({"op":"status"}), false) {
                     let phase = st["phase"].as_str().unwrap_or("stopped");
                     let track = &st["track"];
@@ -445,7 +525,7 @@ mod macos {
                     set_item_title(
                         item_lyrics_bar,
                         &format!(
-                            "💬 状态栏歌词: {}",
+                            "💬 任务栏歌词: {}",
                             if lyrics_bar_enabled {
                                 "开启"
                             } else {
@@ -454,25 +534,50 @@ mod macos {
                         ),
                     );
 
-                    // 更新 macOS 菜单栏标题显示实时歌词
-                    let bar_title = if !lyrics_bar_enabled {
-                        "🎵".to_string()
-                    } else if phase == "playing" {
-                        if let Some(lyr) = active_lyr {
-                            format!("🎵 {lyr}")
-                        } else {
-                            format!("🎵 {title} · {artist}")
-                        }
+                    // 顶部菜单栏标题：精简显示，避免被 MacBook 刘海屏挤出屏幕
+                    let menu_bar_title = if phase == "playing" {
+                        let short_title: String = title.chars().take(12).collect();
+                        format!("🎵 {short_title}")
                     } else if phase == "paused" {
-                        format!("⏸ {title} · {artist}")
+                        let short_title: String = title.chars().take(12).collect();
+                        format!("⏸ {short_title}")
                     } else {
                         "🎵 wocli".to_string()
                     };
 
-                    if bar_title != last_title {
-                        let ns_title = NSString::alloc(nil).init_str(&bar_title);
+                    if menu_bar_title != last_title {
+                        let ns_title = NSString::alloc(nil).init_str(&menu_bar_title);
                         let _: () = msg_send![button, setTitle: ns_title];
-                        last_title = bar_title;
+                        last_title = menu_bar_title;
+                    }
+
+                    // 桌面/任务栏悬浮歌词条更新
+                    let bar_display = if !lyrics_bar_enabled {
+                        None
+                    } else if phase == "playing" || phase == "paused" {
+                        if let Some(lyr) = &active_lyr {
+                            Some(lyr.clone())
+                        } else {
+                            Some(format!("{title} · {artist}"))
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(text) = bar_display {
+                        if text != last_bar_text {
+                            let ns_lyr = NSString::alloc(nil).init_str(&text);
+                            let _: () = msg_send![lyrics_label, setStringValue: ns_lyr];
+                            last_bar_text = text;
+                        }
+                        let _: () = msg_send![lyrics_window, orderFrontRegardless];
+                    } else {
+                        if !last_bar_text.is_empty() {
+                            let empty = NSString::alloc(nil).init_str("");
+                            let _: () = msg_send![lyrics_label, setStringValue: empty];
+                            last_bar_text.clear();
+                        }
+                        let _: () = msg_send![lyrics_window, orderOut: nil];
                     }
                 } else {
                     set_item_title(item_status, "后台未运行");
@@ -481,6 +586,12 @@ mod macos {
                         let _: () = msg_send![button, setTitle: ns_title];
                         last_title = "🎵 wocli".to_string();
                     }
+                    if !last_bar_text.is_empty() {
+                        let empty = NSString::alloc(nil).init_str("");
+                        let _: () = msg_send![lyrics_label, setStringValue: empty];
+                        last_bar_text.clear();
+                    }
+                    let _: () = msg_send![lyrics_window, orderOut: nil];
                 }
 
                 // 3. 处理 Cocoa 事件（0.25 秒超时自动循环）

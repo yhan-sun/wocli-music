@@ -1,6 +1,14 @@
 # 更新日志
 
-## 0.2.3 — 2026-10-21
+## 0.2.4 — 2026-10-21
+
+- 修复 macOS Cocoa 状态栏 StatusItem 自动释放池回收导致图标消失的问题，显式持久化 `status_item`、`button`、`menu` 与事件目标。
+- 为 macOS 新增原生桌面 / 任务栏透明悬浮歌词条（`NSPanel` + `NSTextField`）：
+  - 悬浮于桌面下方（Dock 之上），鼠标完全穿透不遮挡点击，多桌面空间联动（`CanJoinAllSpaces`）。
+  - 大号加粗白色字体配合柔和半透明阴影，支持随 `wocli lyrics-bar [on|off|toggle]` 实时显隐。
+- 优化 macOS 状态栏标题长度限制，避免被 MacBook 刘海屏（Notch）挤出屏幕。
+- 增强 `install.ps1` 与 `install.sh`：Windows 默认关闭慢速控制台进度流并优先调用 `curl.exe`；macOS 自动执行 ad-hoc 签名彻底避免 Gatekeeper 137 SIGKILL。
+
 
 - 新增系统托盘小图标控制（macOS 状态栏 / Windows 通知区域）：支持播放/暂停、上一首、下一首、播放模式循环切换、音量调节与打开终端。
 - 新增系统任务栏 / 状态栏实时歌词显示：
