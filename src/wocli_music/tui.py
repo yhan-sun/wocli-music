@@ -11,7 +11,6 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
-    Footer,
     Input,
     OptionList,
     ProgressBar,
@@ -28,12 +27,15 @@ from .dialogs import (
     ConfirmDelete,
     DownloadDialog,
     DownloadList,
+    FolderActions,
     FolderPicker,
     LibraryPicker,
     ModePicker,
     NameDialog,
     QualityPicker,
+    ShortcutHelp,
     TrackActions,
+    VolumeDialog,
 )
 from .lyrics import current_line, parse_lrc
 from .models import MusicError, Track, clock
@@ -73,9 +75,10 @@ class MusicApp(App):
     #library > .option-list--option { padding: 0 1; }
     #library > .option-list--option-highlighted { background: #30452c; color: #d8ebba; }
     #library > .option-list--option-disabled { color: #72836b; }
-    #new-folder { height: 1; width: 1fr; background: #1c2b20; }
-    #folder-management { height: 1; display: none; }
-    #folder-management Button { width: 1fr; min-width: 6; height: 1; background: #1c2b20; }
+    #library-heading { height: 2; }
+    #library-heading Static { width: 1fr; }
+    #new-folder { min-width: 3; width: 3; background: transparent; color: #8fa482; }
+    #collection-menu { min-width: 3; width: 3; margin-left: 1; background: transparent; }
     #collection { width: 1fr; padding: 1 2 0 0; min-width: 24; }
     #view-heading { height: 1; }
     #view-title { width: 1fr; color: #d9e9c4; text-style: bold; }
@@ -86,21 +89,26 @@ class MusicApp(App):
     #search-button { width: 8; margin: 1 0 0 1; }
     #list-actions { height: 2; }
     #list-actions Button { min-width: 6; height: 1; margin: 0 1 0 0; }
-    #selection-bar { height: 2; padding-top: 1; }
-    #selection-label { width: 1fr; color: #8fa482; }
-    #selection-bar Button { margin-left: 1; }
+    #list-actions-spacer { width: 1fr; }
+    #now-heading Static { width: 1fr; }
+    #now-menu { min-width: 6; background: transparent; color: #8fa482; }
+    #lyrics-recovery { height: auto; max-height: 2; margin-top: 1; }
+    #lyrics-status { width: 1fr; height: auto; max-height: 2; color: #8fa482; }
+    #retry-lyrics { min-width: 6; }
     #notice { height: auto; max-height: 4; color: #dfa38a; margin-top: 1; }
     #retry-actions { height: 2; padding-top: 1; }
     #retry-actions Button { margin-right: 1; }
-    #now-actions { height: 2; }
-    #now-actions Button { margin-right: 1; }
-    #lyrics-status { height: auto; max-height: 2; color: #8fa482; }
     #now-close { display: none; }
     .lyrics-focused #collection, .lyrics-focused #sidebar { display: none; }
     .lyrics-focused #now { display: block; width: 1fr; }
     .lyrics-focused #now-close { display: block; }
-    #current-song { height: 1; color: #d4e6bd; }
-    #activity { height: 1; color: #93aa87; }
+    #current-song { width: 1fr; height: 1; color: #d4e6bd; margin-right: 2; text-overflow: ellipsis; text-wrap: nowrap; }
+    #player-row { height: 1; }
+    #audio-quality { width: auto; min-width: 6; color: #829b87; margin-left: 2; text-align: right; }
+    #key-hints { height: 1; padding: 0 2; color: #71846a; }
+    #key-hints Static { width: 1fr; }
+    #help-open { width: 8; background: transparent; color: #8fa482; }
+    #controls { width: auto; height: 1; }
     #play-all { background: #bddb92; color: #152014; }
     #results { height: 1fr; background: #121b16; }
     DataTable > .datatable--header { background: #1e2c20; color: #8fa482; text-style: none; }
@@ -117,35 +125,35 @@ class MusicApp(App):
     #song-title { height: auto; max-height: 3; text-style: bold; color: #d6e9b5; margin-bottom: 1; }
     #song-meta { height: auto; max-height: 4; color: #94ab91; }
     #lyrics { height: 1fr; padding-top: 1; content-align: center middle; }
-    #hint { height: 1; color: #71846a; }
-    #transport { height: 5; padding: 0 2; background: #1e2e22; }
+    #transport { height: 3; padding: 1 2 0 2; background: #1a281e; }
     #time-row { height: 1; }
     #elapsed, #duration { width: 6; color: #a8be96; }
     #timeline { width: 1fr; padding: 0 1; }
     #timeline Bar { width: 1fr; }
     #timeline > .bar--bar { color: #bddb92; }
-    #controls { height: 1; }
     #controls Button { height: 1; margin-right: 1; }
+    #previous, #next { width: 3; min-width: 3; background: transparent; }
+    #play-pause { width: 6; min-width: 6; }
     #play-pause { background: #bddb92; color: #152014; }
     #favorite { min-width: 3; }
     #play-mode { min-width: 13; }
-    #volume-down, #volume-up { min-width: 3; }
-    #volume-label { width: 5; text-align: center; }
-    #playback-message { width: 1fr; margin-left: 1; color: #a8be96; }
-    Footer { background: #121b16; }
+    #volume-label { width: 6; min-width: 5; color: #93aa87; background: transparent; }
     .narrow #now { display: none; }
     .narrow.lyrics-focused #now { display: block; width: 1fr; }
     .narrow #collection { padding-right: 0; }
     .compact #lyrics { padding-top: 0; }
     .compact #song-title { margin-bottom: 0; }
     .compact #sidebar { width: 18; }
-    .compact #connection, .compact #playback-message { display: none; }
+    .compact #connection { display: none; }
     .tiny #library-open { display: block; }
-    .tiny #sidebar, .tiny #quality, .tiny #volume-down, .tiny #volume-up,
-    .tiny #volume-label { display: none; }
+    .tiny #sidebar, .tiny #quality, .tiny #favorite { display: none; }
+    .tiny #key-hints { padding: 0 1; }
     .tiny #body, .tiny #masthead, .tiny #transport { padding-left: 1; padding-right: 1; }
     """
     BINDINGS = [
+        Binding("question_mark", "help", "帮助", show=False),
+        Binding("plus,equals", "volume_up", "音量 +", show=False),
+        Binding("minus", "volume_down", "音量 -", show=False),
         Binding("ctrl+f,slash", "search", "搜索"),
         Binding("space", "play_or_toggle", "播放/暂停"),
         Binding("x", "track_menu", "歌曲操作"),
@@ -219,16 +227,15 @@ class MusicApp(App):
             yield Static("无需登录 · 本地曲库", id="connection")
         with Horizontal(id="body"):
             with Vertical(id="sidebar"):
-                yield Static("音 乐 库", classes="eyebrow")
+                with Horizontal(id="library-heading"):
+                    yield Static("音 乐 库")
+                    yield Button("+", id="new-folder")
                 yield OptionList(id="library")
-                yield Button("＋ 新建收藏夹", id="new-folder")
-                with Horizontal(id="folder-management"):
-                    yield Button("重命名", id="rename-folder")
-                    yield Button("删除", id="delete-folder")
             with Vertical(id="collection"):
                 with Horizontal(id="view-heading"):
                     yield Static("我喜欢", id="view-title")
                     yield Static("", id="view-count")
+                    yield Button("⋯", id="collection-menu")
                 yield Static("把喜欢的歌留下来。", id="list-status")
                 with Horizontal(id="searchbar"):
                     yield Input(placeholder="歌名 / 歌手，Enter 搜索 · Esc 返回", id="search")
@@ -236,6 +243,9 @@ class MusicApp(App):
                 with Horizontal(id="list-actions"):
                     yield Button("▶ 播放全部", id="play-all")
                     yield Button("随机播放", id="play-shuffled")
+                    yield Static("", id="list-actions-spacer")
+                    yield Button("下载", id="download-selected")
+                    yield Button("操作", id="track-menu")
                 yield SongTable(id="results", cursor_type="row")
                 with Vertical(id="empty"):
                     yield Static("还没有喜欢的歌", id="empty-title")
@@ -245,13 +255,10 @@ class MusicApp(App):
                     yield Button("上一页", id="page-prev")
                     yield Static("—", id="page")
                     yield Button("下一页", id="page-next")
-                with Horizontal(id="selection-bar"):
-                    yield Static("选择一首歌", id="selection-label")
-                    yield Button("下载 d", id="download-selected")
-                    yield Button("操作 x", id="track-menu")
             with Vertical(id="now"):
-                with Horizontal(classes="eyebrow"):
+                with Horizontal(classes="eyebrow", id="now-heading"):
                     yield Static("正 在 播 放")
+                    yield Button("操作", id="now-menu")
                     yield Button("返回 v", id="now-close")
                 yield Static("留一点时间给音乐。", id="song-title")
                 yield Static("选择歌曲，按 Enter 播放。", id="song-meta")
@@ -260,30 +267,28 @@ class MusicApp(App):
                     yield Button("重试音源", id="retry-audio")
                     yield Button("换音质", id="retry-best")
                     yield Button("跳过", id="skip-error")
+                with Horizontal(id="lyrics-recovery"):
+                    yield Static("", id="lyrics-status")
+                    yield Button("重试", id="retry-lyrics")
                 yield Static("歌词会随着音乐在这里出现。", id="lyrics")
-                yield Static("", id="lyrics-status")
-                with Horizontal(id="now-actions"):
-                    yield Button("重试歌词", id="retry-lyrics")
-                    yield Button("下载此曲", id="download-current")
-                yield Static("v 展开歌词 · l 刷新 · 退出后继续播放", id="hint")
         with Vertical(id="transport"):
-            yield Static("还没有开始播放 · Enter 播放选中的歌", id="current-song")
+            with Horizontal(id="player-row"):
+                yield Static("尚未播放", id="current-song")
+                with Horizontal(id="controls"):
+                    yield Button("‹", id="previous")
+                    yield Button("播放", id="play-pause")
+                    yield Button("›", id="next")
+                    yield Button("♡", id="favorite")
+                    yield Button(MODE_LABELS[self.settings.values["mode"]] + " ▾", id="play-mode")
+                    yield Button(f"{self.settings.values['volume']}%", id="volume-label")
             with Horizontal(id="time-row"):
                 yield Static("00:00", id="elapsed")
                 yield ProgressBar(total=100, show_eta=False, show_percentage=False, id="timeline")
                 yield Static("00:00", id="duration")
-            with Horizontal(id="controls"):
-                yield Button("上一首", id="previous")
-                yield Button("播放", id="play-pause")
-                yield Button("下一首", id="next")
-                yield Button("♡", id="favorite")
-                yield Button(MODE_LABELS[self.settings.values["mode"]] + " ▾", id="play-mode")
-                yield Button("−", id="volume-down")
-                yield Static("60%", id="volume-label")
-                yield Button("+", id="volume-up")
-                yield Static("就绪", id="playback-message")
-            yield Static("", id="activity")
-        yield Footer()
+                yield Static("", id="audio-quality")
+        with Horizontal(id="key-hints"):
+            yield Static("/ 搜索   空格 播放   x 操作   q 退出")
+            yield Button("? 帮助", id="help-open")
 
     def on_mount(self):
         self.resize_tables()
@@ -299,6 +304,12 @@ class MusicApp(App):
             "favorite": "喜欢当前播放的歌曲",
             "retry-best": "选择其他音质并重新解析当前歌曲",
             "now-open": "展开当前播放与歌词 (v)",
+            "now-menu": "当前歌曲：喜欢、收藏、下载与刷新歌词",
+            "new-folder": "新建收藏夹 (n)",
+            "collection-menu": "收藏夹管理",
+            "previous": "上一首 (Ctrl+←)",
+            "next": "下一首 (Ctrl+→)",
+            "volume-label": "点击调整音量；+ / - 快捷调整",
         }.items():
             self.query_one(f"#{identity}").tooltip = tooltip
         self.render_context()
@@ -484,7 +495,7 @@ class MusicApp(App):
         )
         self.query_one("#page-prev", Button).disabled = self.page == 0
         self.query_one("#page-next", Button).disabled = (self.page + 1) * 20 >= self.total
-        self.query_one("#folder-management").display = view.startswith("playlist:")
+        self.query_one("#collection-menu").display = view.startswith("playlist:")
         for identity in ("play-all", "play-shuffled"):
             self.query_one(f"#{identity}", Button).disabled = not tracks
         self.fill_table("results", tracks)
@@ -609,7 +620,9 @@ class MusicApp(App):
 
     def action_library(self):
         def choose(view):
-            if view:
+            if view == "create-folder":
+                self.action_new_folder()
+            elif view:
                 self.show_view(view)
                 self.query_one("#results").focus()
 
@@ -718,6 +731,36 @@ class MusicApp(App):
             return
         self.refresh_library()
 
+    def action_help(self):
+        self.push_screen(ShortcutHelp())
+
+    def action_folder_menu(self):
+        if not self.active_view.startswith("playlist:"):
+            return
+
+        def choose(action):
+            if action == "rename":
+                self.action_rename_folder()
+            elif action == "delete":
+                self.delete_folder()
+
+        self.push_screen(FolderActions(self.active_view.removeprefix("playlist:")), choose)
+
+    def action_volume(self):
+        value = self.state["volume"] if self.state else self.settings.values["volume"]
+        self.push_screen(
+            VolumeDialog(value),
+            lambda value: self.control("volume", value=value) if value is not None else None,
+        )
+
+    def action_volume_up(self):
+        value = self.state["volume"] if self.state else self.settings.values["volume"]
+        self.control("volume", value=min(100, value + 5))
+
+    def action_volume_down(self):
+        value = self.state["volume"] if self.state else self.settings.values["volume"]
+        self.control("volume", value=max(0, value - 5))
+
     def action_mode(self):
         mode = self.state["mode"] if self.state else self.settings.values["mode"]
         self.push_screen(
@@ -728,8 +771,11 @@ class MusicApp(App):
     def button_pressed(self, event):
         actions = {
             "track-menu": self.action_track_menu,
+            "now-menu": lambda: self.action_track_menu(current=True),
+            "collection-menu": self.action_folder_menu,
+            "help-open": self.action_help,
+            "volume-label": self.action_volume,
             "download-selected": self.action_download,
-            "download-current": lambda: self.action_download(current=True),
             "download-jobs": self.action_downloads,
             "now-open": self.action_now,
             "now-close": self.action_now,
@@ -743,8 +789,6 @@ class MusicApp(App):
             "search-button": self.start_search,
             "play-pause": self.action_play_or_toggle,
             "new-folder": self.action_new_folder,
-            "rename-folder": self.action_rename_folder,
-            "delete-folder": self.delete_folder,
             "play-mode": self.action_mode,
         }
         identity = event.button.id
@@ -762,11 +806,6 @@ class MusicApp(App):
         elif identity == "favorite":
             self.toggle_favorite(
                 Track.from_data(self.state["track"]) if self.state and self.state["track"] else None
-            )
-        elif identity in ("volume-down", "volume-up"):
-            value = self.state["volume"] if self.state else self.settings.values["volume"]
-            self.control(
-                "volume", value=max(0, min(100, value + (5 if identity == "volume-up" else -5)))
             )
 
     def toggle_favorite(self, track):
@@ -819,19 +858,13 @@ class MusicApp(App):
         if not self.query("#results"):
             return
         track = self.selected()
-        self.query_one("#selection-label", Static).update(
-            Text(
-                f"{track.title} · {track.artist}"
-                if track
-                else "Enter 播放选中项 · 空格控制当前播放"
-            )
-        )
         self.query_one("#track-menu", Button).disabled = not track
         self.query_one("#download-selected", Button).disabled = not track or bool(track.path)
         if self.state is None:
             self.query_one("#notice").display = False
             self.query_one("#retry-actions").display = False
-            for identity in ("retry-lyrics", "download-current", "previous", "next", "favorite"):
+            self.query_one("#lyrics-recovery").display = False
+            for identity in ("retry-lyrics", "now-menu", "previous", "next", "favorite"):
                 self.query_one(f"#{identity}", Button).disabled = True
 
     def render_now_status(self, state):
@@ -845,15 +878,22 @@ class MusicApp(App):
             "stopped": "已停止",
         }[phase]
         self.query_one("#current-song", Static).update(
-            Text(
-                f"{label} · {track['title']} / {track['artist']}"
-                if track
-                else "Enter 播放选中的歌 · 空格播放 / 暂停"
-            )
+            Text(f"{track['title']} · {track['artist']}" if track else "尚未播放")
+        )
+        self.query_one("#current-song").tooltip = (
+            f"{label} · {track['title']} / {track['artist']}"
+            if track
+            else "选择歌曲，按 Enter 播放"
         )
         self.query_one("#play-pause", Button).disabled = False
         if phase == "loading":
-            self.query_one("#play-pause", Button).label = "取消加载"
+            self.query_one("#play-pause", Button).label = "取消"
+        if phase == "loading":
+            self.query_one("#audio-quality", Static).update(
+                "重试中" if state.get("retry_attempt", 1) > 1 else "解析中"
+            )
+        elif phase == "error":
+            self.query_one("#audio-quality", Static).update("失败")
         self.query_one("#notice").display = phase == "error"
         self.query_one("#retry-actions").display = phase == "error"
         if phase == "error":
@@ -867,7 +907,7 @@ class MusicApp(App):
         for identity in (
             "retry-audio",
             "retry-best",
-            "download-current",
+            "now-menu",
             "previous",
             "next",
             "favorite",
@@ -875,15 +915,14 @@ class MusicApp(App):
             self.query_one(f"#{identity}", Button).disabled = not track or (
                 identity.startswith("retry") and phase == "loading"
             )
-        self.query_one("#download-current", Button).disabled = not track or bool(track.get("path"))
         loading = state.get("lyrics_status") == "loading"
         self.query_one("#retry-lyrics", Button).disabled = not track or loading
-        self.query_one("#retry-lyrics", Button).label = (
-            "歌词获取中" if loading else "刷新歌词" if self.lyric_lines else "重试歌词"
+        self.query_one("#lyrics-recovery").display = (
+            bool(track)
+            and not loading
+            and bool(state.get("lyrics_error") or state.get("lyrics_status") == "unavailable")
         )
-        self.query_one("#lyrics-status", Static).update(
-            "歌词获取中，不影响播放…" if loading else state.get("lyrics_error", "")
-        )
+        self.query_one("#lyrics-status", Static).update(state.get("lyrics_error") or "暂无匹配歌词")
         jobs = state.get("downloads", [])
         active = [
             job for job in jobs if job["phase"] in ("queued", "resolving", "downloading", "lyrics")
@@ -896,17 +935,13 @@ class MusicApp(App):
                 if job["phase"] == "downloading"
                 else ""
             )
-            activity = f"↓ {job['track']['title']} · {DOWNLOAD_PHASES[job['phase']]}{detail} · 顶部「下载」查看"
+            description = f"{job['track']['title']} · {DOWNLOAD_PHASES[job['phase']]}{detail}"
         elif jobs:
             job = jobs[-1]
-            activity = f"↓ {DOWNLOAD_PHASES[job['phase']]} · {job.get('error') or job.get('warning') or job.get('path') or job['track']['title']}"
+            description = f"{DOWNLOAD_PHASES[job['phase']]} · {job.get('error') or job.get('warning') or job.get('path')}"
         else:
-            activity = (
-                "Enter 播放选中 · x 歌曲操作 · d 下载 · v 展开歌词"
-                if phase != "error"
-                else "Ctrl+R 重试当前音源 · v 查看失败原因和其他操作"
-            )
-        self.query_one("#activity", Static).update(Text(activity))
+            description = "查看下载任务、进度和保存位置"
+        self.query_one("#download-jobs").tooltip = description
 
     def action_now(self):
         self.lyrics_focused = not self.lyrics_focused
@@ -933,17 +968,21 @@ class MusicApp(App):
             return Track.from_data(current) if current else None
         return self.selected()
 
-    def action_track_menu(self):
-        track = self.context_track()
+    def action_track_menu(self, *, current=False):
+        current_context = current or self.lyrics_focused
+        data = (self.state or {}).get("track")
+        track = Track.from_data(data) if current_context and data else self.context_track()
         if not track:
             return
         index = self.query_one("#results", DataTable).cursor_row
-        removable = not self.lyrics_focused and (
+        removable = not current_context and (
             self.active_view in ("favorites", "queue") or self.active_view.startswith("playlist:")
         )
 
         def choose(action):
-            if action == "play" and self.lyrics_focused:
+            if action == "lyrics":
+                self.action_refresh_lyrics()
+            elif action == "play" and current_context:
                 self.control("retry")
             elif action == "play":
                 self.query_one("#results", DataTable).move_cursor(row=index)
@@ -961,7 +1000,13 @@ class MusicApp(App):
                 self.action_remove_track()
 
         self.push_screen(
-            TrackActions(track, liked=self.store.is_favorite(track.id), removable=removable), choose
+            TrackActions(
+                track,
+                liked=self.store.is_favorite(track.id),
+                removable=removable,
+                current=current_context,
+            ),
+            choose,
         )
 
     def action_download(self, *, track=None, current=False):
@@ -1006,7 +1051,7 @@ class MusicApp(App):
                 self.query_one("#connection", Static).update("无需登录 · 本地曲库")
                 if self.state:
                     self.state = None
-                    self.query_one("#playback-message", Static).update("后台服务已关闭")
+                    self.query_one("#audio-quality", Static).update("未连接")
                     self.query_one("#play-pause", Button).label = "播放"
         except MusicError:
             if self.query("#connection"):
@@ -1052,17 +1097,8 @@ class MusicApp(App):
             "♥" if track and self.store.is_favorite(track["id"]) else "♡"
         )
         self.query_one("#play-mode", Button).label = MODE_LABELS[state["mode"]] + " ▾"
-        self.query_one("#volume-label", Static).update(f"{state['volume']}%")
-        message = {
-            "loading": "正在重试音源 (2/2)…"
-            if state.get("retry_attempt", 1) > 1
-            else "正在解析音源…",
-            "playing": f"正在播放 · {state['quality']}",
-            "paused": "已暂停",
-            "stopped": "已停止",
-            "error": state["error"].split("。", 1)[0],
-        }[state["phase"]]
-        self.query_one("#playback-message", Static).update(Text(message))
+        self.query_one("#volume-label", Button).label = f"{state['volume']}%"
+        self.query_one("#audio-quality", Static).update(state.get("quality", ""))
         self.last_error = state["error"]
         self.render_now_status(state)
         if state["queue"] != self.last_queue:
@@ -1091,7 +1127,7 @@ class MusicApp(App):
                 elif state["phase"] == "stopped":
                     text = "播放已停止。"
                 else:
-                    text = state.get("lyrics_error") or "暂未找到匹配歌词。\n按 l 重新获取。"
+                    text = ""  # Recovery text and retry live together above the lyrics.
                 self.query_one("#lyrics", Static).update(
                     Text(text, style="#789081", justify="center")
                 )

@@ -97,7 +97,7 @@ async def test_tui_replaces_lyric_loading_when_playback_fails(paths, service, tr
         service.index = 0
         service.phase = "loading"
         app.render_state(service.status())
-        assert "解析中" in str(app.query_one("#current-song", Static).render())
+        assert str(app.query_one("#play-pause").label) == "取消"
         service.phase = "error"
         service.error = "该版本仅返回试听或不完整音频，未获取到可播放的完整版。"
         service.error_code = "incomplete_audio"
@@ -122,7 +122,8 @@ async def test_lyric_loading_and_unavailable_are_distinct_states(paths, service,
         assert "正在加载歌词" in str(app.query_one("#lyrics", Static).render())
         service.lyrics_status = "unavailable"
         app.render_state(service.status())
-        assert "暂未找到" in str(app.query_one("#lyrics", Static).render())
+        assert "暂无匹配" in str(app.query_one("#lyrics-status", Static).render())
+        assert app.query_one("#lyrics-recovery").display
 
 
 async def test_refresh_lyrics_while_playing_updates_display_without_changing_playback(
@@ -526,7 +527,7 @@ async def test_loading_transport_can_cancel_without_late_playback(paths, service
             await service.dispatch({"op": "play", "tracks": [tracks[0].data()]})
             app.state = service.status()
             app.render_state(app.state)
-            assert str(app.query_one("#play-pause").label) == "取消加载"
+            assert str(app.query_one("#play-pause").label) == "取消"
             assert await asyncio.to_thread(entered.wait, 1)
             await pilot.click("#play-pause")
             await pilot.pause()
@@ -558,3 +559,67 @@ async def test_quality_picker_retries_current_without_replacing_queue(paths, ser
         assert service.current == tracks[1]
         assert service.queue == tracks
         assert service.requested_quality == "128k"
+
+
+@pytest.mark.parametrize("size", [(123, 41), (80, 26), (60, 24)])
+async def test_quiet_player_rows_volume_and_help_remain_usable(paths, service, tracks, size):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    service.queue, service.index = tracks, 1
+    service.phase = "paused"
+    service.actual_quality = "320k"
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        current = app.query_one("#current-song")
+        for identity in ("previous", "play-pause", "next", "play-mode", "volume-label"):
+            button = app.query_one(f"#{identity}")
+            assert button.region.y == current.region.y
+            assert button.region.right <= size[0]
+        assert app.query_one("#time-row").region.y == current.region.y + 1
+        await pilot.click("#volume-label")
+        await pilot.pause()
+        app.screen.query_one("#volume-input", Input).value = "37"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert service.settings.values["volume"] == 37
+        await pilot.press("plus")
+        await pilot.pause()
+        assert service.settings.values["volume"] == 42
+        await pilot.click("#help-open")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ == "ShortcutHelp"
+        assert app.screen.query_one("#help-close").region.bottom <= size[1]
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_current_song_menu_targets_playing_track_and_folder_management_menu(
+    paths, service, tracks
+):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.store.add_to_playlist("通勤", tracks[0])
+    service.queue, service.index = tracks, 1
+    service.phase = "paused"
+    async with app.run_test(size=(123, 41)) as pilot:
+        app.show_view("playlist:通勤")
+        await pilot.pause()
+        await pilot.click("#now-menu")
+        await pilot.pause()
+        options = app.screen.query_one("#track-options")
+        assert options.get_option_at_index(4).id == "lyrics"
+        options.highlighted = 2
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.store.is_favorite(tracks[1].id)
+        assert not app.store.is_favorite(tracks[0].id)
+        await pilot.click("#collection-menu")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ == "NameDialog"
+        app.screen.query_one("#folder-name", Input).value = "路上"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.active_view == "playlist:路上"
+        assert app.store.playlist("路上") == [tracks[0]]

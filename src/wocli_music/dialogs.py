@@ -24,7 +24,7 @@ MODE_DESCRIPTIONS = {
 }
 
 DIALOG_CSS = """
-NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker, TrackActions, DownloadDialog, DownloadList, QualityPicker { align: center middle; background: #0c1410 80%; }
+NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker, TrackActions, DownloadDialog, DownloadList, QualityPicker, FolderActions, VolumeDialog, ShortcutHelp { align: center middle; background: #0c1410 80%; }
 .dialog { width: 62; max-width: 94%; height: auto; max-height: 92%;
     background: #1a2720; border: round #627d58; padding: 1 2; }
 .dialog-title { height: auto; text-style: bold; color: #d5e8b4; margin-bottom: 1; }
@@ -46,6 +46,7 @@ DownloadDialog .dialog-actions { height: 1; margin-top: 1; }
 DownloadDialog Select { height: 1; margin-bottom: 1; }
 #download-quality SelectCurrent { height: 1; border: none; }
 DownloadDialog Checkbox { height: 1; margin-bottom: 1; }
+ShortcutHelp .dialog-actions { height: 1; margin-top: 1; }
 """
 
 
@@ -274,6 +275,7 @@ class LibraryPicker(ModalScreen[str | None]):
                     Option(Text(folder["name"]), id="playlist:" + folder["name"])
                     for folder in self.folders
                 ],
+                Option("＋ 新建收藏夹…", id="create-folder"),
                 id="view-options",
             )
             yield Static("↑ ↓ 选择 · Enter 打开 · Esc 返回", classes="dialog-footer")
@@ -293,20 +295,23 @@ class TrackActions(ModalScreen[str | None]):
     CSS = DIALOG_CSS
     BINDINGS = [("escape", "cancel", "返回")]
 
-    def __init__(self, track, *, liked=False, removable=False):
+    def __init__(self, track, *, liked=False, removable=False, current=False):
         super().__init__()
         self.track, self.liked, self.removable = track, liked, removable
+        self.current = current
 
     def compose(self):
         with Vertical(classes="dialog"):
             yield Static(Text(self.track.title), classes="dialog-title")
             yield Static(Text(self.track.artist), classes="dialog-caption")
             options = [
-                Option("▶  从这首开始播放", id="play"),
+                Option("▶  重新播放" if self.current else "▶  从这首开始播放", id="play"),
                 Option("＋  加入播放队列", id="enqueue"),
                 Option("♥  取消喜欢" if self.liked else "♡  标记喜欢", id="like"),
                 Option("□  收藏到…", id="collect"),
             ]
+            if self.current:
+                options.append(Option("↻  刷新歌词 (l)", id="lyrics"))
             if not self.track.path:
                 options.append(Option("↓  下载音频与歌词…", id="download"))
             if self.removable:
@@ -515,3 +520,98 @@ class QualityPicker(ModalScreen[str | None]):
 
     def action_cancel(self):
         self.dismiss(None)
+
+
+class FolderActions(ModalScreen[str | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "返回")]
+
+    def __init__(self, folder):
+        super().__init__()
+        self.folder = folder
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static(Text(self.folder), classes="dialog-title")
+            yield OptionList(
+                Option("重命名收藏夹", id="rename"),
+                Option("删除收藏夹…", id="delete"),
+                id="folder-actions",
+            )
+
+    def on_mount(self):
+        self.query_one(OptionList).focus()
+
+    @on(OptionList.OptionSelected)
+    def selected(self, event):
+        self.dismiss(event.option.id)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class VolumeDialog(ModalScreen[int | None]):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "返回")]
+
+    def __init__(self, value):
+        super().__init__()
+        self.value = value
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static("播放音量", classes="dialog-title")
+            yield Static(
+                "输入 0–100，Enter 应用。平时也可按 + / - 调整。", classes="dialog-caption"
+            )
+            yield Input(value=str(self.value), type="integer", id="volume-input")
+            yield Static("", id="dialog-error", classes="dialog-error")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("取消", id="cancel")
+                yield Button("应用", id="apply-volume", classes="primary")
+
+    def on_mount(self):
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted)
+    def submit(self):
+        self.commit()
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        self.commit() if event.button.id == "apply-volume" else self.dismiss(None)
+
+    def commit(self):
+        try:
+            value = int(self.query_one(Input).value)
+            if not 0 <= value <= 100:
+                raise ValueError
+        except ValueError:
+            self.query_one("#dialog-error", Static).update("音量应为 0–100 的整数")
+            return
+        self.dismiss(value)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class ShortcutHelp(ModalScreen):
+    CSS = DIALOG_CSS
+    BINDINGS = [("escape,question_mark", "cancel", "返回")]
+
+    def compose(self):
+        with Vertical(classes="dialog"):
+            yield Static("键盘操作", classes="dialog-title")
+            yield Static(
+                "Enter / 双击   播放选中的歌曲\n空格           暂停 / 继续；加载中取消\n/              搜索，Esc 返回\nx              所选歌曲操作\nf / c          喜欢 / 收藏到…\nd              下载歌曲\nv / l          展开歌词 / 刷新歌词\nm              播放方式\n+ / -          调整音量\nCtrl+← / →     上一首 / 下一首\nCtrl+R         重试当前音源\nb / n / r      曲库 / 新建夹 / 重命名夹\nDelete         移出当前列表\nq / Ctrl+Q     退出界面，音乐继续播放",
+                id="shortcut-list",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("返回", id="help-close", classes="primary")
+
+    @on(Button.Pressed)
+    def pressed(self):
+        self.dismiss()
+
+    def action_cancel(self):
+        self.dismiss()
