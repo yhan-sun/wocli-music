@@ -90,6 +90,31 @@ def main():
             song = Path("/work/test.wav")
 
         def cli(*arguments):
+            if is_windows:
+                stdout_file = root / "stdout.tmp"
+                stderr_file = root / "stderr.tmp"
+                with stdout_file.open("w", encoding="utf8") as out, stderr_file.open("w", encoding="utf8") as err:
+                    result = subprocess.run(
+                        [*prefix, str(executable), *arguments],
+                        cwd=root,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out,
+                        stderr=err,
+                        timeout=30,
+                    )
+                stdout = stdout_file.read_text(encoding="utf8", errors="replace").strip()
+                stderr = stderr_file.read_text(encoding="utf8", errors="replace").strip()
+                if result.returncode:
+                    diagnostics = []
+                    for name in ("service-rust.log",):
+                        log = root / "data" / name
+                        if log.is_file():
+                            diagnostics.append(name + ":\n" + log.read_text(errors="replace")[-4000:])
+                    raise RuntimeError(
+                        f"{arguments}: {stderr}\n{stdout}\n" + "\n".join(diagnostics)
+                    )
+                return stdout
             result = subprocess.run(
                 [*prefix, str(executable), *arguments],
                 cwd=root,

@@ -169,19 +169,19 @@ pub fn exchange(mut stream: Stream, value: Value) -> Result<Value> {
 }
 
 pub fn start(paths: &Paths) -> Result<()> {
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.home.join("service-rust.log"))?;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("__daemon")
-        .env("WOCLI_HOME", &paths.home)
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
     #[cfg(unix)]
     {
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(paths.home.join("service-rust.log"))?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("__daemon")
+            .env("WOCLI_HOME", &paths.home)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
         use std::os::unix::process::CommandExt;
         unsafe {
             command.pre_exec(|| {
@@ -192,26 +192,39 @@ pub fn start(paths: &Paths) -> Result<()> {
                 }
             });
         }
+        let mut child = command.spawn()?;
+        for _ in 0..600 {
+            if connect(paths).is_ok() {
+                return Ok(());
+            }
+            if child.try_wait()?.is_some_and(|status| !status.success()) {
+                return Err(Error::new(format!(
+                    "后台服务启动失败：{}",
+                    paths.home.join("service-rust.log").display()
+                )));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
-    }
-    let mut child = command.spawn()?;
-    for _ in 0..600 {
-        if connect(paths).is_ok() {
-            return Ok(());
+        let exe = std::env::current_exe()?;
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "start", "/b", ""])
+            .arg(&exe)
+            .arg("__daemon")
+            .env("WOCLI_HOME", &paths.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn()?;
+        let _ = child.wait();
+        for _ in 0..600 {
+            if connect(paths).is_ok() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(50));
         }
-        if child.try_wait()?.is_some_and(|status| !status.success()) {
-            return Err(Error::new(format!(
-                "后台服务启动失败：{}",
-                paths.home.join("service-rust.log").display()
-            )));
-        }
-        thread::sleep(Duration::from_millis(50));
     }
     Err(Error::new("后台服务启动超时"))
 }
