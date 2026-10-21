@@ -9,6 +9,20 @@ description = "无需登录的酷我终端音乐播放器"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["rich>=14,<16", "textual>=6,<7"]
+keywords = ["music", "cli", "tui", "kuwo", "mpv"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+
+[project.urls]
+Homepage = "https://github.com/yhan-sun/wocli-music"
+Documentation = "https://github.com/yhan-sun/wocli-music#readme"
+Issues = "https://github.com/yhan-sun/wocli-music/issues"
+Releases = "https://github.com/yhan-sun/wocli-music/releases"
 
 [project.scripts]
 wocli = "wocli_music.cli:main"
