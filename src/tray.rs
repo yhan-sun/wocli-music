@@ -350,7 +350,7 @@ mod macos {
             if symbol_img != nil {
                 let _: () = msg_send![symbol_img, setTemplate: YES];
                 let _: () = msg_send![button, setImage: symbol_img];
-                let _: () = msg_send![button, setImagePosition: 3usize]; // NSImageLeading
+                let _: () = msg_send![button, setImagePosition: 2usize]; // NSImageLeft
             }
 
             let init_title = NSString::alloc(nil).init_str("wocli");
@@ -548,13 +548,42 @@ mod macos {
                         ),
                     );
 
-                    // 顶部菜单栏标题：精简显示，避免被 MacBook 刘海屏挤出屏幕
+                    // 顶部菜单栏标题：实时呈现当前唱到的歌词（未唱到歌词或间奏时显示歌名·歌手）
                     let menu_bar_title = if phase == "playing" {
-                        let short_title: String = title.chars().take(12).collect();
-                        short_title
+                        if let Some(lyr) = &active_lyr {
+                            let count = lyr.chars().count();
+                            if count > 25 {
+                                format!("{}…", lyr.chars().take(24).collect::<String>())
+                            } else {
+                                lyr.clone()
+                            }
+                        } else {
+                            let fallback = format!("{title} · {artist}");
+                            if fallback.chars().count() > 25 {
+                                format!("{}…", fallback.chars().take(24).collect::<String>())
+                            } else {
+                                fallback
+                            }
+                        }
                     } else if phase == "paused" {
-                        let short_title: String = title.chars().take(12).collect();
-                        format!("{short_title} (暂停)")
+                        if let Some(lyr) = &active_lyr {
+                            let count = lyr.chars().count();
+                            let truncated = if count > 20 {
+                                format!("{}…", lyr.chars().take(19).collect::<String>())
+                            } else {
+                                lyr.clone()
+                            };
+                            format!("{truncated} (暂停)")
+                        } else {
+                            let fallback = format!("{title} (暂停)");
+                            if fallback.chars().count() > 20 {
+                                format!("{}…", fallback.chars().take(19).collect::<String>())
+                            } else {
+                                fallback
+                            }
+                        }
+                    } else if phase == "loading" {
+                        format!("{title} (加载中)")
                     } else {
                         "wocli".to_string()
                     };
