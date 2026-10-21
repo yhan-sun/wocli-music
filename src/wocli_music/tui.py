@@ -103,6 +103,8 @@ class MusicApp(App):
     #audio-quality { width: auto; min-width: 6; color: #829b87; margin-left: 2; text-align: right; }
     #controls { width: auto; height: 1; }
     #play-all { background: transparent; color: #bddb92; }
+    #collect, #now-collect { min-width: 8; background: transparent; color: #bddb92; }
+    #now-collect { margin-right: 1; }
     #track-menu { background: transparent; color: #8fa482; }
     #help-open { min-width: 3; width: 3; margin-top: 1; background: transparent; color: #8fa482; }
     #results { height: 1fr; background: #121b16; }
@@ -222,6 +224,7 @@ class MusicApp(App):
                     yield Static("我喜欢", id="view-title")
                     yield Static("", id="view-count")
                     yield Button("播放全部", id="play-all")
+                    yield Button("收藏到…", id="collect")
                     yield Button("操作", id="track-menu")
                     yield Button("⋯", id="collection-menu")
                 yield Static("", id="list-status")
@@ -238,6 +241,7 @@ class MusicApp(App):
             with Vertical(id="now"):
                 with Horizontal(classes="eyebrow", id="now-heading"):
                     yield Static("歌词")
+                    yield Button("收藏到…", id="now-collect")
                     yield Button("操作", id="now-menu")
                     yield Button("返回", id="now-close")
                 yield Static("", id="notice")
@@ -275,6 +279,8 @@ class MusicApp(App):
         self.poll()
         for identity, tooltip in {
             "track-menu": "所选歌曲：播放、队列、收藏、下载与移出 (x)",
+            "collect": "将所选歌曲加入收藏夹 (c)",
+            "now-collect": "将当前播放的歌曲加入收藏夹 (c)",
             "favorite": "喜欢当前播放的歌曲",
             "retry-best": "选择其他音质并重新解析当前歌曲",
             "now-open": "展开当前播放与歌词 (v)",
@@ -592,7 +598,7 @@ class MusicApp(App):
     def action_collect(self, track=None):
         track = (
             track
-            or self.selected()
+            or self.context_track()
             or (
                 Track.from_data(self.state["track"]) if self.state and self.state["track"] else None
             )
@@ -714,6 +720,12 @@ class MusicApp(App):
     def button_pressed(self, event):
         actions = {
             "track-menu": self.action_track_menu,
+            "collect": lambda: self.action_collect(self.selected()),
+            "now-collect": lambda: self.action_collect(
+                Track.from_data(self.state["track"])
+                if self.state and self.state.get("track")
+                else None
+            ),
             "now-menu": lambda: self.action_track_menu(current=True),
             "collection-menu": self.action_folder_menu,
             "help-open": self.action_help,
@@ -803,6 +815,7 @@ class MusicApp(App):
             return
         track = self.selected()
         self.query_one("#track-menu", Button).disabled = not track
+        self.query_one("#collect", Button).disabled = not track
         if self.state is None:
             self.query_one("#notice").display = False
             self.query_one("#retry-actions").display = False
@@ -810,6 +823,7 @@ class MusicApp(App):
             for identity in (
                 "retry-lyrics",
                 "now-menu",
+                "now-collect",
                 "now-open",
                 "previous",
                 "next",
@@ -842,13 +856,22 @@ class MusicApp(App):
                 "重试中" if state.get("retry_attempt", 1) > 1 else "解析中"
             )
         elif phase == "error":
-            self.query_one("#audio-quality", Static).update("失败")
+            self.query_one("#audio-quality", Static).update(
+                {"incomplete_audio": "仅试听", "source_unavailable": "无音源"}.get(
+                    state.get("error_code"), "失败"
+                )
+            )
+        reason = state.get("error") or "播放失败"
+        details = state.get("error_details") or []
+        diagnostic = "\n".join([reason, *details]) if phase == "error" else None
+        self.query_one("#audio-quality").tooltip = diagnostic
+        self.query_one("#notice").tooltip = diagnostic
         self.query_one("#notice").display = phase == "error"
         self.query_one("#retry-actions").display = phase == "error"
         if phase == "error":
             self.query_one("#notice", Static).update(
                 Text(
-                    "未获得完整音频，可重试、换音质或跳过。"
+                    "音源只返回试听或不完整音频。"
                     if state.get("error_code") == "incomplete_audio"
                     else state.get("error", "播放失败").split("。", 1)[0]
                 )
@@ -857,6 +880,7 @@ class MusicApp(App):
             "retry-audio",
             "retry-best",
             "now-menu",
+            "now-collect",
             "previous",
             "next",
             "favorite",

@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from textual.widgets import DataTable, Input, Select, Static
+from textual.widgets import Button, DataTable, Input, Select, Static
 
 from wocli_music.models import MusicError
 from wocli_music.tui import MusicApp
@@ -107,6 +107,79 @@ async def test_tui_replaces_lyric_loading_when_playback_fails(paths, service, tr
         assert "正在加载" not in content
         assert "音乐仍在继续" not in content
         assert str(app.query_one("#play-pause").label) == "重试"
+        assert "仅试听" in str(app.query_one("#audio-quality", Static).render())
+        assert "试听或不完整" in app.query_one("#audio-quality").tooltip
+
+
+@pytest.mark.parametrize("size", [(123, 41), (80, 26), (60, 24)])
+async def test_visible_collect_buttons_target_selected_and_current_song(
+    paths, service, tracks, size
+):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.store.add_to_playlist("来源", tracks[0])
+    app.store.create_playlist("目标")
+    app.store.save("ui.last_folder", "目标")
+    service.queue = tracks
+    service.index = 1
+    service.phase = "paused"
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        app.show_view("playlist:来源")
+        await pilot.pause()
+        collect = app.query_one("#collect", Button)
+        assert not collect.disabled
+        assert collect.region.right <= size[0]
+        assert await pilot.click("#collect")
+        await pilot.pause()
+        assert app.screen.track == tracks[0]
+        assert app.screen.query_one("#folder-select", Select).value == "folder:目标"
+        await pilot.click("#save")
+        await pilot.pause()
+        assert app.store.playlist("目标") == [tracks[0]]
+
+        app.action_now()
+        await pilot.pause()
+        collect_current = app.query_one("#now-collect", Button)
+        assert not collect_current.disabled
+        assert collect_current.region.right <= size[0]
+        assert await pilot.click("#now-collect")
+        await pilot.pause()
+        assert app.screen.track == tracks[1]
+        await pilot.click("#save")
+        await pilot.pause()
+        assert app.store.playlist("目标") == tracks
+        assert service.queue == tracks
+        assert service.current == tracks[1]
+        assert service.phase == "paused"
+        assert service.player.loads == []
+
+
+async def test_collect_shortcut_in_lyrics_uses_current_song_and_empty_list_is_disabled(
+    paths, service, tracks
+):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    app.store.favorite(tracks[0])
+    service.queue = tracks
+    service.index = 1
+    service.phase = "paused"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.show_view("favorites")
+        app.action_now()
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.screen.track == tracks[1]
+        app.screen.query_one("#folder-new", Input).value = "正在听"
+        await pilot.click("#save")
+        await pilot.pause()
+        assert app.store.playlist("正在听") == [tracks[1]]
+        app.action_now()
+        app.store.create_playlist("空夹")
+        app.show_view("playlist:空夹")
+        assert app.query_one("#collect", Button).disabled
+        assert not app.query_one("#now-collect", Button).disabled
 
 
 async def test_lyric_loading_and_unavailable_are_distinct_states(paths, service, tracks):
