@@ -31,6 +31,9 @@ async def test_mpv_real_process_ipc_and_cleanup(paths, fake_mpv):
         await player.command("seek", 5, "relative+exact")
         assert player.properties["pause"] is True
         assert player.properties["time-pos"] == 5
+        await player.command("seek", 12, "absolute+exact")
+        assert player.properties["time-pos"] == 12
+        assert player.properties["pause"] is True
         assert player.properties["volume"] == 45
         await player.load("second.mp3", 30)
         assert player.process is process

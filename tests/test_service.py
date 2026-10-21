@@ -361,3 +361,59 @@ async def test_retrying_audio_does_not_restart_inflight_lyrics(paths, tracks):
     finally:
         release.set()
         await service.close()
+
+
+async def test_absolute_seek_rejects_stale_track_invalid_positions_and_idle(service, tracks):
+    with pytest.raises(MusicError):
+        await service.dispatch({"op": "seek_to", "position": 10, "track_id": tracks[0].id})
+    service.queue, service.index, service.phase = tracks, 0, "playing"
+    service.player.properties["duration"] = 240
+    for position in (float("nan"), float("inf"), -float("inf")):
+        with pytest.raises(MusicError):
+            await service.dispatch(
+                {"op": "seek_to", "position": position, "track_id": tracks[0].id}
+            )
+    with pytest.raises(MusicError, match="歌曲已切换"):
+        await service.dispatch({"op": "seek_to", "position": 10, "track_id": tracks[1].id})
+    assert service.player.commands == []
+    for position, expected in ((-10, 0), (999, 240)):
+        await service.dispatch({"op": "seek_to", "position": position, "track_id": tracks[0].id})
+        assert service.player.commands[-1] == ("seek", expected, "absolute+exact")
+        assert service.phase == "playing"
+
+
+async def test_paused_scrub_holds_file_until_resume_or_next_load(service, tracks):
+    await service.dispatch({"op": "play", "tracks": [t.data() for t in tracks]})
+    await loaded(service)
+    await service.dispatch({"op": "pause"})
+    await service.dispatch({"op": "seek_to", "position": 269, "track_id": tracks[0].id})
+    assert service.seek_hold
+    assert service.phase == "paused"
+    assert ("set_property", "keep-open", "yes") in service.player.commands
+    await service.dispatch({"op": "resume"})
+    assert not service.seek_hold
+    assert ("set_property", "keep-open", "no") in service.player.commands
+    await service.dispatch({"op": "pause"})
+    await service.dispatch({"op": "seek_to", "position": 200, "track_id": tracks[0].id})
+    assert service.seek_hold
+    await service.dispatch({"op": "next"})
+    await loaded(service)
+    assert not service.seek_hold
+    assert service.current == tracks[1]
+    assert service.phase == "playing"
+    await service.dispatch({"op": "pause"})
+    await service.dispatch({"op": "seek_to", "position": 100, "track_id": tracks[1].id})
+    original = service.player.command
+
+    async def strict_command(*arguments):
+        if service.player.writer is None:
+            raise MusicError("播放器已退出")
+        return await original(*arguments)
+
+    service.player.command = strict_command
+    service.player.writer = None
+    service.phase = "error"
+    await service.dispatch({"op": "retry"})
+    await loaded(service)
+    assert service.phase == "playing"
+    assert not service.seek_hold

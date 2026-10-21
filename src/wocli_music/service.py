@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import signal
 
@@ -53,6 +54,7 @@ class MusicService:
         self.lock = asyncio.Lock()
         self.shutdown = asyncio.Event()
         self.entry_id = None
+        self.seek_hold = False
         self.event_tasks = set()
 
     @property
@@ -155,6 +157,10 @@ class MusicService:
             # Stop old audio before a potentially slow network lookup.
             if self.player.writer and not self.player.writer.is_closing():
                 await self.player.command("stop")
+            if self.seek_hold:
+                self.seek_hold = False
+                if self.player.writer and not self.player.writer.is_closing():
+                    await self.player.command("set_property", "keep-open", "no")
             for attempt in range(2):
                 self.retry_attempt = attempt + 1
                 try:
@@ -280,6 +286,9 @@ class MusicService:
             self.lyrics_status = "idle"
         if self.player.writer and not self.player.writer.is_closing():
             await self.player.command("stop")
+            if self.seek_hold:
+                await self.player.command("set_property", "keep-open", "no")
+        self.seek_hold = False
         self.player.properties.update({"time-pos": 0, "duration": 0})
 
     async def dispatch(self, request):
@@ -335,12 +344,32 @@ class MusicService:
                 if self.phase not in ("playing", "paused"):
                     raise MusicError("当前没有正在播放的音乐")
                 pause = operation == "pause" or (operation == "toggle" and self.phase == "playing")
+                if not pause and self.seek_hold:
+                    self.seek_hold = False
+                    await self.player.command("set_property", "keep-open", "no")
                 await self.player.command("set_property", "pause", pause)
                 self.phase = "paused" if pause else "playing"
             elif operation in ("next", "prev"):
                 await self._advance(1 if operation == "next" else -1)
             elif operation == "stop":
                 await self._stop()
+            elif operation == "seek_to":
+                if self.phase not in ("playing", "paused") or not self.current:
+                    raise MusicError("当前不可跳转")
+                if request.get("track_id") != self.current.id:
+                    raise MusicError("歌曲已切换，未执行跳转")
+                position = float(request["position"])
+                duration = self.status()["duration"]
+                if not math.isfinite(position) or not math.isfinite(duration) or duration <= 0:
+                    raise MusicError("无效的跳转位置")
+                position = max(0, min(position, duration))
+                # mpv otherwise closes audio near EOF even while paused. Hold the
+                # loaded file until resume, stop or the next load.
+                if self.phase == "paused" and not self.seek_hold:
+                    await self.player.command("set_property", "keep-open", "yes")
+                    self.seek_hold = True
+                await self.player.command("seek", position, "absolute+exact")
+                self.player.properties["time-pos"] = position
             elif operation == "seek":
                 if self.phase not in ("playing", "paused"):
                     raise MusicError("当前没有正在播放的音乐")

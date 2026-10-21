@@ -39,7 +39,12 @@ async def main():
                 elif args[0] == "get_property":
                     response["data"] = properties.get(args[1])
                 elif args[0] == "seek":
-                    properties["time-pos"] = max(0, properties["time-pos"] + args[1])
+                    properties["time-pos"] = max(
+                        0,
+                        args[1]
+                        if args[2].startswith("absolute")
+                        else properties["time-pos"] + args[1],
+                    )
                     await notify("time-pos", properties["time-pos"])
                 await send(response)
                 if args[0] == "loadfile":

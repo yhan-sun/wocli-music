@@ -350,7 +350,8 @@ async def test_search_completion_while_modal_is_open_is_retained(paths, service,
         await pilot.pause()
         app.refresh_library()
         assert app.rows["results"] == tracks
-        assert "2 首" in str(app.query_one("#list-status", Static).render())
+        assert "2 首" in str(app.query_one("#view-count", Static).render())
+        assert not app.query_one("#list-status").display
 
 
 async def test_space_always_controls_current_song_and_single_click_only_selects(
@@ -623,3 +624,64 @@ async def test_current_song_menu_targets_playing_track_and_folder_management_men
         await pilot.pause()
         assert app.active_view == "playlist:路上"
         assert app.store.playlist("路上") == [tracks[0]]
+
+
+@pytest.mark.parametrize("size", [(123, 41), (80, 26), (60, 24)])
+async def test_timeline_clicks_seek_absolute_and_preserve_pause(paths, service, tracks, size):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    service.queue, service.index, service.phase = tracks, 0, "paused"
+    service.player.properties.update({"time-pos": 12, "duration": 240, "pause": True})
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        bar = app.query_one("#timeline")
+        width = bar.content_region.width
+        left = bar.content_region.x - bar.region.x
+        for fraction in (0, 0.5, 1):
+            x = left + round((width - 1) * fraction)
+            expected = (x - left) / (width - 1) * 240
+            await pilot.click("#timeline", offset=(x, 0))
+            await pilot.pause()
+            assert service.player.commands[-1] == ("seek", expected, "absolute+exact")
+            assert service.phase == "paused"
+            assert service.status()["position"] == pytest.approx(expected)
+            assert service.player.properties["pause"] is True
+
+
+async def test_timeline_drag_commits_once_and_cancels_if_song_changes(paths, service, tracks):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    service.queue, service.index, service.phase = tracks, 0, "playing"
+    service.player.properties.update({"time-pos": 12, "duration": 240})
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        bar = app.query_one("#timeline")
+        await pilot.mouse_down("#timeline", offset=(3, 0))
+        await pilot.hover("#timeline", offset=(20, 0))
+        await pilot.hover("#timeline", offset=(35, 0))
+        assert not service.player.commands
+        await pilot.mouse_up("#timeline", offset=(35, 0))
+        await pilot.pause()
+        assert len(service.player.commands) == 1
+        assert service.phase == "playing"
+        await pilot.mouse_down("#timeline", offset=(3, 0))
+        service.index = 1
+        app.state = service.status()
+        app.render_state(app.state)
+        await pilot.mouse_up("#timeline", offset=(20, 0))
+        await pilot.pause()
+        assert len(service.player.commands) == 1
+        assert not bar.dragging
+
+
+async def test_idle_player_has_no_placeholder_prose_or_seek_action(paths, service):
+    app = MusicApp(paths=paths)
+    app.client = UIClient(service)
+    async with app.run_test(size=(123, 41)) as pilot:
+        await pilot.pause()
+        assert not app.query_one("#now").display
+        assert not app.query_one("#list-status").display
+        assert str(app.query_one("#current-song", Static).render()) == ""
+        await pilot.click("#timeline", offset=(20, 0))
+        await pilot.pause()
+        assert service.player.commands == []

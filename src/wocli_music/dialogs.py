@@ -30,7 +30,6 @@ NameDialog, FolderPicker, ModePicker, ConfirmDelete, LibraryPicker, TrackActions
 .dialog-title { height: auto; text-style: bold; color: #d5e8b4; margin-bottom: 1; }
 .dialog-caption { height: auto; max-height: 5; color: #9bad9b; margin-bottom: 1; }
 .dialog-error { height: auto; color: #e5a58d; }
-.dialog-footer { height: auto; color: #91a18d; margin-top: 1; }
 .dialog Input { background: #142019; border: tall #526b49; }
 .dialog SelectCurrent { background: #142019; border: tall #526b49; }
 .dialog OptionList { height: auto; max-height: 18; border: none; background: #1a2720; }
@@ -61,10 +60,9 @@ class NameDialog(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Static(self.title_text, classes="dialog-title")
-            yield Static("把想一起听的歌，放进同一个收藏夹。", classes="dialog-caption")
             yield Input(
                 value=self.initial,
-                placeholder="例如：通勤、深夜、日语收藏",
+                placeholder="收藏夹名称",
                 id="folder-name",
             )
             yield Static("", id="dialog-error", classes="dialog-error")
@@ -211,7 +209,6 @@ class ModePicker(ModalScreen[str | None]):
                 text.append(f"       {MODE_DESCRIPTIONS[mode]}\n", style="#9bad9b")
                 options.append(Option(text, id=mode))
             yield OptionList(*options, id="mode-options")
-            yield Static("↑ ↓ 选择 · Enter 确认 · 1–4 直达 · Esc 返回", classes="dialog-footer")
 
     def on_mount(self):
         options = self.query_one(OptionList)
@@ -241,7 +238,7 @@ class ConfirmDelete(ModalScreen[bool]):
         with Vertical(classes="dialog"):
             yield Static(Text(f"删除收藏夹「{self.folder_name}」？"), classes="dialog-title")
             yield Static(
-                "将移除此收藏夹和其中的收录关系，其他收藏夹及喜欢的歌曲仍会保留。",
+                "仅删除此收藏夹，保留歌曲与其他收藏。",
                 classes="dialog-caption",
             )
             with Horizontal(classes="dialog-actions"):
@@ -266,7 +263,7 @@ class LibraryPicker(ModalScreen[str | None]):
 
     def compose(self):
         with Vertical(classes="dialog"):
-            yield Static("你的音乐库", classes="dialog-title")
+            yield Static("曲库", classes="dialog-title")
             yield OptionList(
                 Option("♥ 我喜欢", id="favorites"),
                 Option("≡ 播放队列", id="queue"),
@@ -278,7 +275,6 @@ class LibraryPicker(ModalScreen[str | None]):
                 Option("＋ 新建收藏夹…", id="create-folder"),
                 id="view-options",
             )
-            yield Static("↑ ↓ 选择 · Enter 打开 · Esc 返回", classes="dialog-footer")
 
     def on_mount(self):
         self.query_one(OptionList).focus()
@@ -305,19 +301,18 @@ class TrackActions(ModalScreen[str | None]):
             yield Static(Text(self.track.title), classes="dialog-title")
             yield Static(Text(self.track.artist), classes="dialog-caption")
             options = [
-                Option("▶  重新播放" if self.current else "▶  从这首开始播放", id="play"),
-                Option("＋  加入播放队列", id="enqueue"),
-                Option("♥  取消喜欢" if self.liked else "♡  标记喜欢", id="like"),
-                Option("□  收藏到…", id="collect"),
+                Option("重新播放" if self.current else "播放", id="play"),
+                Option("加入队列", id="enqueue"),
+                Option("取消喜欢" if self.liked else "喜欢", id="like"),
+                Option("收藏到…", id="collect"),
             ]
             if self.current:
-                options.append(Option("↻  刷新歌词 (l)", id="lyrics"))
+                options.append(Option("刷新歌词", id="lyrics"))
             if not self.track.path:
-                options.append(Option("↓  下载音频与歌词…", id="download"))
+                options.append(Option("下载…", id="download"))
             if self.removable:
-                options.append(Option("−  从当前列表移出", id="remove"))
+                options.append(Option("移出列表", id="remove"))
             yield OptionList(*options, id="track-options")
-            yield Static("↑ ↓ 选择 · Enter 执行 · Esc 返回", classes="dialog-footer")
 
     def on_mount(self):
         self.query_one(OptionList).focus()
@@ -361,7 +356,6 @@ class DownloadDialog(ModalScreen[dict | None]):
                 id="download-quality",
             )
             yield Checkbox("同时保存 LRC 歌词", value=True, compact=True, id="download-lyrics")
-            yield Static("后台下载，退出界面后继续；同名文件会保留。", classes="dialog-caption")
             yield Static("", id="dialog-error", classes="dialog-error")
             with Horizontal(classes="dialog-actions"):
                 yield Button("取消", id="cancel")
@@ -416,7 +410,7 @@ class DownloadList(ModalScreen[tuple | None]):
             yield Static("下载任务", classes="dialog-title")
             yield OptionList(id="download-options")
             yield Static(
-                "暂无下载。在歌曲操作中选择下载，或按 d。",
+                "0 项",
                 id="download-detail",
                 classes="dialog-caption",
             )
@@ -501,15 +495,13 @@ class QualityPicker(ModalScreen[str | None]):
     def compose(self):
         with Vertical(classes="dialog"):
             yield Static("选择音质并重试", classes="dialog-title")
-            yield Static("将重新解析当前歌曲，保留播放队列。", classes="dialog-caption")
             yield OptionList(
-                Option("最佳可用 · 自动选择可用档位", id="best"),
+                Option("最佳可用", id="best"),
                 Option("FLAC 无损", id="flac"),
                 Option("MP3 320k", id="320k"),
                 Option("MP3 128k", id="128k"),
                 id="quality-options",
             )
-            yield Static("↑ ↓ 选择 · Enter 重试 · Esc 取消", classes="dialog-footer")
 
     def on_mount(self):
         self.query_one(OptionList).focus()
@@ -561,10 +553,9 @@ class VolumeDialog(ModalScreen[int | None]):
     def compose(self):
         with Vertical(classes="dialog"):
             yield Static("播放音量", classes="dialog-title")
-            yield Static(
-                "输入 0–100，Enter 应用。平时也可按 + / - 调整。", classes="dialog-caption"
+            yield Input(
+                value=str(self.value), placeholder="0–100", type="integer", id="volume-input"
             )
-            yield Input(value=str(self.value), type="integer", id="volume-input")
             yield Static("", id="dialog-error", classes="dialog-error")
             with Horizontal(classes="dialog-actions"):
                 yield Button("取消", id="cancel")
