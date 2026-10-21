@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub const PREBUFFER_SIZE: u64 = 128 * 1024; // 128 KB for instant container probe & playback
+pub const PREBUFFER_SIZE: u64 = 256 * 1024; // 256 KB for instant start & seamless buffering
 
 pub struct StreamCoord {
     pub written: AtomicU64,
@@ -101,10 +101,19 @@ impl Read for ProgressiveReader {
                 return Ok(0); // Clean EOF
             }
 
+            let total = self.coord.total.load(Ordering::Relaxed);
+            // Non-blocking EOF for metadata tail probes (e.g. ID3v1/APE tags probed at EOF before completion)
+            if total > 64 * 1024
+                && self.pos >= total.saturating_sub(16 * 1024)
+                && self.pos >= written
+            {
+                return Ok(0);
+            }
+
             // Wait for more bytes to be downloaded
             let (lock, cvar) = &self.coord.notifier;
             let guard = lock.lock().unwrap();
-            let _ = cvar.wait_timeout(guard, Duration::from_millis(60));
+            let _ = cvar.wait_timeout(guard, Duration::from_millis(50));
         }
     }
 }
@@ -159,6 +168,7 @@ pub fn start_stream(
     cache_path: PathBuf,
     cancelled: Arc<AtomicBool>,
     on_buffer: impl Fn(u64, u64) + Send + 'static,
+    on_complete: impl Fn(u64) + Send + 'static,
 ) -> Result<StreamHandle> {
     if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -241,9 +251,21 @@ pub fn start_stream(
                         let _ = ready_tx.send(Ok(()));
                     }
                     on_buffer(downloaded, downloaded);
+                    on_complete(downloaded);
                     break;
                 }
                 Ok(n) => {
+                    if downloaded == 0
+                        && n >= 4
+                        && !crate::provider::kuwo::valid_audio(&buffer[..n])
+                    {
+                        coord_worker.mark_failed();
+                        if !ready_flag_worker.load(Ordering::Relaxed) {
+                            let _ = ready_tx
+                                .send(Err(Error::coded("invalid_audio", "返回内容不是有效音频")));
+                        }
+                        return;
+                    }
                     if file.write_all(&buffer[..n]).is_err() {
                         coord_worker.mark_failed();
                         if !ready_flag_worker.load(Ordering::Relaxed) {
@@ -365,5 +387,69 @@ mod tests {
         assert_eq!(reader.seek(SeekFrom::Current(20)).unwrap(), 70);
         assert_eq!(reader.seek(SeekFrom::Current(-10)).unwrap(), 60);
         assert_eq!(reader.seek(SeekFrom::End(-50)).unwrap(), 950);
+    }
+
+    #[test]
+    fn test_decoder_progressive_prebuffer() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("prebuffer.wav");
+
+        // Generate a 2-second 8000Hz 16-bit mono WAV (16044 bytes total)
+        let samples: u32 = 8000 * 2;
+        let mut wav = vec![];
+        wav.extend(b"RIFF");
+        wav.extend((36 + samples * 2).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes()); // PCM
+        wav.extend(1u16.to_le_bytes()); // mono
+        wav.extend(8000u32.to_le_bytes()); // rate
+        wav.extend(16000u32.to_le_bytes()); // byte rate
+        wav.extend(2u16.to_le_bytes()); // block align
+        wav.extend(16u16.to_le_bytes()); // bits per sample
+        wav.extend(b"data");
+        wav.extend((samples * 2).to_le_bytes());
+        wav.resize(44 + samples as usize * 2, 0);
+
+        let total = wav.len() as u64;
+        let prebuffer_len = 4000; // write initial prebuffer portion
+
+        let mut write_file = File::create(&file_path).unwrap();
+        write_file.write_all(&wav[..prebuffer_len]).unwrap();
+        write_file.flush().unwrap();
+
+        let coord = Arc::new(StreamCoord::new(total));
+        coord.notify_progress(prebuffer_len as u64);
+
+        let read_file = File::open(&file_path).unwrap();
+        let reader = std::io::BufReader::new(ProgressiveReader::new(read_file, coord.clone()));
+
+        // Writer thread simulates streaming remainder
+        let coord_worker = coord.clone();
+        let file_path_worker = file_path.clone();
+        let wav_worker = wav.clone();
+        thread::spawn(move || {
+            let mut curr = prebuffer_len;
+            while curr < wav_worker.len() {
+                thread::sleep(Duration::from_millis(20));
+                let next = (curr + 4000).min(wav_worker.len());
+                let mut f = OpenOptions::new()
+                    .append(true)
+                    .open(&file_path_worker)
+                    .unwrap();
+                f.write_all(&wav_worker[curr..next]).unwrap();
+                f.flush().unwrap();
+                curr = next;
+                coord_worker.notify_progress(curr as u64);
+            }
+            coord_worker.mark_completed(wav_worker.len() as u64);
+        });
+
+        let decoder = rodio::Decoder::try_from(reader).unwrap();
+        let mut samples_read = 0;
+        for _s in decoder {
+            samples_read += 1;
+        }
+        assert_eq!(samples_read, samples);
     }
 }

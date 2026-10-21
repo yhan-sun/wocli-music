@@ -1,5 +1,5 @@
 use crate::model::{Error, Result, Track};
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::{OutputStream, Sink, Source};
 use std::{
     fs::File,
     path::Path,
@@ -33,7 +33,8 @@ impl Default for Player {
 impl Player {
     pub fn load(&mut self, path: &Path, track: &Track, volume: u8) -> Result<()> {
         let file = File::open(path)?;
-        self.load_reader(std::io::BufReader::new(file), track, volume)
+        let hint = path.extension().and_then(|e| e.to_str());
+        self.load_reader(std::io::BufReader::new(file), track, volume, hint, false)
     }
 
     pub fn load_reader<R>(
@@ -41,18 +42,29 @@ impl Player {
         reader: std::io::BufReader<R>,
         track: &Track,
         volume: u8,
+        format_hint: Option<&str>,
+        is_streaming: bool,
     ) -> Result<()>
     where
         R: std::io::Read + std::io::Seek + Send + Sync + 'static,
     {
         self.stop();
-        let decoder = Decoder::try_from(reader)
+        let mut builder = rodio::decoder::DecoderBuilder::new().with_data(reader);
+        if let Some(hint) = format_hint {
+            let clean = hint.trim_start_matches('.');
+            if !clean.is_empty() {
+                builder = builder.with_hint(clean);
+            }
+        }
+        let decoder = builder
+            .build()
             .map_err(|_| Error::coded("decode_error", "无法解码此音频格式"))?;
         let duration = decoder
             .total_duration()
             .map(|v| v.as_secs_f64())
             .unwrap_or(track.duration);
-        if track.path.is_empty()
+        if !is_streaming
+            && track.path.is_empty()
             && track.duration > 0.
             && duration > 0.
             && duration < track.duration * 0.8
@@ -62,10 +74,12 @@ impl Player {
                 "音频时长明显不足，可能只有试听片段",
             ));
         }
-        self.duration = if duration > 0. {
+        self.duration = if track.duration > 0. {
+            track.duration
+        } else if duration > 0. {
             duration
         } else {
-            track.duration
+            0.
         };
         if self.null {
             let rate = decoder.sample_rate() as f64 * decoder.channels() as f64;
@@ -73,7 +87,9 @@ impl Player {
             if count == 0 {
                 return Err(Error::coded("decode_error", "音频中没有可解码的采样"));
             }
-            self.duration = count as f64 / rate;
+            if !is_streaming {
+                self.duration = count as f64 / rate;
+            }
         } else {
             if self.stream.is_none() {
                 let stream = rodio::OutputStreamBuilder::from_default_device()

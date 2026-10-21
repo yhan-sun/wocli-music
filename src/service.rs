@@ -82,7 +82,11 @@ struct Call {
 enum Event {
     Call(Call),
     Ready(u64, Result<(PathBuf, String)>),
-    StreamReady(u64, Result<(PathBuf, String, crate::stream::StreamHandle)>),
+    StreamReady(
+        u64,
+        Result<(PathBuf, String, String, crate::stream::StreamHandle)>,
+    ),
+    StreamComplete(u64, PathBuf, String),
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
     Attempt(u64, u8),
@@ -315,6 +319,16 @@ impl Service {
                                     let _ =
                                         stream_tx.send(Event::Buffer(generation, received, total));
                                 };
+                                let complete_tx = tx.clone();
+                                let target_complete = target.clone();
+                                let quality_complete = stream.quality.clone();
+                                let on_complete = move |_downloaded| {
+                                    let _ = complete_tx.send(Event::StreamComplete(
+                                        generation,
+                                        target_complete.clone(),
+                                        quality_complete.clone(),
+                                    ));
+                                };
                                 match crate::stream::start_stream(
                                     provider.agent(),
                                     &stream.url,
@@ -322,6 +336,7 @@ impl Service {
                                     target.clone(),
                                     cancelled.clone(),
                                     on_buffer,
+                                    on_complete,
                                 ) {
                                     Ok(stream_handle) => {
                                         let _ = tx.send(Event::StreamReady(
@@ -329,6 +344,7 @@ impl Service {
                                             Ok((
                                                 target.clone(),
                                                 stream.quality.clone(),
+                                                stream.extension.clone(),
                                                 stream_handle,
                                             )),
                                         ));
@@ -817,7 +833,7 @@ impl Service {
             }
             Event::StreamReady(generation, result) => {
                 if generation != self.generation {
-                    if let Ok((path, _, _)) = result {
+                    if let Ok((path, _, _, _)) = result {
                         if path.starts_with(self.paths.home.join("cache-rust")) {
                             let _ = fs::remove_file(path);
                         }
@@ -825,14 +841,19 @@ impl Service {
                     return;
                 }
                 match result {
-                    Ok((path, quality, mut handle)) => {
+                    Ok((path, quality, ext, mut handle)) => {
                         let track = match self.current().cloned() {
                             Some(t) => t,
                             None => return,
                         };
                         let load_res = if let Some(reader) = handle.reader.take() {
-                            self.player
-                                .load_reader(reader, &track, self.settings.volume)
+                            self.player.load_reader(
+                                reader,
+                                &track,
+                                self.settings.volume,
+                                Some(&ext),
+                                true,
+                            )
                         } else {
                             self.player.load(&path, &track, self.settings.volume)
                         };
@@ -858,6 +879,13 @@ impl Service {
                         self.error = Some(error);
                     }
                 }
+            }
+            Event::StreamComplete(generation, path, quality) => {
+                if generation != self.generation {
+                    return;
+                }
+                self.cache = Some(path);
+                self.quality = quality;
             }
             Event::Ready(generation, result) => {
                 if generation != self.generation {
