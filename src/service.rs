@@ -82,6 +82,7 @@ struct Call {
 enum Event {
     Call(Call),
     Ready(u64, Result<(PathBuf, String)>),
+    StreamReady(u64, Result<(PathBuf, String, crate::stream::StreamHandle)>),
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
     Attempt(u64, u8),
@@ -306,6 +307,31 @@ impl Service {
                     let resolved = provider.stream(&track, &quality, &cancelled);
                     match resolved {
                         Ok(stream) => {
+                            if stream.url.starts_with("http://") || stream.url.starts_with("https://") {
+                                let stream_tx = tx.clone();
+                                let on_buffer = move |received, total| {
+                                    let _ = stream_tx.send(Event::Buffer(generation, received, total));
+                                };
+                                match crate::stream::start_stream(
+                                    provider.agent(),
+                                    &stream.url,
+                                    stream.size,
+                                    target.clone(),
+                                    cancelled.clone(),
+                                    on_buffer,
+                                ) {
+                                    Ok(stream_handle) => {
+                                        let _ = tx.send(Event::StreamReady(
+                                            generation,
+                                            Ok((target.clone(), stream.quality.clone(), stream_handle)),
+                                        ));
+                                        return Ok((target.clone(), stream.quality));
+                                    }
+                                    Err(_) => {
+                                        // Streaming failed, fallback below
+                                    }
+                                }
+                            }
                             let result = provider.download(
                                 &stream,
                                 &target,
@@ -782,12 +808,62 @@ impl Service {
                 let result = self.dispatch(call.value);
                 let _ = call.reply.send(result);
             }
+            Event::StreamReady(generation, result) => {
+                if generation != self.generation {
+                    if let Ok((path, _, _)) = result {
+                        if path.starts_with(self.paths.home.join("cache-rust")) {
+                            let _ = fs::remove_file(path);
+                        }
+                    }
+                    return;
+                }
+                match result {
+                    Ok((path, quality, mut handle)) => {
+                        let track = match self.current().cloned() {
+                            Some(t) => t,
+                            None => return,
+                        };
+                        let load_res = if let Some(reader) = handle.reader.take() {
+                            self.player.load_reader(reader, &track, self.settings.volume)
+                        } else {
+                            self.player.load(&path, &track, self.settings.volume)
+                        };
+                        match load_res {
+                            Ok(()) => {
+                                if track.path.is_empty() {
+                                    self.cache = Some(path);
+                                }
+                                let _ = self.store.played(&track);
+                                self.quality = quality;
+                                self.phase = "playing".into();
+                                self.error = None;
+                                self.retry_attempt = 1;
+                            }
+                            Err(e) => {
+                                self.phase = "error".into();
+                                self.error = Some(e);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.phase = "error".into();
+                        self.error = Some(error);
+                    }
+                }
+            }
             Event::Ready(generation, result) => {
                 if generation != self.generation {
                     if let Ok((path, _)) = result {
                         if path.starts_with(self.paths.home.join("cache-rust")) {
                             let _ = fs::remove_file(path);
                         }
+                    }
+                    return;
+                }
+                if self.phase == "playing" {
+                    if let Ok((path, quality)) = result {
+                        self.cache = Some(path);
+                        self.quality = quality;
                     }
                     return;
                 }

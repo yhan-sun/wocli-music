@@ -32,8 +32,16 @@ impl Default for Player {
 }
 impl Player {
     pub fn load(&mut self, path: &Path, track: &Track, volume: u8) -> Result<()> {
+        let file = File::open(path)?;
+        self.load_reader(std::io::BufReader::new(file), track, volume)
+    }
+
+    pub fn load_reader<R>(&mut self, reader: std::io::BufReader<R>, track: &Track, volume: u8) -> Result<()>
+    where
+        R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+    {
         self.stop();
-        let decoder = Decoder::try_from(File::open(path)?)
+        let decoder = Decoder::try_from(reader)
             .map_err(|_| Error::coded("decode_error", "无法解码此音频格式"))?;
         let duration = decoder
             .total_duration()
@@ -49,7 +57,11 @@ impl Player {
                 "音频时长明显不足，可能只有试听片段",
             ));
         }
-        self.duration = duration;
+        self.duration = if duration > 0. {
+            duration
+        } else {
+            track.duration
+        };
         if self.null {
             let rate = decoder.sample_rate() as f64 * decoder.channels() as f64;
             let count = decoder.count();

@@ -174,6 +174,9 @@ impl KuwoProvider {
                 .build(),
         }
     }
+    pub fn agent(&self) -> &ureq::Agent {
+        &self.agent
+    }
     fn request(
         &self,
         address: &str,

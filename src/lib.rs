@@ -9,5 +9,6 @@ pub mod player;
 pub mod provider;
 pub mod service;
 pub mod store;
+pub mod stream;
 pub mod tray;
 pub mod tui;

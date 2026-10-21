@@ -23,6 +23,10 @@ impl Provider {
         }
     }
 
+    pub fn agent(&self) -> &ureq::Agent {
+        self.kuwo.agent()
+    }
+
     pub fn search(&self, keyword: &str, page: usize, limit: usize) -> Result<(usize, Vec<Track>)> {
         self.kuwo.search(keyword, page, limit)
     }
