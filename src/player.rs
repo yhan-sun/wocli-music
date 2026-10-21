@@ -36,7 +36,12 @@ impl Player {
         self.load_reader(std::io::BufReader::new(file), track, volume)
     }
 
-    pub fn load_reader<R>(&mut self, reader: std::io::BufReader<R>, track: &Track, volume: u8) -> Result<()>
+    pub fn load_reader<R>(
+        &mut self,
+        reader: std::io::BufReader<R>,
+        track: &Track,
+        volume: u8,
+    ) -> Result<()>
     where
         R: std::io::Read + std::io::Seek + Send + Sync + 'static,
     {

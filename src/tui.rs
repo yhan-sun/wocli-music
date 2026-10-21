@@ -782,7 +782,8 @@ impl App {
                     self.nav.select(Some(len.saturating_sub(1)));
                 } else {
                     self.selected = self.rows.len().saturating_sub(1);
-                    self.table.select((!self.rows.is_empty()).then_some(self.selected));
+                    self.table
+                        .select((!self.rows.is_empty()).then_some(self.selected));
                 }
                 None
             }

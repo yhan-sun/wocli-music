@@ -307,10 +307,13 @@ impl Service {
                     let resolved = provider.stream(&track, &quality, &cancelled);
                     match resolved {
                         Ok(stream) => {
-                            if stream.url.starts_with("http://") || stream.url.starts_with("https://") {
+                            if stream.url.starts_with("http://")
+                                || stream.url.starts_with("https://")
+                            {
                                 let stream_tx = tx.clone();
                                 let on_buffer = move |received, total| {
-                                    let _ = stream_tx.send(Event::Buffer(generation, received, total));
+                                    let _ =
+                                        stream_tx.send(Event::Buffer(generation, received, total));
                                 };
                                 match crate::stream::start_stream(
                                     provider.agent(),
@@ -323,7 +326,11 @@ impl Service {
                                     Ok(stream_handle) => {
                                         let _ = tx.send(Event::StreamReady(
                                             generation,
-                                            Ok((target.clone(), stream.quality.clone(), stream_handle)),
+                                            Ok((
+                                                target.clone(),
+                                                stream.quality.clone(),
+                                                stream_handle,
+                                            )),
                                         ));
                                         return Ok((target.clone(), stream.quality));
                                     }
@@ -824,7 +831,8 @@ impl Service {
                             None => return,
                         };
                         let load_res = if let Some(reader) = handle.reader.take() {
-                            self.player.load_reader(reader, &track, self.settings.volume)
+                            self.player
+                                .load_reader(reader, &track, self.settings.volume)
                         } else {
                             self.player.load(&path, &track, self.settings.volume)
                         };

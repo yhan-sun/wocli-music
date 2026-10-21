@@ -953,18 +953,8 @@ mod windows {
 
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
-                AppendMenuW(
-                    hmenu,
-                    MF_STRING,
-                    CMD_TUI,
-                    to_wide("打开控制终端").as_ptr(),
-                );
-                AppendMenuW(
-                    hmenu,
-                    MF_STRING,
-                    CMD_QUIT,
-                    to_wide("退出播放器").as_ptr(),
-                );
+                AppendMenuW(hmenu, MF_STRING, CMD_TUI, to_wide("打开控制终端").as_ptr());
+                AppendMenuW(hmenu, MF_STRING, CMD_QUIT, to_wide("退出播放器").as_ptr());
             }
         });
 

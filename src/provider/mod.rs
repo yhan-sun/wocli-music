@@ -54,7 +54,9 @@ impl Provider {
 
     pub fn lyrics(&self, track: &Track) -> Result<String> {
         if !track.path.is_empty() {
-            self.local.lyrics(track).or_else(|_| self.kuwo.lyrics(track))
+            self.local
+                .lyrics(track)
+                .or_else(|_| self.kuwo.lyrics(track))
         } else {
             self.kuwo.lyrics(track)
         }

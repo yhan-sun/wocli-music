@@ -25,7 +25,12 @@ impl MusicProvider for LocalProvider {
         Track::local(p)
     }
 
-    fn stream(&self, track: &Track, _requested_quality: &str, _cancelled: &AtomicBool) -> Result<Stream> {
+    fn stream(
+        &self,
+        track: &Track,
+        _requested_quality: &str,
+        _cancelled: &AtomicBool,
+    ) -> Result<Stream> {
         if track.path.is_empty() {
             return Err(Error::new("非本地音频文件"));
         }
@@ -34,7 +39,11 @@ impl MusicProvider for LocalProvider {
             return Err(Error::new("本地音频文件不存在"));
         }
         let metadata = std::fs::metadata(p)?;
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("flac").to_string();
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("flac")
+            .to_string();
         Ok(Stream {
             url: format!("file://{}", track.path),
             quality: "flac".to_string(),

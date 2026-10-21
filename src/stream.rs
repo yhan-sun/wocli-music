@@ -171,7 +171,10 @@ pub fn start_stream(
     // Make initial GET request
     let response = agent
         .get(url)
-        .set("User-Agent", "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; .NET CLR 1.1.4322)")
+        .set(
+            "User-Agent",
+            "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; .NET CLR 1.1.4322)",
+        )
         .call()
         .map_err(|e| Error::coded("network", format!("网络连接失败: {e}")))?;
 
@@ -221,7 +224,9 @@ pub fn start_stream(
         };
 
         loop {
-            if cancelled_worker.load(Ordering::Relaxed) || coord_worker.cancelled.load(Ordering::Relaxed) {
+            if cancelled_worker.load(Ordering::Relaxed)
+                || coord_worker.cancelled.load(Ordering::Relaxed)
+            {
                 coord_worker.mark_cancelled();
                 let _ = std::fs::remove_file(&cache_worker_path);
                 return;
@@ -251,7 +256,8 @@ pub fn start_stream(
                     on_buffer(downloaded, actual_total);
 
                     // Once prebuffer threshold is met, notify the player to start immediately!
-                    if !ready_flag_worker.load(Ordering::Relaxed) && downloaded >= prebuffer_target {
+                    if !ready_flag_worker.load(Ordering::Relaxed) && downloaded >= prebuffer_target
+                    {
                         ready_flag_worker.store(true, Ordering::Relaxed);
                         let _ = file.flush();
                         let _ = ready_tx.send(Ok(()));
@@ -260,7 +266,8 @@ pub fn start_stream(
                 Err(e) => {
                     coord_worker.mark_failed();
                     if !ready_flag_worker.load(Ordering::Relaxed) {
-                        let _ = ready_tx.send(Err(Error::coded("network", format!("数据流读取中断: {e}"))));
+                        let _ = ready_tx
+                            .send(Err(Error::coded("network", format!("数据流读取中断: {e}"))));
                     }
                     return;
                 }
@@ -319,7 +326,10 @@ mod tests {
         let file_path_clone = file_path.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(50));
-            let mut f = OpenOptions::new().append(true).open(&file_path_clone).unwrap();
+            let mut f = OpenOptions::new()
+                .append(true)
+                .open(&file_path_clone)
+                .unwrap();
             let chunk2 = vec![2u8; 60];
             f.write_all(&chunk2).unwrap();
             f.flush().unwrap();

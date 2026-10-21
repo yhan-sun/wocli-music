@@ -14,7 +14,12 @@ pub trait MusicProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn search(&self, keyword: &str, page: usize, limit: usize) -> Result<(usize, Vec<Track>)>;
     fn details(&self, id: &str) -> Result<Track>;
-    fn stream(&self, track: &Track, requested_quality: &str, cancelled: &AtomicBool) -> Result<Stream>;
+    fn stream(
+        &self,
+        track: &Track,
+        requested_quality: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Stream>;
     fn lyrics(&self, track: &Track) -> Result<String>;
     fn download(
         &self,
