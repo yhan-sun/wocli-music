@@ -500,7 +500,7 @@ async def serve(paths=None):
             paths.socket.unlink(missing_ok=True)
 
 
-if __name__ == "__main__":
+def main():
     paths = Paths.discover()
     logging.basicConfig(
         filename=paths.home / "service.log",
@@ -508,3 +508,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
     )
     asyncio.run(serve(paths))
+
+
+if __name__ == "__main__":
+    main()

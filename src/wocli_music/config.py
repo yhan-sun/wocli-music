@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import MusicError
+from .runtime import bundled_mpv
 
 DEFAULTS = {"quality": "320k", "volume": 60, "mode": "list", "direct": False, "lyric_offset": 0}
 QUALITIES = ("best", "flac", "320k", "128k")
@@ -81,7 +82,12 @@ class Settings:
 
 
 def mpv_command() -> str:
-    executable = os.environ.get("WOCLI_MPV") or shutil.which("mpv")
+    bundled = bundled_mpv()
+    executable = (
+        os.environ.get("WOCLI_MPV")
+        or (str(bundled) if bundled and bundled.is_file() and os.access(bundled, os.X_OK) else None)
+        or shutil.which("mpv")
+    )
     if not executable:
         candidates = [
             Paths.discover().home / "tools/mpv.app/Contents/MacOS/mpv",

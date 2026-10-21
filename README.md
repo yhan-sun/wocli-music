@@ -2,7 +2,7 @@
 
 在终端搜索、听歌、看歌词和整理收藏夹。无需登录，退出界面后音乐继续播放。
 
-[下载 v0.1.0](https://github.com/yhan-sun/wocli-music/releases/tag/v0.1.0) · [安装](#安装) · [开始听歌](#开始听歌) · [使用方案](#使用方案) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
+[下载 v0.1.1](https://github.com/yhan-sun/wocli-music/releases/tag/v0.1.1) · [安装](#安装) · [开始听歌](#开始听歌) · [使用方案](#使用方案) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
 
 ![wocli-music：曲库、收藏夹、同步歌词和播放控制](docs/screenshots/library.png)
 
@@ -15,11 +15,35 @@
 - **后台听歌与下载**：退出界面后继续；可选择下载音质、目录和是否保存歌词。
 - **命令行控制**：搜索、播放、收藏夹和播放状态均可用 CLI 操作，支持 JSON 输出。
 
-当前支持 **macOS / Linux、Python 3.11+、mpv**。音乐来自酷我音源；搜索结果中的部分歌曲或音质可能没有完整音频，程序会区分无音源、试听和网络错误。账号歌单同步、Windows 后台控制、系统媒体键和封面显示暂未实现。
+二进制发行包内置 **Python、mpv 及其依赖**，无需另装 uv 或 Python 环境。支持 macOS 15+（Apple Silicon / Intel）与 Linux x86_64（glibc 2.35+，如 Ubuntu 22.04+）。源码和 wheel 安装支持 macOS / Linux，要求 Python 3.11+ 和单独安装 mpv。音乐来自酷我音源；搜索结果中的部分歌曲或音质可能没有完整音频，程序会区分无音源、试听和网络错误。账号歌单同步、Windows 后台控制、系统媒体键和封面显示暂未实现。
 
 ## 安装
 
-### 方案一：安装发行版
+### 方案一：下载二进制包（推荐）
+
+从 [Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应系统和 CPU 的文件。包内包含应用、Python 运行时、mpv、证书和动态库；无需安装开发环境。
+
+| 你的设备 | 下载文件 |
+| --- | --- |
+| Apple Silicon Mac，macOS 15+ | `wocli-music-0.1.1-macos-arm64.tar.gz` |
+| Intel Mac，macOS 15+ | `wocli-music-0.1.1-macos-x86_64.tar.gz` |
+| Linux x86_64，glibc 2.35+ | `wocli-music-0.1.1-linux-x86_64.tar.gz` |
+
+例如，在 Apple Silicon Mac 上：
+
+```bash
+tar -xzf wocli-music-0.1.1-macos-arm64.tar.gz
+cd wocli-music-0.1.1-macos-arm64
+./wocli
+```
+
+Linux 和 Intel Mac 使用对应文件名，解压后同样运行 `./wocli`。**保留整个解压目录**，其中 `_internal` 存放运行时和音频后端，不要只复制 `wocli` 文件。
+
+二进制目录尚未加入 PATH 时，本文的 `wocli` 命令写成 `./wocli`，例如 `./wocli doctor`。日常使用可把整个目录放到固定位置，再将该目录加入 PATH。Linux 使用系统已有的音频设备与声音服务；无声测试不要求音频设备。
+
+macOS 构建目前采用临时签名，尚未使用 Apple Developer ID 公证。若系统阻止打开，请先对照发行版 `SHA256SUMS` 校验下载文件，再在系统安全设置中允许该应用；也可仅对已校验的解压目录执行 `xattr -dr com.apple.quarantine ./wocli-music-0.1.1-macos-arm64`。
+
+### 方案二：安装 Python 发行包
 
 适合日常使用，安装后在任意目录运行 `wocli`，不需要克隆仓库。
 
@@ -36,7 +60,7 @@ sudo apt install mpv
 安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 后，安装应用：
 
 ```bash
-uv tool install --python 3.12 "https://github.com/yhan-sun/wocli-music/releases/download/v0.1.0/wocli_music-0.1.0-py3-none-any.whl"
+uv tool install --python 3.12 "https://github.com/yhan-sun/wocli-music/releases/download/v0.1.1/wocli_music-0.1.1-py3-none-any.whl"
 wocli --version
 wocli doctor
 wocli
@@ -47,24 +71,24 @@ uv 会创建独立环境，并在需要时下载指定的 Python；不会把应�
 也可以从 [Releases](https://github.com/yhan-sun/wocli-music/releases) 下载 wheel 后安装；已有 Python 3.11+ 和 pipx 的用户可以使用第二条命令：
 
 ```bash
-uv tool install ./wocli_music-0.1.0-py3-none-any.whl
+uv tool install ./wocli_music-0.1.1-py3-none-any.whl
 # 或
-pipx install ./wocli_music-0.1.0-py3-none-any.whl
+pipx install ./wocli_music-0.1.1-py3-none-any.whl
 ```
 
-发行文件说明：
+其他发行文件说明：
 
 | 文件 | 用途 |
 | --- | --- |
-| `wocli_music-0.1.0-py3-none-any.whl` | 应用安装包，支持上述 macOS / Linux 环境；仍需 Python 和 mpv |
-| `wocli_music-0.1.0.tar.gz` | 源码发行包，用于源码安装或二次开发 |
-| `SHA256SUMS` | 两个发行包的 SHA-256 校验值 |
+| `wocli_music-0.1.1-py3-none-any.whl` | 应用安装包，支持上述 macOS / Linux 环境；仍需 Python 和 mpv |
+| `wocli_music-0.1.1.tar.gz` | 源码发行包，用于源码安装或二次开发 |
+| `SHA256SUMS` | 全部二进制包、依赖源码和 Python 包的 SHA-256 校验值 |
 
-下载三个文件到同一目录后，可执行 `shasum -a 256 -c SHA256SUMS`（macOS）或 `sha256sum -c SHA256SUMS`（Linux）校验。
+下载需要的文件及 `SHA256SUMS` 后，可执行 `shasum -a 256 -c SHA256SUMS`（macOS）或 `sha256sum -c SHA256SUMS`（Linux）校验。只下载部分文件时，可单独计算该文件的 SHA-256 并对照清单；完整校验会提示未下载的其他文件缺失。
 
 当前通过 GitHub Releases 分发，尚未发布到 PyPI；安装时请使用上面的链接或本地文件路径。
 
-### 方案二：从源码运行
+### 方案三：从源码运行
 
 适合修改代码、跟随开发版本的用户。先安装 uv 和 mpv，然后执行：
 
@@ -78,6 +102,8 @@ uv run wocli
 源码目录中的命令需要加 `uv run`，例如 `uv run wocli stop`。想把源码版本安装为全局命令，可在该目录运行 `uv tool install .`。
 
 ### 更新与卸载
+
+更新二进制版本：先退出界面并运行 `./wocli daemon stop`，将新版本解压到新目录，再运行其中的 `./wocli`。默认收藏夹和设置存储在用户配置目录，更新时会继续使用。卸载时先停止后台，再删除整个解压目录即可；个人曲库和下载文件会保留。
 
 更新源码版本：
 
@@ -307,7 +333,19 @@ uv run ruff format --check .
 uv run python scripts/build_release.py
 ```
 
-构建输出在 `dist/`：wheel、源码包和 `SHA256SUMS`。构建脚本检查项目元数据与代码中的版本号一致。依赖已缓存时，可加 `--offline`；发行包不包含 mpv，也不打包用户数据。
+Python 包构建输出在 `dist/`：wheel、源码包和 `SHA256SUMS`。构建脚本检查项目元数据与代码中的版本号一致。依赖已缓存时，可加 `--offline`；发行包不包含 mpv，也不打包用户数据。
+
+构建包含运行时的二进制目录包（需在目标系统与 CPU 上构建，构建机器上安装 mpv）：
+
+```bash
+uv sync --locked --group dev --group build
+uv run --group build python scripts/build_binary.py
+uv run python scripts/smoke_binary.py dist/wocli-music-0.1.1-macos-arm64/wocli
+```
+
+本地实验可加 `--skip-sources` 跳过原生依赖源码收集；正式发布不使用此选项。二进制目录中包含第三方许可与来源信息；发行版另附各平台的 `*-sources.tar.gz`，保存原生依赖对应源码与构建配方。Linux 源码收集需要启用 `deb-src`，macOS 构建使用 Homebrew 的 mpv。
+
+[Build portable release](https://github.com/yhan-sun/wocli-music/actions/workflows/release.yml) 工作流在推送 `v*` 标签时自动构建发布，也可在 Actions 中手动运行；`publish=false` 只生成构建产物，`publish=true` 在全部测试通过后发布当前版本。流程会检查版本号、运行测试、在三类机器构建、解压测试实际产物、在干净 Linux 容器播放验证，最后生成完整校验清单并发布。失败不会发布缺少平台的发行版。
 
 重新生成文档截图：
 

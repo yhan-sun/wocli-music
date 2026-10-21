@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wocli-music"
-version = "0.1.0"
+version = "0.1.1"
 description = "无需登录的酷我终端音乐播放器"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,10 @@ wocli = "wocli_music.cli:main"
 wocli-music = "wocli_music.cli:main"
 
 [dependency-groups]
+build = [
+    "certifi>=2025.1",
+    "pyinstaller>=6.16,<7",
+]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.11", "build>=1"]
 
 [tool.pytest.ini_options]

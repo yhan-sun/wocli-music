@@ -2,10 +2,10 @@ import asyncio
 import json
 import os
 import subprocess
-import sys
 
 from .config import Paths
 from .models import MusicError
+from .runtime import frozen, service_command
 
 
 class Client:
@@ -47,13 +47,17 @@ class Client:
         with (self.paths.home / "service.log").open("ab") as log:
             process = await asyncio.to_thread(
                 subprocess.Popen,
-                [sys.executable, "-m", "wocli_music.service"],
+                service_command(),
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
                 start_new_session=True,
                 close_fds=True,
-                env={**os.environ, "WOCLI_HOME": str(self.paths.home)},
+                env={
+                    **os.environ,
+                    "WOCLI_HOME": str(self.paths.home),
+                    **({"PYINSTALLER_RESET_ENVIRONMENT": "1"} if frozen() else {}),
+                },
             )
         for _ in range(100):
             try:

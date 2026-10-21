@@ -46,6 +46,8 @@ class Mpv:
             ]
             if output := os.environ.get("WOCLI_AUDIO_OUTPUT"):
                 arguments.append(f"--ao={output}")
+            if certificates := os.environ.get("SSL_CERT_FILE"):
+                arguments.append(f"--tls-ca-file={certificates}")
             with (self.paths.home / "mpv.log").open("ab") as log:
                 try:
                     self.process = await asyncio.create_subprocess_exec(
