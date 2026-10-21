@@ -517,8 +517,8 @@ mod windows {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-        GetStockObject, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_NOPREFIX,
-        DT_SINGLELINE, DT_VCENTER, FW_BOLD, PAINTSTRUCT, TRANSPARENT, WHITE_BRUSH,
+        InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_NOPREFIX,
+        DT_SINGLELINE, DT_VCENTER, FW_BOLD, PAINTSTRUCT, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -526,15 +526,14 @@ mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, InvalidateRect, LoadIconW,
-        PeekMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenuEx,
-        TranslateMessage, CS_HREDRAW, CS_VREDRAW, HMENU, IDI_APPLICATION, LWA_COLORKEY,
-        MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN,
-        TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_PAINT,
-        WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, PeekMessageW,
+        PostQuitMessage, RegisterClassW, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
+        SetWindowPos, ShowWindow, TrackPopupMenuEx, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+        HMENU, IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE,
+        SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+        SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY,
+        WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -641,7 +640,7 @@ mod windows {
                 FillRect(hdc, &rect, brush);
                 DeleteObject(brush);
 
-                SetBkMode(hdc, TRANSPARENT);
+                SetBkMode(hdc, TRANSPARENT as i32);
 
                 let font_name = to_wide("Microsoft YaHei");
                 let font = CreateFontW(
@@ -923,7 +922,7 @@ mod windows {
 
     pub fn run_tray(paths: Paths) -> Result<()> {
         unsafe {
-            let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null());
+            let hinstance = 0;
             let tray_class_name = to_wide("wocli_tray_class");
             let mut wc: WNDCLASSW = std::mem::zeroed();
             wc.lpfnWndProc = Some(tray_wnd_proc);
