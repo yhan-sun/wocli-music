@@ -502,9 +502,14 @@ impl App {
                 );
             }
             Action::Download(track) => {
-                let directory = self
-                    .store
-                    .load::<String>("rust.ui.download_directory")?
+                let directory = std::env::var("WOCLI_DOWNLOAD_DIR")
+                    .ok()
+                    .or_else(|| {
+                        self.store
+                            .load::<String>("rust.ui.download_directory")
+                            .ok()
+                            .flatten()
+                    })
                     .unwrap_or_else(|| "~/Music/wocli".into());
                 let quality = QUALITIES
                     .iter()

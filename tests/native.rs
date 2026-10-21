@@ -184,3 +184,40 @@ fn reads_legacy_negative_queue_index_and_retains_sqlite_data() {
         .unwrap()
         .contains("旧歌词"));
 }
+
+#[test]
+fn environment_variables_configure_home_runtime_and_download_dirs() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("custom_home");
+    let runtime = root.path().join("custom_runtime");
+    let download = root.path().join("custom_downloads");
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_wocli"));
+
+    let output = Command::new(&bin)
+        .args(["doctor", "--json"])
+        .env("WOCLI_HOME", &home)
+        .env("WOCLI_RUNTIME_DIR", &runtime)
+        .env("WOCLI_DOWNLOAD_DIR", &download)
+        .env("WOCLI_AUDIO_OUTPUT", "null")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let doctor: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        doctor["home"].as_str().unwrap(),
+        fs::canonicalize(&home).unwrap().to_str().unwrap()
+    );
+    assert_eq!(
+        doctor["runtime_dir"].as_str().unwrap(),
+        runtime.to_str().unwrap()
+    );
+    assert_eq!(
+        doctor["env"]["WOCLI_DOWNLOAD_DIR"].as_str().unwrap(),
+        download.to_str().unwrap()
+    );
+    assert!(doctor["socket"]
+        .as_str()
+        .unwrap()
+        .starts_with(runtime.to_str().unwrap()));
+}

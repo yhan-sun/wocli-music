@@ -2,7 +2,7 @@
 
 在终端搜索、听歌、看歌词和整理收藏夹。Rust 原生播放器，退出界面后音乐继续播放。
 
-[下载发行版](https://github.com/yhan-sun/wocli-music/releases/latest) · [安装](#安装) · [使用方案](#使用方案) · [命令行](#命令行) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
+[下载发行版](https://github.com/yhan-sun/wocli-music/releases/latest) · [一键安装](#安装) · [使用方案](#使用方案) · [命令行](#命令行) · [环境变量与配置](#环境变量与配置) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
 
 ![Rust 版：收藏夹、同步歌词和播放控制](docs/screenshots/library.png)
 
@@ -21,13 +21,38 @@
 
 ## 安装
 
-从 [Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应的 **安装包**，无需安装 Rust、Python、uv、mpv 或 FFmpeg。
+无需预装 Rust、Python、uv、mpv 或 FFmpeg。
 
-| 设备 | 文件 |
-| --- | --- |
-| Apple Silicon Mac，macOS 15+ | `wocli-music-0.2.0-macos-arm64.tar.gz` |
-| Intel Mac，macOS 15+ | `wocli-music-0.2.0-macos-x86_64.tar.gz` |
-| Linux x86_64，glibc 2.35+ | `wocli-music-0.2.0-linux-x86_64.tar.gz` |
+### 一键脚本安装（推荐）
+
+在终端运行以下命令，脚本会自动识别你的系统（macOS ARM64 / Intel、Linux x86_64）、下载对应安装包、校验 SHA256 完整性并安装到用户命令路径：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash
+```
+
+- **自定义安装目录**（例如安装到 `/usr/local/bin`）：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --dir /usr/local/bin
+  ```
+- **指定安装版本**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --version v0.2.0
+  ```
+- **卸载**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --uninstall
+  ```
+
+### 手动下载安装
+
+你也可以直接从 [Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
+
+| 设备与架构 | 发行文件 | 解包安装方式 |
+| --- | --- | --- |
+| Apple Silicon Mac (macOS 15+) | `wocli-music-0.2.0-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Intel Mac (macOS 15+) | `wocli-music-0.2.0-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Linux x86_64 (glibc 2.35+) | `wocli-music-0.2.0-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
 
 以 Apple Silicon Mac 为例：
 
@@ -37,39 +62,26 @@ cd wocli-music-0.2.0-macos-arm64
 ./wocli
 ```
 
-macOS 的 `wocli` 可单独复制到 `~/.local/bin/` 等 PATH 目录。Linux **保留 `lib/` 在 `wocli` 旁边**，其中只有必要的 ALSA 音频库；使用桌面已有的音频配置和设备。应用会在首次播放时打开音频输出，纯搜索、收藏管理和状态查询无需音频设备。
-
-安装目录未加入 PATH 时，下面命令中的 `wocli` 改为 `./wocli`。
-
-`*-sources.tar.gz` 是第三方依赖许可要求的源码归档，**运行播放器不需要下载**。Rust 版不再附带上百 MB 的 mpv/FFmpeg 依赖源码，也不再发布 Python wheel。每个安装包包含 `THIRD_PARTY.txt` 与依赖许可证。
-
-校验下载：
-
-```bash
-# macOS
-shasum -a 256 wocli-music-0.2.0-macos-arm64.tar.gz
-# Linux
-sha256sum wocli-music-0.2.0-linux-x86_64.tar.gz
-```
-
-将结果与 Release 中 `SHA256SUMS` 的对应行比较。macOS 发行版尚未经过 Developer ID 公证；若系统阻止打开，校验后可在系统安全设置允许，也可对已校验的解压目录执行 `xattr -dr com.apple.quarantine ./wocli-music-0.2.0-macos-arm64`。
+> **说明**：
+> - Linux 版本保留自带的 ALSA 音频库 `lib/libasound.so.2` 位于 `wocli` 旁边；直接运行即可使用系统桌面的声音配置。
+> - `*-sources.tar.gz` 是第三方依赖许可要求的源码包，**用户日常使用无需下载**。每个安装包内均包含 `THIRD_PARTY.txt` 与对应许可证。
+> - macOS 发行版如提示安全阻止，可对解压文件执行 `xattr -d com.apple.quarantine ./wocli` 移除隔离属性。
 
 ### 从旧版升级
 
-先退出旧界面，使用 **旧版命令** 停止后台，再启动新二进制：
+先退出旧界面，使用旧版命令彻底停止后台常驻进程，再启动新二进制：
 
 ```bash
-# 原来从源码运行
+# 原来从 Python 源码运行：
 uv run wocli daemon stop
-# 或：旧二进制安装目录中的 ./wocli daemon stop
+# 或在旧版二进制目录下：
+./wocli daemon stop
 
-# 再运行新版本
-/path/to/new/wocli
+# 启动新版本
+wocli
 ```
 
-旧版的 `library.sqlite3` 与 `settings.json` 继续使用：我喜欢、收藏夹、历史、队列、歌词缓存和设置不需要重新导入。Rust 与 Python 后台使用不同的 socket，升级时应先停掉旧版，避免两个播放器同时发声。改过 `WOCLI_HOME` 的用户，在新版本中继续使用相同路径。
-
-以后更新：退出界面，`wocli daemon stop`，替换安装目录，再运行。卸载：停掉后台并删除安装目录；曲库和下载文件会保留。
+旧版的 `library.sqlite3` 曲库与 `settings.json` 会被无缝继承：自建收藏夹、我喜欢、历史播放、队列、歌词缓存均无需重新导入。改过 `WOCLI_HOME` 的用户在新版本中继续指定相同路径即可。
 
 ## 使用方案
 
@@ -139,16 +151,86 @@ wocli download --id 61631119 --quality 320k --lyrics --output ~/Music/wocli
 `--json` 用于脚本输出；非交互搜索播放请提供 `--pick` 或 `--id`，避免误选歌曲。`--no-wait` 让 `play` 在后台开始加载后立即返回。`download --force` 允许在下载成功并校验后覆盖目标。完整命令见 `wocli --help`。
 
 ```bash
-wocli config quality best
-wocli config mode repeat
-wocli config lyric_offset 250   # 毫秒；正值让歌词提前
-wocli config direct true        # 忽略环境代理
-wocli doctor
 wocli daemon status
 wocli daemon stop
 ```
 
-默认数据目录为 `~/.config/wocli-music`，遵循 `XDG_CONFIG_HOME`；`WOCLI_HOME=/path/to/data wocli` 可使用独立曲库。后台日志为该目录下 `service-rust.log`。数据库、设置和歌词均保存在本机。
+## 环境变量与配置
+
+wocli-music 可以通过 CLI 命令设置持久化偏好，也可以使用环境变量在运行时灵活调整路径与网络行为。
+
+### 环境变量
+
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `WOCLI_HOME` | `~/.config/wocli-music` | 数据与配置主目录。存放 SQLite 曲库 (`library.sqlite3`)、配置 (`settings.json`)、后台日志 (`service-rust.log`) 和歌词缓存。遵循 `XDG_CONFIG_HOME`。 |
+| `WOCLI_RUNTIME_DIR` | `/tmp/wocli-rust-{uid}-{hash}` | 运行期 IPC 控制 Socket 目录 (`control.sock`)。若未设置则优先遵循 `XDG_RUNTIME_DIR`。 |
+| `WOCLI_DOWNLOAD_DIR` | `~/Music/wocli` (TUI) / `downloads` (CLI) | 歌曲与歌词下载的默认目标保存目录。 |
+| `WOCLI_AUDIO_OUTPUT` | *(默认系统声卡)* | 设为 `null` 时禁用实际音频硬件输出（仅解码不发声）。适用于无声卡服务器、容器环境或自动化测试。 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | *(无)* | HTTP / HTTPS 代理服务器地址（支持 socks5:// 或 http://），内部网络请求自动遵循代理设置。 |
+| `ALL_PROXY` / `NO_PROXY` | *(无)* | 全局代理或跳过代理的主机名单。 |
+
+使用示例：
+
+```bash
+# 使用独立的数据目录（多用户或多测试配置）
+WOCLI_HOME=~/.config/wocli-work wocli
+
+# 设定默认下载保存路径并直接启动
+WOCLI_DOWNLOAD_DIR=~/Music/Favorites wocli
+
+# 在无音频设备的远程服务器或容器中运行测试
+WOCLI_AUDIO_OUTPUT=null wocli doctor
+```
+
+### 持久化配置
+
+使用 `wocli config` 读写持久化设置（保存在 `$WOCLI_HOME/settings.json`）：
+
+```bash
+# 查看当前全部配置
+wocli config
+
+# 设置首选音质: best / 320k / 192k / 128k
+wocli config quality best
+
+# 设置默认循环模式: list (顺序) / repeat (列表循环) / single (单曲循环) / shuffle (随机)
+wocli config mode repeat
+
+# 设置启动音量 (0 - 100)
+wocli config volume 70
+
+# 设置歌词微调偏移 (毫秒，正数歌词提前，负数延后)
+wocli config lyric_offset 200
+
+# 忽略环境代理直接直连网络 (true / false)
+wocli config direct true
+```
+
+### 环境诊断
+
+运行 `wocli doctor` 可以快速排查当前环境、依赖、有效路径、活跃环境变量与运行状态：
+
+```bash
+wocli doctor
+```
+
+```json
+{
+  "architecture": "aarch64",
+  "engine": "rodio/symphonia",
+  "env": {
+    "WOCLI_DOWNLOAD_DIR": "/Users/pyu/Downloads/Music"
+  },
+  "home": "/Users/pyu/.config/wocli-music",
+  "platform": "macos",
+  "runtime": "native",
+  "runtime_dir": "/tmp/wocli-rust-501-bde92153d833",
+  "service_running": false,
+  "socket": "/tmp/wocli-rust-501-bde92153d833/control.sock",
+  "version": "0.2.0"
+}
+```
 
 ## 常见问题
 

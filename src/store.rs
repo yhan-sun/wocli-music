@@ -30,7 +30,13 @@ impl Paths {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
         let tag = format!("{:x}", Sha256::digest(home.to_string_lossy().as_bytes()));
         let uid = unsafe { libc::getuid() };
-        let runtime = PathBuf::from(format!("/tmp/wocli-rust-{uid}-{}", &tag[..12]));
+        let runtime = if let Some(value) = env::var_os("WOCLI_RUNTIME_DIR") {
+            PathBuf::from(value)
+        } else if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
+            PathBuf::from(value).join(format!("wocli-rust-{}", &tag[..12]))
+        } else {
+            PathBuf::from(format!("/tmp/wocli-rust-{uid}-{}", &tag[..12]))
+        };
         if let Ok(meta) = fs::symlink_metadata(&runtime) {
             if meta.file_type().is_symlink() || meta.uid() != uid {
                 return Err(Error::new("运行目录不属于当前用户"));

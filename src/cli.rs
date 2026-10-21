@@ -15,7 +15,36 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const HELP:&str="wocli — 原生终端音乐播放器\n\n用法：wocli [命令] [参数]\n  tui                               打开终端界面（默认）\n  search 关键词 [--page 1 --limit 20] 搜索歌曲\n  play 关键词 [--pick N]             选择并播放\n  play --id ID [--quality best]      按 ID 播放\n  play /path/song.flac               播放本地音频\n  pause | resume | toggle | stop     播放控制\n  next | prev | seek 秒数            切歌和相对跳转\n  volume 0-100 | mode 播放方式        list / repeat / single / shuffle\n  status | favorites | history       状态、喜欢、历史\n  queue add|list|remove|clear         管理队列\n  playlist create|list|show|add|remove|rename|delete|play\n  like [--id ID]                     喜欢或取消喜欢\n  lyrics [--id ID --refresh --output song.lrc]\n  download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]\n  config [配置项 值]                 quality / volume / mode / direct / lyric_offset\n  doctor | daemon start|stop|status   诊断及后台服务\n\n--json 输出 JSON；--direct 忽略环境代理；--version 查看版本。\n";
+pub const HELP: &str = "wocli — 原生终端音乐播放器
+
+用法：wocli [命令] [参数]
+  tui                               打开终端界面（默认）
+  search 关键词 [--page 1 --limit 20] 搜索歌曲
+  play 关键词 [--pick N]             选择并播放
+  play --id ID [--quality best]      按 ID 播放
+  play /path/song.flac               播放本地音频
+  pause | resume | toggle | stop     播放控制
+  next | prev | seek 秒数            切歌和相对跳转
+  volume 0-100 | mode 播放方式        list / repeat / single / shuffle
+  status | favorites | history       状态、喜欢、历史
+  queue add|list|remove|clear         管理队列
+  playlist create|list|show|add|remove|rename|delete|play
+  like [--id ID]                     喜欢或取消喜欢
+  lyrics [--id ID --refresh --output song.lrc]
+  download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
+  config [配置项 值]                 quality / volume / mode / direct / lyric_offset
+  doctor | daemon start|stop|status   诊断及后台服务
+
+环境变量：
+  WOCLI_HOME         数据与配置目录（默认 ~/.config/wocli-music）
+  WOCLI_RUNTIME_DIR  运行时 socket 目录（默认 /tmp/wocli-rust-{uid}-{hash}）
+  WOCLI_DOWNLOAD_DIR 默认下载目录（默认 ~/Music/wocli 或 downloads）
+  WOCLI_AUDIO_OUTPUT 音频输出（设为 null 可在无音频设备环境静音运行）
+  HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY 网络代理配置
+
+选项：
+  --json 输出 JSON；--direct 忽略环境代理；--version 查看版本。
+";
 struct Args {
     pos: Vec<String>,
     values: HashMap<String, String>,
@@ -496,7 +525,9 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         }
         "download" => {
             let track = choose(&args, 1, &store, &provider)?;
-            let directory = expand_path(args.value("--output").unwrap_or("downloads"));
+            let default_dir =
+                std::env::var("WOCLI_DOWNLOAD_DIR").unwrap_or_else(|_| "downloads".into());
+            let directory = expand_path(args.value("--output").unwrap_or(&default_dir));
             let directory = if directory.is_absolute() {
                 directory
             } else {
@@ -584,7 +615,33 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             value
         }
         "doctor" => {
-            let value = json!({"version":env!("CARGO_PKG_VERSION"),"engine":"rodio/symphonia","runtime":"native","platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,"home":paths.home,"socket":paths.socket(),"service_running":ipc::request(&paths,json!({"op":"status"}),false)?.is_some()});
+            let mut active_env = serde_json::Map::new();
+            for key in [
+                "WOCLI_HOME",
+                "WOCLI_RUNTIME_DIR",
+                "WOCLI_DOWNLOAD_DIR",
+                "WOCLI_AUDIO_OUTPUT",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+            ] {
+                if let Ok(v) = std::env::var(key) {
+                    active_env.insert(key.into(), json!(v));
+                }
+            }
+            let value = json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "engine": "rodio/symphonia",
+                "runtime": "native",
+                "platform": std::env::consts::OS,
+                "architecture": std::env::consts::ARCH,
+                "home": paths.home,
+                "runtime_dir": paths.runtime,
+                "socket": paths.socket(),
+                "env": active_env,
+                "service_running": ipc::request(&paths, json!({"op":"status"}), false)?.is_some(),
+            });
             if !args.flag("--json") {
                 println!("{}", serde_json::to_string_pretty(&value)?);
             }
