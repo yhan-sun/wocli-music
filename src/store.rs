@@ -4,7 +4,6 @@ use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -19,35 +18,80 @@ impl Paths {
         let home = if let Some(value) = env::var_os("WOCLI_HOME") {
             PathBuf::from(value)
         } else {
-            let config = env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .or_else(|| env::var_os("HOME").map(|v| PathBuf::from(v).join(".config")))
-                .ok_or_else(|| Error::new("无法确定配置目录，请设置 WOCLI_HOME"))?;
-            config.join("wocli-music")
+            #[cfg(windows)]
+            {
+                let config = env::var_os("APPDATA")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        env::var_os("USERPROFILE").map(|v| PathBuf::from(v).join(".config"))
+                    })
+                    .ok_or_else(|| Error::new("无法确定配置目录，请设置 WOCLI_HOME"))?;
+                config.join("wocli-music")
+            }
+            #[cfg(not(windows))]
+            {
+                let config = env::var_os("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| env::var_os("HOME").map(|v| PathBuf::from(v).join(".config")))
+                    .ok_or_else(|| Error::new("无法确定配置目录，请设置 WOCLI_HOME"))?;
+                config.join("wocli-music")
+            }
         };
         fs::create_dir_all(&home)?;
-        let home = fs::canonicalize(home)?;
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
+        let home = fs::canonicalize(&home).unwrap_or(home);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&home, fs::Permissions::from_mode(0o700));
+        }
         let tag = format!("{:x}", Sha256::digest(home.to_string_lossy().as_bytes()));
-        let uid = unsafe { libc::getuid() };
         let runtime = if let Some(value) = env::var_os("WOCLI_RUNTIME_DIR") {
             PathBuf::from(value)
-        } else if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(value).join(format!("wocli-rust-{}", &tag[..12]))
         } else {
-            PathBuf::from(format!("/tmp/wocli-rust-{uid}-{}", &tag[..12]))
-        };
-        if let Ok(meta) = fs::symlink_metadata(&runtime) {
-            if meta.file_type().is_symlink() || meta.uid() != uid {
-                return Err(Error::new("运行目录不属于当前用户"));
+            #[cfg(windows)]
+            {
+                let base = env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(env::temp_dir);
+                base.join("wocli-music").join("run").join(&tag[..12])
             }
+            #[cfg(not(windows))]
+            {
+                let uid = unsafe { libc::getuid() };
+                if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
+                    PathBuf::from(value).join(format!("wocli-rust-{}", &tag[..12]))
+                } else {
+                    PathBuf::from(format!("/tmp/wocli-rust-{uid}-{}", &tag[..12]))
+                }
+            }
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let uid = unsafe { libc::getuid() };
+            if let Ok(meta) = fs::symlink_metadata(&runtime) {
+                if meta.file_type().is_symlink() || meta.uid() != uid {
+                    return Err(Error::new("运行目录不属于当前用户"));
+                }
+            }
+            fs::create_dir_all(&runtime)?;
+            let _ = fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700));
         }
-        fs::create_dir_all(&runtime)?;
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(&runtime)?;
+        }
         Ok(Self { home, runtime })
     }
     pub fn socket(&self) -> PathBuf {
-        self.runtime.join("control.sock")
+        #[cfg(windows)]
+        {
+            self.runtime.join("control.endpoint")
+        }
+        #[cfg(not(windows))]
+        {
+            self.runtime.join("control.sock")
+        }
     }
     pub fn settings(&self) -> Result<Settings> {
         let path = self.home.join("settings.json");

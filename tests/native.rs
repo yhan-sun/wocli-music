@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -71,9 +71,11 @@ impl App {
     }
     fn socket(&self, value: Value) -> Value {
         let doctor = self.cli(&["doctor"]);
-        let stream =
-            std::os::unix::net::UnixStream::connect(Path::new(doctor["socket"].as_str().unwrap()))
-                .unwrap();
+        let paths = wocli_music::store::Paths {
+            home: PathBuf::from(doctor["home"].as_str().unwrap()),
+            runtime: PathBuf::from(doctor["runtime_dir"].as_str().unwrap()),
+        };
+        let stream = wocli_music::ipc::connect(&paths).unwrap();
         wocli_music::ipc::exchange(stream, value).unwrap()
     }
 }

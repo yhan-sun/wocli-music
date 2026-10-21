@@ -52,6 +52,8 @@ jobs:
             platform: macos-x86_64
           - runner: ubuntu-22.04
             platform: linux-x86_64
+          - runner: windows-latest
+            platform: windows-x86_64
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.test.outputs.version }}
@@ -80,10 +82,16 @@ jobs:
             python3 scripts/build_native.py --platform "$TARGET_PLATFORM"
           fi
       - name: Verify extracted player with no runtime programs on PATH
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/native"
-          tar -xzf "dist/wocli-music-${VERSION}-${TARGET_PLATFORM}.tar.gz" -C "$RUNNER_TEMP/native"
-          python3 scripts/smoke_binary.py "$RUNNER_TEMP/native/wocli-music-${VERSION}-${TARGET_PLATFORM}/wocli"
+          if [ "$RUNNER_OS" = Windows ]; then
+            unzip "dist/wocli-music-${VERSION}-${TARGET_PLATFORM}.zip" -d "$RUNNER_TEMP/native"
+            python3 scripts/smoke_binary.py "$RUNNER_TEMP/native/wocli-music-${VERSION}-${TARGET_PLATFORM}/wocli.exe"
+          else
+            tar -xzf "dist/wocli-music-${VERSION}-${TARGET_PLATFORM}.tar.gz" -C "$RUNNER_TEMP/native"
+            python3 scripts/smoke_binary.py "$RUNNER_TEMP/native/wocli-music-${VERSION}-${TARGET_PLATFORM}/wocli"
+          fi
       - name: Test native decoding in clean Linux without Python, mpv or ALSA installed
         if: runner.os == 'Linux'
         run: python3 scripts/smoke_binary.py "$RUNNER_TEMP/native/wocli-music-${VERSION}-${TARGET_PLATFORM}/wocli" --docker
@@ -118,8 +126,8 @@ jobs:
           import hashlib
           from pathlib import Path
           root = Path('dist')
-          archives = sorted(root.glob('*.tar.gz'))
-          assert len(archives) == 6
+          archives = sorted(root.glob('*.tar.gz')) + sorted(root.glob('*.zip'))
+          assert len(archives) == 8
           for archive in archives:
               digest = hashlib.sha256(archive.read_bytes()).hexdigest()
               assert archive.with_suffix(archive.suffix + '.sha256').read_text().split()[0] == digest
@@ -127,7 +135,7 @@ jobs:
           PY
       - name: Publish only after all platforms pass
         run: |
-          gh release create "v${VERSION}" dist/*.tar.gz dist/SHA256SUMS \
+          gh release create "v${VERSION}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
             --draft --target "$RELEASE_COMMIT" --title "wocli-music v${VERSION} · Native Rust" \
             --notes-file "docs/releases/v${VERSION}.md"
           gh release edit "v${VERSION}" --draft=false --latest

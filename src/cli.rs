@@ -123,8 +123,14 @@ impl Args {
     }
 }
 pub fn expand_path(value: &str) -> PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest)
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .unwrap_or_default();
+        PathBuf::from(home).join(rest)
     } else {
         PathBuf::from(value)
     }

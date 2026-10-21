@@ -8,12 +8,20 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import zipfile
 
 
 def archive(source, target):
-    with target.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w") as output:
-            output.add(source, arcname=source.name)
+    if target.name.endswith(".zip"):
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False) as zf:
+            for file_path in sorted(source.rglob("*")):
+                if file_path.is_file():
+                    arcname = f"{source.name}/{file_path.relative_to(source)}"
+                    zf.write(file_path, arcname)
+    else:
+        with target.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w") as output:
+                output.add(source, arcname=source.name)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     target.with_suffix(target.suffix + ".sha256").write_text(f"{digest}  {target.name}\n")
     print(f"{target}: {target.stat().st_size:,} bytes")
@@ -36,7 +44,12 @@ def main():
     if bundle.exists():
         shutil.rmtree(bundle)
     bundle.mkdir()
-    shutil.copy2(root / "target/release/wocli", bundle / "wocli")
+    is_windows = args.platform.startswith("windows")
+    exe_name = "wocli.exe" if is_windows else "wocli"
+    src_bin = root / "target/release" / exe_name
+    if not src_bin.exists():
+        src_bin = root / "target/release/wocli"
+    shutil.copy2(src_bin, bundle / exe_name)
     sources = staging / (name + "-sources")
     if sources.exists():
         shutil.rmtree(sources)
@@ -68,13 +81,17 @@ def main():
         if args.alsa_source is None:
             raise SystemExit("Linux packaging requires --alsa-source directory with the matching Debian source files")
         shutil.copytree(args.alsa_source, sources / "alsa")
-    (bundle / "THIRD_PARTY.txt").write_text("\n".join(notices) + "\n")
-    (bundle / "README.txt").write_text(f"wocli-music {version}\n\nRun ./wocli. No Python, mpv or FFmpeg required.\nmacOS: wocli can be copied to ~/.local/bin.\nLinux: keep lib/ next to wocli; uses the desktop's audio configuration.\n\nDocumentation: https://github.com/yhan-sun/wocli-music\nData: ~/.config/wocli-music (or WOCLI_HOME / XDG_CONFIG_HOME).\nUpgrade from Python: stop the old daemon first; the library database is reused.\n\nThird-party notices: THIRD_PARTY.txt and licenses/.\nThe separate -sources archive is optional for running the player.\n")
-    (sources / "README.txt").write_text("Source code of bundled MPL dependencies and, on Linux, the matching ALSA source package. Build tools: Rust/Cargo and a C compiler. Application source and Cargo.lock are available at the release tag in the repository.\n")
+    (bundle / "THIRD_PARTY.txt").write_text("\n".join(notices) + "\n", encoding="utf-8")
+    (bundle / "README.txt").write_text(f"wocli-music {version}\n\nRun ./{exe_name}. No Python, mpv or FFmpeg required.\nmacOS: wocli can be copied to ~/.local/bin.\nLinux: keep lib/ next to wocli; uses the desktop's audio configuration.\nWindows: extract and run wocli.exe.\n\nDocumentation: https://github.com/yhan-sun/wocli-music\nData: ~/.config/wocli-music (or %APPDATA%\\wocli-music).\nUpgrade from Python: stop the old daemon first; the library database is reused.\n\nThird-party notices: THIRD_PARTY.txt and licenses/.\nThe separate -sources archive is optional for running the player.\n", encoding="utf-8")
+    (sources / "README.txt").write_text("Source code of bundled MPL dependencies and, on Linux, the matching ALSA source package. Build tools: Rust/Cargo and a C compiler. Application source and Cargo.lock are available at the release tag in the repository.\n", encoding="utf-8")
     dist = root / "dist"
     dist.mkdir(exist_ok=True)
-    archive(bundle, dist / (name + ".tar.gz"))
-    archive(sources, dist / (name + "-sources.tar.gz"))
+    if is_windows:
+        archive(bundle, dist / (name + ".zip"))
+        archive(sources, dist / (name + "-sources.zip"))
+    else:
+        archive(bundle, dist / (name + ".tar.gz"))
+        archive(sources, dist / (name + "-sources.tar.gz"))
 
 
 if __name__ == "__main__":

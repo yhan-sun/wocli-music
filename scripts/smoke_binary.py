@@ -1,19 +1,23 @@
 """Exercise an extracted binary with no Python, uv or system mpv on its PATH."""
 
 import argparse
-import fcntl
 import json
 import os
-import pty
 import re
 import select
 import struct
 import subprocess
+import sys
 import tempfile
-import termios
 import time
 import wave
 from pathlib import Path
+
+is_windows = sys.platform == "win32"
+if not is_windows:
+    import fcntl
+    import pty
+    import termios
 
 
 def main():
@@ -32,8 +36,9 @@ def main():
             if key
             not in ("PYTHONPATH", "PYTHONHOME", "WOCLI_MPV", "SSL_CERT_FILE", "CURL_CA_BUNDLE")
         }
+        clean_path = "C:\\Windows\\System32;C:\\Windows" if is_windows else "/no-runtime-installed"
         environment.update(
-            PATH="/no-runtime-installed",
+            PATH=clean_path,
             WOCLI_HOME=str(root / "data"),
             WOCLI_AUDIO_OUTPUT="null",
             TERM="xterm-256color",
@@ -128,7 +133,7 @@ def main():
             cli("mode", "shuffle")
             assert json.loads(cli("status", "--json"))["mode"] == "shuffle"
             assert "Portable bundle test" in json.loads(cli("lyrics", "--json"))["lyrics"]
-            if not args.docker:
+            if not args.docker and not is_windows:
                 master, slave = pty.openpty()
                 process = None
                 try:

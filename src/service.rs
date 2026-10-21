@@ -1,4 +1,5 @@
 use crate::{
+    ipc::Stream,
     lyrics,
     model::{Error, Result, Settings, Track, MODES, QUALITIES},
     order::Shuffle,
@@ -13,10 +14,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
-    os::unix::{
-        fs::PermissionsExt,
-        net::{UnixListener, UnixStream},
-    },
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -898,7 +895,7 @@ impl Service {
         }
     }
 }
-fn handle(mut stream: UnixStream, tx: Sender<Event>) {
+fn handle(mut stream: Stream, tx: Sender<Event>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let result = (|| -> Result<Value> {
         let mut line = String::new();
@@ -932,29 +929,86 @@ pub fn run(paths: Paths) -> Result<()> {
         return Ok(());
     }
     let _ = fs::remove_file(paths.socket());
-    let listener = UnixListener::bind(paths.socket())?;
-    fs::set_permissions(paths.socket(), fs::Permissions::from_mode(0o600))?;
-    listener.set_nonblocking(true)?;
     let quit = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, quit.clone())?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, quit.clone())?;
+    #[cfg(unix)]
+    {
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, quit.clone())?;
+        signal_hook::flag::register(signal_hook::consts::SIGINT, quit.clone())?;
+    }
     let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
     let mut service = Service::new(paths.clone(), tx.clone(), quit.clone())?;
     let listening = quit.clone();
-    let acceptor = thread::spawn(move || {
-        while !listening.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    let tx = tx.clone();
-                    thread::spawn(move || handle(stream, tx));
+
+    #[cfg(unix)]
+    let acceptor = {
+        let listener = std::os::unix::net::UnixListener::bind(paths.socket())?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(paths.socket(), fs::Permissions::from_mode(0o600));
+        listener.set_nonblocking(true)?;
+        let tx = tx.clone();
+        thread::spawn(move || {
+            while !listening.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let tx = tx.clone();
+                        thread::spawn(move || handle(Stream::Unix(stream), tx));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(15))
+                    }
+                    Err(_) => break,
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(15))
-                }
-                Err(_) => break,
             }
-        }
-    });
+        })
+    };
+
+    #[cfg(windows)]
+    let acceptor = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let token: String = (0..32)
+            .map(|_| format!("{:02x}", rand::random::<u8>()))
+            .collect();
+        fs::write(paths.socket(), format!("{port}\n{token}\n"))?;
+        listener.set_nonblocking(true)?;
+        let tx = tx.clone();
+        let expected_token = token;
+        thread::spawn(move || {
+            while !listening.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let tx = tx.clone();
+                        let token_auth = expected_token.clone();
+                        thread::spawn(move || {
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                            let mut bytes = Vec::new();
+                            let mut b = [0u8; 1];
+                            let mut ok = false;
+                            while stream.read(&mut b).is_ok_and(|n| n > 0) {
+                                if b[0] == b'\n' {
+                                    ok = true;
+                                    break;
+                                }
+                                if b[0] != b'\r' {
+                                    bytes.push(b[0]);
+                                }
+                                if bytes.len() > 128 {
+                                    break;
+                                }
+                            }
+                            if ok && String::from_utf8_lossy(&bytes) == token_auth {
+                                handle(Stream::Tcp(stream), tx);
+                            }
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(15))
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+    };
     while !quit.load(Ordering::Relaxed) {
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(30)) {
             service.event(event);

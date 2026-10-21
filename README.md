@@ -17,13 +17,15 @@
 
 **v0.2.0 用 Rust 替换了 Python、Textual、mpv 和 FFmpeg。** 音频通过 Rodio/Symphonia 解码，使用系统音频设备；SQLite 保存曲库。macOS ARM64 本地实测含许可证的压缩包约 **2.2 MB**，可执行文件约 **4 MB**。其他平台以 [Release 附件大小](https://github.com/yhan-sun/wocli-music/releases/latest) 为准；2 MB 是体积目标，未对所有平台设置相同的硬性上限。
 
-音乐来自公开音源，搜索不需要登录；部分曲目或音质可能无完整音频。程序会拒绝明显的试听片段、错误内容和不完整传输，并显示具体错误。没有账号歌单同步、Windows 后台控制、封面或系统媒体键。
+音乐来自公开音源，搜索不需要登录；部分曲目或音质可能无完整音频。程序会拒绝明显的试听片段、错误内容和不完整传输，并显示具体错误。没有账号歌单同步、封面或系统媒体键。
 
 ## 安装
 
 无需预装 Rust、Python、uv、mpv 或 FFmpeg。
 
 ### 一键脚本安装（推荐）
+
+#### macOS / Linux (Terminal)
 
 在终端运行以下命令，脚本会自动识别你的系统（macOS ARM64 / Intel、Linux x86_64）、下载对应安装包、校验 SHA256 完整性并安装到用户命令路径：
 
@@ -44,6 +46,23 @@ curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.s
   curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --uninstall
   ```
 
+#### Windows (PowerShell)
+
+在 PowerShell 中执行以下命令，脚本会自动下载 Windows 原生版本、校验 SHA256 签名，并将 `wocli.exe` 自动添加至用户 PATH 环境变量：
+
+```powershell
+irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
+```
+
+- **自定义安装目录**：
+  ```powershell
+  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -InstallDir "C:\Tools\wocli"
+  ```
+- **卸载**：
+  ```powershell
+  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -Uninstall
+  ```
+
 ### 手动下载安装
 
 你也可以直接从 [Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
@@ -53,6 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.s
 | Apple Silicon Mac (macOS 15+) | `wocli-music-0.2.0-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
 | Intel Mac (macOS 15+) | `wocli-music-0.2.0-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
 | Linux x86_64 (glibc 2.35+) | `wocli-music-0.2.0-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
+| Windows 10/11 x86_64 / ARM64 | `wocli-music-0.2.0-windows-x86_64.zip` | 解压后将 `wocli.exe` 放置于任何 PATH 目录 |
 
 以 Apple Silicon Mac 为例：
 
@@ -163,8 +183,8 @@ wocli-music 可以通过 CLI 命令设置持久化偏好，也可以使用环境
 
 | 环境变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
-| `WOCLI_HOME` | `~/.config/wocli-music` | 数据与配置主目录。存放 SQLite 曲库 (`library.sqlite3`)、配置 (`settings.json`)、后台日志 (`service-rust.log`) 和歌词缓存。遵循 `XDG_CONFIG_HOME`。 |
-| `WOCLI_RUNTIME_DIR` | `/tmp/wocli-rust-{uid}-{hash}` | 运行期 IPC 控制 Socket 目录 (`control.sock`)。若未设置则优先遵循 `XDG_RUNTIME_DIR`。 |
+| `WOCLI_HOME` | `~/.config/wocli-music` (Linux/macOS)<br>`%APPDATA%\wocli-music` (Windows) | 数据与配置主目录。存放 SQLite 曲库 (`library.sqlite3`)、配置 (`settings.json`)、后台日志 (`service-rust.log`) 和歌词缓存。遵循 `XDG_CONFIG_HOME`。 |
+| `WOCLI_RUNTIME_DIR` | `/tmp/wocli-rust-{uid}-{hash}` (Linux/macOS)<br>`%LOCALAPPDATA%\wocli-music\run` (Windows) | 运行期 IPC 控制 Socket/Endpoint 目录。类 Unix 下存放 `control.sock`，Windows 下存放 `control.endpoint`。 |
 | `WOCLI_DOWNLOAD_DIR` | `~/Music/wocli` (TUI) / `downloads` (CLI) | 歌曲与歌词下载的默认目标保存目录。 |
 | `WOCLI_AUDIO_OUTPUT` | *(默认系统声卡)* | 设为 `null` 时禁用实际音频硬件输出（仅解码不发声）。适用于无声卡服务器、容器环境或自动化测试。 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | *(无)* | HTTP / HTTPS 代理服务器地址（支持 socks5:// 或 http://），内部网络请求自动遵循代理设置。 |
