@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.2.1 — 2026-10-21
+
+- 支持 Windows 10/11 原生运行：重构跨平台 IPC 通信与后台常驻服务，实现零窗口后台常驻与 CLI/TUI 控制。
+- 新增官方跨平台一键安装脚本体系：支持 Shell (`install.sh`) 与 PowerShell (`install.ps1`) 自动安装与自动 PATH 配置。
+- 完善环境变量与运行期诊断：支持 `WOCLI_HOME`、`WOCLI_RUNTIME_DIR`、`WOCLI_DOWNLOAD_DIR` 等并在 `wocli doctor` 中展示。
+- 将 Windows x86_64 接入 GitHub Actions 自动化构建与冒烟测试流水线，产出约 3.0 MB 的原生 Windows 发行包。
+
 ## 0.2.0 — 2026-10-21
 
 - 迁移为 Rust 原生播放器，以 Rodio/Symphonia 替代 mpv/FFmpeg，不再捆绑 Python。
