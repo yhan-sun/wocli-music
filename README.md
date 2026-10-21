@@ -148,12 +148,30 @@ wocli play --id 61631119 --quality 320k
 wocli play ~/Music/song.flac
 wocli pause
 wocli resume
+wocli toggle               # 或 wocli play-pause
+wocli next                 # 切下一首（支持别名 wocli skip，--no-wait 异步）
+wocli prev                 # 切上一首（支持别名 wocli previous）
 wocli seek +15
 wocli volume 60
 wocli mode shuffle          # list / repeat / single / shuffle
 wocli status --json
 wocli stop
 ```
+
+### 任务栏小图标与实时任务栏歌词
+
+```bash
+wocli tray start           # 启动系统托盘小图标服务（macOS 菜单栏 / Windows 通知区）
+wocli tray status          # 查看托盘运行状态
+wocli tray stop            # 停止托盘服务
+
+wocli lyrics-bar on        # 开启任务栏 / 状态栏实时歌词
+wocli lyrics-bar off       # 关闭任务栏实时歌词
+wocli lyrics-bar toggle    # 快速切换开启/关闭
+```
+
+- **macOS**：系统状态栏小图标直接实时呈现当前唱到的逐句歌词（`🎵 歌词内容`），点击展开原生控制菜单。
+- **Windows**：桌面/任务栏置顶高对比度透明描边歌词条，支持鼠标直接穿透，托盘图标悬停展示多行完整歌词。
 
 ```bash
 wocli like                 # 喜欢或取消喜欢当前歌曲

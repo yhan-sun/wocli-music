@@ -128,6 +128,10 @@ fn native_service_preserves_pause_seek_lyrics_collections_and_queue() {
     assert_ne!(next["track"]["id"], id);
     app.cli(&["prev"]);
     assert_eq!(app.phase("playing")["track"]["id"], id);
+    assert_eq!(app.cli(&["lyrics-bar", "status"])["lyrics_bar"], true);
+    assert_eq!(app.cli(&["lyrics-bar", "off"])["lyrics_bar"], false);
+    assert_eq!(app.cli(&["lyrics-bar", "toggle"])["lyrics_bar"], true);
+    assert_eq!(app.cli(&["tray", "status"])["tray_running"], false);
     app.cli(&["daemon", "stop"]);
     let saved = app.cli(&["favorites"]);
     assert_eq!(saved[0]["id"], id);

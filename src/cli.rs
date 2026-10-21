@@ -23,17 +23,19 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   play 关键词 [--pick N]             选择并播放
   play --id ID [--quality best]      按 ID 播放
   play /path/song.flac               播放本地音频
-  pause | resume | toggle | stop     播放控制
-  next | prev | seek 秒数            切歌和相对跳转
+  pause | resume | toggle | stop     播放控制（支持 play-pause）
+  next | prev | seek 秒数            切歌与跳转（支持 skip / previous，--no-wait）
   volume 0-100 | mode 播放方式        list / repeat / single / shuffle
   status | favorites | history       状态、喜欢、历史
   queue add|list|remove|clear         管理队列
   playlist create|list|show|add|remove|rename|delete|play
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
+  lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
+  tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
-  config [配置项 值]                 quality / volume / mode / direct / lyric_offset
-  doctor | daemon start|stop|status   诊断及后台服务
+  config [配置项 值]                 quality / volume / mode / direct / lyric_offset / lyrics_bar / tray
+  doctor | daemon start|stop|status [--tray]  诊断及后台服务
 
 环境变量：
   WOCLI_HOME         数据与配置目录（默认 ~/.config/wocli-music）
@@ -43,7 +45,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY 网络代理配置
 
 选项：
-  --json 输出 JSON；--direct 忽略环境代理；--version 查看版本。
+  --json 输出 JSON；--direct 忽略环境代理；--tray 启动托盘小图标；--no-wait 异步切歌；--version 查看版本。
 ";
 struct Args {
     pos: Vec<String>,
@@ -90,6 +92,7 @@ impl Args {
                 "--help",
                 "-h",
                 "--next",
+                "--tray",
             ]
             .contains(&value.as_str())
             {
@@ -329,12 +332,114 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             }
             value
         }
-        "pause" | "resume" | "toggle" | "next" | "prev" | "stop" => {
-            let value = request(&paths, json!({"op":command}))?;
+        "pause" | "resume" | "toggle" | "play-pause" => {
+            let op = if command == "play-pause" {
+                "toggle"
+            } else {
+                command
+            };
+            let value = request(&paths, json!({"op":op}))?;
             if !args.flag("--json") {
                 print_status(&value);
             }
             value
+        }
+        "next" | "skip" | "prev" | "previous" => {
+            let op = if command == "prev" || command == "previous" {
+                "prev"
+            } else {
+                "next"
+            };
+            request(&paths, json!({"op":op}))?;
+            let value = if args.flag("--no-wait") {
+                request(&paths, json!({"op":"status"}))?
+            } else {
+                wait(&paths)?
+            };
+            if !args.flag("--json") {
+                print_status(&value);
+            }
+            value
+        }
+        "stop" => {
+            let value = request(&paths, json!({"op":"stop"}))?;
+            if !args.flag("--json") {
+                print_status(&value);
+            }
+            value
+        }
+        "lyrics-bar" => {
+            let sub = args.pos.get(1).map(String::as_str).unwrap_or("status");
+            let current = paths.settings()?.lyrics_bar;
+            let target = match sub {
+                "on" | "enable" | "1" | "true" => true,
+                "off" | "disable" | "0" | "false" => false,
+                "toggle" => !current,
+                "status" => current,
+                _ => return Err(Error::new("用法：wocli lyrics-bar [on|off|toggle|status]")),
+            };
+            if sub != "status" {
+                if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
+                    request(
+                        &paths,
+                        json!({"op":"config","key":"lyrics_bar","value":target}),
+                    )?;
+                } else {
+                    let mut s = paths.settings()?;
+                    s.lyrics_bar = target;
+                    paths.save_settings(&s)?;
+                }
+            }
+            let res = json!({"lyrics_bar": target});
+            if !args.flag("--json") {
+                println!("任务栏歌词：{}", if target { "已开启" } else { "已关闭" });
+            }
+            res
+        }
+        "tray" => {
+            let action = args.pos.get(1).map(String::as_str).unwrap_or("status");
+            match action {
+                "run" => {
+                    crate::tray::run(paths)?;
+                    return Ok(());
+                }
+                "start" => {
+                    crate::tray::start(&paths)?;
+                    let res = json!({"tray": "running"});
+                    if !args.flag("--json") {
+                        println!("托盘服务运行中");
+                    }
+                    res
+                }
+                "stop" => {
+                    crate::tray::stop(&paths)?;
+                    let res = json!({"tray": "stopped"});
+                    if !args.flag("--json") {
+                        println!("托盘服务已停止");
+                    }
+                    res
+                }
+                "status" => {
+                    let running = crate::tray::status(&paths)?;
+                    let res = json!({"tray_running": running});
+                    if !args.flag("--json") {
+                        println!(
+                            "{}",
+                            if running {
+                                "托盘运行中"
+                            } else {
+                                "托盘未运行"
+                            }
+                        );
+                    }
+                    res
+                }
+                _ => {
+                    return Err(Error::new(
+                        "未知托盘操作，请使用：start | stop | status | run",
+                    ))
+                }
+            }
         }
         "seek" | "volume" | "mode" => {
             let value = if command == "mode" {
@@ -589,9 +694,9 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                     "volume" | "lyric_offset" => {
                         json!(raw.parse::<i64>().map_err(|_| Error::new("配置应为整数"))?)
                     }
-                    "direct" => json!(raw
+                    "direct" | "lyrics_bar" | "tray" => json!(raw
                         .parse::<bool>()
-                        .map_err(|_| Error::new("direct 应为 true 或 false"))?),
+                        .map_err(|_| Error::new(format!("{key} 应为 true 或 false")))?),
                     _ => json!(raw),
                 };
                 if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
@@ -657,8 +762,15 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         "daemon" => {
             let action = args.arg(1)?;
             let value = match action {
-                "start" => request(&paths, json!({"op":"status"}))?,
+                "start" => {
+                    let v = request(&paths, json!({"op":"status"}))?;
+                    if args.flag("--tray") || settings.tray {
+                        let _ = crate::tray::start(&paths);
+                    }
+                    v
+                }
                 "stop" => {
+                    let _ = crate::tray::stop(&paths);
                     ipc::request(&paths, json!({"op":"shutdown"}), false)?.unwrap_or(Value::Null)
                 }
                 "status" => {

@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let json = raw.iter().any(|v| v == "--json");

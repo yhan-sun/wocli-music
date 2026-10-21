@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.2.3 — 2026-10-21
+
+- 新增系统托盘小图标控制（macOS 状态栏 / Windows 通知区域）：支持播放/暂停、上一首、下一首、播放模式循环切换、音量调节与打开终端。
+- 新增系统任务栏 / 状态栏实时歌词显示：
+  - macOS：状态栏图标动态呈现当前唱到的实时逐句歌词（`🎵 歌词内容`）。
+  - Windows：高对比度、带阴影描边、鼠标穿透的桌面/任务栏置顶透明歌词条，并在托盘悬停 Tooltip 中同步多行曲目与歌词信息。
+- 完善切歌与控制命令：
+  - 增强 `wocli next` 与 `wocli prev`（支持 `--no-wait` 异步切换），新增别名 `skip`、`previous`。
+  - 新增播放暂停切换别名 `wocli play-pause`。
+  - 新增任务栏歌词开关与查询命令 `wocli lyrics-bar [on|off|toggle|status]`。
+  - 新增系统托盘服务守护命令 `wocli tray start|stop|status|run`，并在 `daemon start --tray` 中提供一体化拉起。
+
 ## 0.2.2 — 2026-10-21
 
 - 修复 Windows Winsock 接受套接字继承非阻塞模式问题（解决偶发 `os error 10035` WSAEWOULDBLOCK 与 `10054` WSAECONNRESET）。

@@ -67,6 +67,8 @@ pub struct Status {
     pub received: u64,
     pub total: u64,
     pub downloads: Vec<Job>,
+    pub lyrics_bar: bool,
+    pub tray: bool,
 }
 #[derive(Serialize, Deserialize, Default)]
 struct Queue {
@@ -196,6 +198,8 @@ impl Service {
             default_quality: self.settings.quality.clone(),
             volume: self.settings.volume,
             mode: self.settings.mode.clone(),
+            lyrics_bar: self.settings.lyrics_bar,
+            tray: self.settings.tray,
             error: self
                 .error
                 .as_ref()
@@ -652,6 +656,16 @@ impl Service {
                         settings.lyric_offset = request["value"]
                             .as_i64()
                             .ok_or_else(|| Error::new("歌词偏移应为毫秒整数"))?
+                    }
+                    "lyrics_bar" => {
+                        settings.lyrics_bar = request["value"]
+                            .as_bool()
+                            .ok_or_else(|| Error::new("lyrics_bar 应为 true 或 false"))?
+                    }
+                    "tray" => {
+                        settings.tray = request["value"]
+                            .as_bool()
+                            .ok_or_else(|| Error::new("tray 应为 true 或 false"))?
                     }
                     _ => return Err(Error::new("未知配置项")),
                 }

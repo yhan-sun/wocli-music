@@ -87,6 +87,8 @@ pub struct Settings {
     pub mode: String,
     pub direct: bool,
     pub lyric_offset: i64,
+    pub lyrics_bar: bool,
+    pub tray: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -96,6 +98,8 @@ impl Default for Settings {
             mode: "list".into(),
             direct: false,
             lyric_offset: 0,
+            lyrics_bar: true,
+            tray: true,
         }
     }
 }
