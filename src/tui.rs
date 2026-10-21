@@ -68,6 +68,7 @@ enum Action {
     Seek,
     ConfirmDelete(String),
     SubmitInput,
+    JobSelect(usize),
 }
 #[derive(Clone)]
 struct Menu {
@@ -155,7 +156,8 @@ impl App {
             state: Status {
                 volume: settings.volume,
                 mode: settings.mode,
-                requested_quality: settings.quality,
+                requested_quality: settings.quality.clone(),
+                default_quality: settings.quality,
                 ..Status::default()
             },
             view: View::Likes,
@@ -386,7 +388,12 @@ impl App {
                             format!(
                                 "{}{}",
                                 q,
-                                if self.state.requested_quality == *q {
+                                if (if retry {
+                                    &self.state.requested_quality
+                                } else {
+                                    &self.state.default_quality
+                                }) == *q
+                                {
                                     "  ✓"
                                 } else {
                                     ""
@@ -501,7 +508,7 @@ impl App {
                     .unwrap_or_else(|| "~/Music/wocli".into());
                 let quality = QUALITIES
                     .iter()
-                    .position(|q| *q == self.state.requested_quality)
+                    .position(|q| *q == self.state.default_quality)
                     .unwrap_or(0);
                 self.popup = Some(Popup::Download {
                     track,
@@ -552,6 +559,7 @@ impl App {
             ),
             Action::Close => self.popup = None,
             Action::SubmitInput => self.submit_input()?,
+            Action::JobSelect(index) => self.popup = Some(Popup::Jobs(index)),
             Action::Seek => {}
         }
         Ok(())
@@ -954,7 +962,7 @@ impl App {
             self.button(
                 frame,
                 Rect::new(right, header.y, width, 1),
-                &format!("{} ▾", self.state.requested_quality),
+                &format!("{} ▾", self.state.default_quality),
                 Action::Quality(false),
                 false,
             );
@@ -1601,6 +1609,7 @@ impl App {
                 let list=Rect::new(body.x,body.y,body.width,body.height.saturating_sub(4));
                 let items:Vec<ListItem>=jobs.iter().map(|j|ListItem::new(format!("{}  {}{}",job_phase(&j.phase),j.track.title,if j.total>0{format!("  {}%",j.received*100/j.total)}else{String::new()}))).collect();
                 let mut state=ListState::default().with_selected(Some(index));frame.render_stateful_widget(List::new(items).highlight_style(Style::default().fg(ACCENT).bg(SELECTED)),list,&mut state);
+                for i in state.offset()..jobs.len().min(state.offset()+list.height as usize){self.hit(Rect::new(list.x,list.y+(i-state.offset()) as u16,list.width,1),Action::JobSelect(i));}
                 if let Some(job)=jobs.get(index){
                     let detail=if !job.error.is_empty(){&job.error}else if !job.warning.is_empty(){&job.warning}else{&job.path};
                     frame.render_widget(Paragraph::new(detail.clone()).style(Style::default().fg(if job.phase=="error"{BAD}else{DIM})),Rect::new(body.x,body.bottom().saturating_sub(3),body.width,1));
@@ -1888,5 +1897,96 @@ mod screenshots {
             )
             .unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    fn setup() -> (tempfile::TempDir, App, Receiver<Request>) {
+        let root = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (events, _) = mpsc::channel();
+        let app = App::new(
+            Paths {
+                home: root.path().into(),
+                runtime: root.path().join("run"),
+            },
+            tx,
+            events,
+        )
+        .unwrap();
+        (root, app, rx)
+    }
+    #[test]
+    fn collection_context_is_selected_song_or_current_lyrics_song() {
+        let (_root, mut app, _rx) = setup();
+        let selected = Track {
+            id: "1".into(),
+            title: "选中".into(),
+            ..Track::default()
+        };
+        let playing = Track {
+            id: "2".into(),
+            title: "播放中".into(),
+            ..Track::default()
+        };
+        app.store.favorite(&selected).unwrap();
+        app.store.create_folder("日常").unwrap();
+        app.reload().unwrap();
+        app.state.track = Some(playing.clone());
+        app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(&app.popup,Some(Popup::Menu(m)) if m.caption==selected.title));
+        app.act(Action::Collected("日常".into(), selected)).unwrap();
+        assert_eq!(app.store.folder("日常").unwrap()[0].id, "1");
+        app.full_lyrics = true;
+        app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(&app.popup,Some(Popup::Menu(m)) if m.caption==playing.title));
+    }
+    #[test]
+    fn drag_keeps_original_track_identity_when_song_changes() {
+        let (_root, mut app, rx) = setup();
+        app.state.phase = "paused".into();
+        app.state.duration = 200.;
+        app.state.track = Some(Track {
+            id: "old".into(),
+            ..Default::default()
+        });
+        app.timeline = Rect::new(10, 20, 101, 1);
+        app.mouse(MouseEventKind::Down(event::MouseButton::Left), 60, 20)
+            .unwrap();
+        app.state.track = Some(Track {
+            id: "new".into(),
+            ..Default::default()
+        });
+        app.mouse(MouseEventKind::Up(event::MouseButton::Left), 60, 20)
+            .unwrap();
+        let command = rx.try_recv().unwrap();
+        assert_eq!(command.value["track_id"], "old");
+        assert_eq!(command.value["position"], 100.);
+    }
+    #[test]
+    fn text_input_accepts_space_and_q_without_quitting() {
+        let (_root, mut app, _rx) = setup();
+        app.act(Action::Search).unwrap();
+        for c in ['C', 'r', 'y', ' ', 'q'] {
+            assert!(!app
+                .key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap());
+        }
+        assert_eq!(app.query, "Cry q");
+        app.act(Action::NewFolder(None)).unwrap();
+        if let Some(Popup::Input { value, .. }) = &mut app.popup {
+            *value = "旅途".into();
+        }
+        app.act(Action::SubmitInput).unwrap();
+        assert!(app
+            .store
+            .folders()
+            .unwrap()
+            .iter()
+            .any(|(name, _)| name == "旅途"));
     }
 }

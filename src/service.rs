@@ -55,6 +55,7 @@ pub struct Status {
     pub duration: f64,
     pub quality: String,
     pub requested_quality: String,
+    pub default_quality: String,
     pub volume: u8,
     pub mode: String,
     pub liked: bool,
@@ -195,6 +196,7 @@ impl Service {
             duration,
             quality: self.quality.clone(),
             requested_quality: self.requested_quality.clone(),
+            default_quality: self.settings.quality.clone(),
             volume: self.settings.volume,
             mode: self.settings.mode.clone(),
             error: self
@@ -509,8 +511,20 @@ impl Service {
                     ));
                     match provider.lyrics(&job.track) {
                         Ok(text) if !lyrics::parse(&text).is_empty() => {
-                            if fs::write(path.with_extension("lrc"), text).is_err() {
-                                warning = "音频已保存，歌词文件保存失败".into();
+                            let write_lyric = (|| -> std::io::Result<()> {
+                                let mut options = OpenOptions::new();
+                                options.write(true);
+                                if job.overwrite {
+                                    options.create(true).truncate(true);
+                                } else {
+                                    options.create_new(true);
+                                }
+                                options
+                                    .open(path.with_extension("lrc"))?
+                                    .write_all(text.as_bytes())
+                            })();
+                            if write_lyric.is_err() {
+                                warning = "音频已保存，歌词文件已存在或无法写入".into();
                             }
                         }
                         _ => warning = "音频已保存，未取得歌词".into(),
