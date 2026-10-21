@@ -178,6 +178,8 @@ pub fn start(paths: &Paths) -> Result<()> {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("__daemon")
+            .arg("--home")
+            .arg(&paths.home)
             .env("WOCLI_HOME", &paths.home)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
@@ -209,16 +211,43 @@ pub fn start(paths: &Paths) -> Result<()> {
     #[cfg(windows)]
     {
         let exe = std::env::current_exe()?;
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "start", "/b", ""])
-            .arg(&exe)
-            .arg("__daemon")
-            .env("WOCLI_HOME", &paths.home)
+        let cmd_line = format!(
+            "\"{}\" __daemon --home \"{}\"",
+            exe.to_string_lossy(),
+            paths.home.to_string_lossy()
+        );
+        let ps_cmd = format!(
+            "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{}'}}",
+            cmd_line.replace('\'', "''")
+        );
+        let spawned = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &ps_cmd,
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = cmd.spawn()?;
-        let _ = child.wait();
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !spawned {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", "start", "/b", ""])
+                .arg(&exe)
+                .arg("__daemon")
+                .arg("--home")
+                .arg(&paths.home)
+                .env("WOCLI_HOME", &paths.home)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = cmd.spawn();
+        }
         for _ in 0..600 {
             if connect(paths).is_ok() {
                 return Ok(());

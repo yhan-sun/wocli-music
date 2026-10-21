@@ -70,6 +70,7 @@ impl Args {
                 "--output",
                 "--page",
                 "--limit",
+                "--home",
             ]
             .contains(&value.as_str())
             {
@@ -268,7 +269,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         print!("{HELP}");
         return Ok(());
     }
-    let paths = Paths::discover()?;
+    let paths = Paths::discover_opt(args.value("--home"))?;
     let command = args.pos.first().map(String::as_str).unwrap_or("tui");
     if command == "__daemon" {
         return service::run(paths);

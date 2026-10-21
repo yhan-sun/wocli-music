@@ -15,7 +15,13 @@ pub struct Paths {
 }
 impl Paths {
     pub fn discover() -> Result<Self> {
-        let home = if let Some(value) = env::var_os("WOCLI_HOME") {
+        Self::discover_opt(None)
+    }
+
+    pub fn discover_opt(override_home: Option<&str>) -> Result<Self> {
+        let home = if let Some(value) = override_home {
+            PathBuf::from(value)
+        } else if let Some(value) = env::var_os("WOCLI_HOME") {
             PathBuf::from(value)
         } else {
             #[cfg(windows)]

@@ -950,6 +950,7 @@ pub fn run(paths: Paths) -> Result<()> {
             while !listening.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let tx = tx.clone();
                         thread::spawn(move || handle(Stream::Unix(stream), tx));
                     }
@@ -977,6 +978,7 @@ pub fn run(paths: Paths) -> Result<()> {
             while !listening.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let tx = tx.clone();
                         let token_auth = expected_token.clone();
                         thread::spawn(move || {
