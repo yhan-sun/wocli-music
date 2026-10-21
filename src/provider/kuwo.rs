@@ -17,13 +17,7 @@ use std::{
 const UA: &str = "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; .NET CLR 1.1.4322)";
 const VERSION: &str = "MUSIC_8.7.4.0_BDS3";
 const CLIENT: &str = "58365624";
-#[derive(Clone, Debug)]
-pub struct Stream {
-    pub url: String,
-    pub quality: String,
-    pub size: u64,
-    pub extension: String,
-}
+pub use super::traits::Stream;
 #[derive(Clone, Debug)]
 struct Quality {
     name: String,
@@ -167,10 +161,11 @@ pub fn valid_audio(head: &[u8]) -> bool {
 }
 
 #[derive(Clone)]
-pub struct Provider {
+pub struct KuwoProvider {
     agent: ureq::Agent,
 }
-impl Provider {
+pub type Provider = KuwoProvider;
+impl KuwoProvider {
     pub fn new(direct: bool) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
@@ -793,7 +788,7 @@ impl Provider {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     #[test]
     fn protocol_matches_existing_python_vector() {
@@ -813,7 +808,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod transfer_tests {
+pub mod transfer_tests {
     use super::*;
     use std::{io::BufRead, net::TcpListener, thread};
     fn server(responses: Vec<(String, Vec<u8>)>) -> (String, thread::JoinHandle<()>) {
