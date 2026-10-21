@@ -9,3 +9,4 @@ dist/
 artifacts/
 build/
 *.spec
+target/

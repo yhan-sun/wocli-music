@@ -1,0 +1,112 @@
+use crate::{
+    model::{Error, Result},
+    store::Paths,
+};
+use serde_json::{json, Value};
+use std::{
+    fs::OpenOptions,
+    io::{BufRead, BufReader, Read, Write},
+    os::unix::{net::UnixStream, process::CommandExt},
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
+
+pub fn request(paths: &Paths, value: Value, autostart: bool) -> Result<Option<Value>> {
+    let stream = match UnixStream::connect(paths.socket()) {
+        Ok(stream) => stream,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.kind() == std::io::ErrorKind::ConnectionRefused =>
+        {
+            if !autostart {
+                return Ok(None);
+            }
+            start(paths)?;
+            UnixStream::connect(paths.socket())?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let shutdown = value["op"] == "shutdown";
+    let response = exchange(stream, value)?;
+    if shutdown {
+        use fs2::FileExt;
+        let lock = OpenOptions::new()
+            .write(true)
+            .open(paths.runtime.join("service.lock"))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if lock.try_lock_exclusive().is_ok() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::new("后台仍在清理下载任务，请稍后重试"));
+            }
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+    Ok(Some(response))
+}
+pub fn exchange(mut stream: UnixStream, value: Value) -> Result<Value> {
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    serde_json::to_writer(&mut stream, &value)?;
+    stream.write_all(b"\n")?;
+    let mut response = String::new();
+    BufReader::new(stream)
+        .take(2 * 1024 * 1024)
+        .read_line(&mut response)?;
+    let result: Value =
+        serde_json::from_str(&response).map_err(|_| Error::new("后台服务响应无效"))?;
+    if result["ok"] == true {
+        Ok(result["data"].clone())
+    } else {
+        Err(Error {
+            message: result["error"]
+                .as_str()
+                .unwrap_or("后台服务请求失败")
+                .into(),
+            code: result["code"].as_str().unwrap_or("error").into(),
+            details: serde_json::from_value(result["details"].clone()).unwrap_or_default(),
+        })
+    }
+}
+pub fn start(paths: &Paths) -> Result<()> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paths.home.join("service-rust.log"))?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("__daemon")
+        .env("WOCLI_HOME", &paths.home)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let mut child = command.spawn()?;
+    for _ in 0..600 {
+        if UnixStream::connect(paths.socket()).is_ok() {
+            return Ok(());
+        }
+        if child.try_wait()?.is_some_and(|status| !status.success()) {
+            return Err(Error::new(format!(
+                "后台服务启动失败：{}",
+                paths.home.join("service-rust.log").display()
+            )));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(Error::new("后台服务启动超时"))
+}
+pub fn control(paths: &Paths, op: &str) -> Result<Value> {
+    request(paths, json!({"op":op}), true)?.ok_or_else(|| Error::new("后台服务未运行"))
+}

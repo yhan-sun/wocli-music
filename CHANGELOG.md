@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.2.0 — 2026-10-21
+
+- 迁移为 Rust 原生播放器，以 Rodio/Symphonia 替代 mpv/FFmpeg，不再捆绑 Python。
+- 保留搜索、歌词、收藏夹、后台、CLI、播放方式、进度跳转和下载；兼容旧版 SQLite 曲库。
+- macOS ARM64 本地完整安装包约 2.2 MB；Actions 改为三个平台的原生构建及真实产物验证。
+- 歌曲与歌词独立重试、分块长度与 MD5 验证、下载取消、过期请求隔离。
+- 重做 README、迁移说明和真实 Rust TUI 截图。
+
 ## 0.1.1 — 2026-10-21
 
 - 新增 GitHub Actions 构建与发布：macOS Apple Silicon、macOS Intel、Linux x86_64。

@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -94,7 +95,7 @@ def main():
             )
             if result.returncode:
                 diagnostics = []
-                for name in ("mpv.log", "service.log"):
+                for name in ("service-rust.log",):
                     log = root / "data" / name
                     if log.is_file():
                         diagnostics.append(name + ":\n" + log.read_text(errors="replace")[-4000:])
@@ -106,7 +107,7 @@ def main():
         try:
             print(cli("--version"), flush=True)
             doctor = json.loads(cli("doctor", "--json"))
-            assert "_internal/mpv/mpv" in doctor["mpv"], doctor
+            assert doctor["runtime"] == "native" and doctor["engine"] == "rodio/symphonia", doctor
             state = json.loads(cli("play", str(song), "--json"))
             assert state["phase"] == "playing", state
             # The short-lived CLI has exited; the detached frozen service and mpv survive.
@@ -153,7 +154,7 @@ def main():
                         if ready:
                             transcript.extend(os.read(master, 65536))
                     assert process.wait(timeout=2) == 0, transcript.decode(errors="replace")[-4000:]
-                    assert "收藏到" in transcript.decode(errors="replace")
+                    assert "收藏到" in re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", transcript.decode(errors="replace")), transcript.decode(errors="replace")[-3000:]
                 finally:
                     if process and process.poll() is None:
                         process.kill()
@@ -162,7 +163,7 @@ def main():
                     os.close(slave)
             assert json.loads(cli("status", "--json"))["phase"] == "paused"
             print(
-                "PASS: bundled mpv, detached service, playback, seek, lyrics, collections, mode and TUI",
+                "PASS: native decoding, detached service, playback, seek, lyrics, collections, mode and TUI",
                 flush=True,
             )
         finally:
