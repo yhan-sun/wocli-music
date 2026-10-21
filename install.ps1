@@ -10,6 +10,7 @@ param (
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
 $DefaultTag = "v0.2.3"
 
@@ -117,8 +118,13 @@ try {
     $zipPath = Join-Path $tempDir $archiveName
     $sumsPath = Join-Path $tempDir "SHA256SUMS"
 
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
-    Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        curl.exe -fL "$downloadUrl" -o "$zipPath"
+        curl.exe -fL "$sumsUrl" -o "$sumsPath"
+    } else {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+        Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
+    }
 
     Write-Info "正在校验 SHA256 签名..."
     $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
