@@ -9,6 +9,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -211,6 +212,24 @@ def main():
     # be resolved relative to each individual dylib during dependency scanning.
     for library in (mpv.parent / "lib").glob("*.dylib"):
         extra_binaries += ["--add-binary", f"{library}:."]
+    if system == "linux":
+        # PyInstaller normally omits the host graphics stack. mpv links some
+        # of these libraries even with --no-video, so include its entire ELF
+        # dependency closure except the target system's glibc and loader.
+        dependencies = subprocess.check_output(["ldd", str(mpv)], text=True)
+        baseline = {
+            "libc.so.6",
+            "libm.so.6",
+            "libdl.so.2",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libresolv.so.2",
+            "libutil.so.1",
+            "libanl.so.1",
+        }
+        for soname, path in re.findall(r"(\S+)\s+=>\s+(/\S+)\s+\(", dependencies):
+            if soname not in baseline:
+                extra_binaries += ["--add-binary", f"{path}:."]
     subprocess.run(
         [
             sys.executable,

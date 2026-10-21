@@ -55,6 +55,8 @@ def main():
                     "run",
                     "--detach",
                     "--rm",
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
                     "--network",
                     "none",
                     "-v",
@@ -91,7 +93,14 @@ def main():
                 timeout=30,
             )
             if result.returncode:
-                raise RuntimeError(f"{arguments}: {result.stderr}\n{result.stdout}")
+                diagnostics = []
+                for name in ("mpv.log", "service.log"):
+                    log = root / "data" / name
+                    if log.is_file():
+                        diagnostics.append(name + ":\n" + log.read_text(errors="replace")[-4000:])
+                raise RuntimeError(
+                    f"{arguments}: {result.stderr}\n{result.stdout}\n" + "\n".join(diagnostics)
+                )
             return result.stdout.strip()
 
         try:
