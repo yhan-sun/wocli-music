@@ -1450,7 +1450,6 @@ pub fn run(paths: Paths) -> Result<()> {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         let _ = stream.set_nodelay(true);
-                        let _ = stream.set_linger(Some(Duration::ZERO));
                         if let Some(guard) = limiter_clone.acquire() {
                             let tx = tx.clone();
                             let token_auth = expected_token.clone();

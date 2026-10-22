@@ -90,26 +90,8 @@ pub fn connect(paths: &Paths) -> Result<Stream> {
 }
 
 #[cfg(windows)]
-static ENDPOINT_CACHE: std::sync::Mutex<Option<(u16, String)>> = std::sync::Mutex::new(None);
-
-#[cfg(windows)]
 pub fn connect(paths: &Paths) -> Result<Stream> {
     use std::fs;
-
-    if let Ok(guard) = ENDPOINT_CACHE.lock() {
-        if let Some((port, token)) = guard.as_ref() {
-            if let Ok(mut tcp) = TcpStream::connect(("127.0.0.1", *port)) {
-                let _ = tcp.set_nodelay(true);
-                let _ = tcp.set_linger(Some(Duration::ZERO));
-                let _ = tcp.set_write_timeout(Some(Duration::from_secs(5)));
-                let _ = tcp.set_read_timeout(Some(Duration::from_secs(5)));
-                if tcp.write_all(format!("{token}\n").as_bytes()).is_ok() {
-                    return Ok(Stream::Tcp(tcp));
-                }
-            }
-        }
-    }
-
     let content = fs::read_to_string(paths.socket())?;
     let mut lines = content.lines();
     let port: u16 = lines
@@ -124,15 +106,9 @@ pub fn connect(paths: &Paths) -> Result<Stream> {
         .trim();
     let mut tcp = TcpStream::connect(("127.0.0.1", port))?;
     let _ = tcp.set_nodelay(true);
-    let _ = tcp.set_linger(Some(Duration::ZERO));
     tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
     tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
     tcp.write_all(format!("{token}\n").as_bytes())?;
-
-    if let Ok(mut guard) = ENDPOINT_CACHE.lock() {
-        *guard = Some((port, token.to_string()));
-    }
-
     Ok(Stream::Tcp(tcp))
 }
 
