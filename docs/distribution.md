@@ -21,7 +21,7 @@ curl -fsSL https://wocli.yhan.fun/install.sh | bash
 ## 接口
 
 - `/`：下载与安装说明。
-- `/install.sh`、`/install.ps1`：打包进 Worker 的安装脚本，Windows 保留 UTF-8 BOM。
+- `/install.sh`、`/install.ps1`：打包进 Worker 的安装脚本文本，HTTP 响应为无 BOM 的 UTF-8 并声明字符集，兼容 `irm | iex`。仓库中的 PowerShell 文件保留 BOM，兼容 Windows PowerShell 5.1 的本地文件执行。
 - `/api/releases/latest`：稳定版本信息，包地址全部指向自己的域名。
 - `/download/<platform>`：跳转至本站最新稳定版安装包；`?sources=1` 下载对应源码。
 - `/releases/download/v<version>/<asset>`：固定版本安装包、对应源码和 `SHA256SUMS`。

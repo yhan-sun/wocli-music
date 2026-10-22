@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$BinaryPath = "")
+param([string]$BinaryPath = "", [string]$GatewayUrl = "")
 $ErrorActionPreference = "Stop"
 $installer = Join-Path $PSScriptRoot "../install.ps1"
 $tokens = $null; $errors = $null
@@ -40,12 +40,14 @@ if ($BinaryPath) {
     $savedRuntime = $env:WOCLI_RUNTIME_DIR
     $savedAudio = $env:WOCLI_AUDIO_OUTPUT
     $savedDownloadBase = $env:WOCLI_DOWNLOAD_BASE
+    $savedLocalAppData = $env:LOCALAPPDATA
     try {
         $env:WOCLI_HOME = Join-Path $temp 'test-data'
         $env:WOCLI_RUNTIME_DIR = Join-Path $temp 'test-run'
         $env:WOCLI_AUDIO_OUTPUT = 'null'
 
         $version = ((Get-Content (Join-Path $PSScriptRoot '../Cargo.toml')) | Select-String '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+        $global:WocliInstallerFixtureTag = "v$version"
         $name = "wocli-music-$version-windows-x86_64"
         $bundle = Join-Path $temp $name
         New-Item -ItemType Directory -Path $bundle -Force | Out-Null
@@ -78,15 +80,49 @@ if ($BinaryPath) {
             if ($LASTEXITCODE -ne 0) { throw 'Installed command failed' }
         }
         Write-Host 'Offline Windows install/reinstall command discovery tests passed.'
+        if ($GatewayUrl) {
+            # Fetch the real HTTP script unchanged. Only release metadata/archive
+            # transport is mocked so this test also works before the next release.
+            function Invoke-RestMethod {
+                [CmdletBinding()]
+                param([Parameter(Position=0)][string]$Uri, [switch]$UseBasicParsing,
+                    [int]$TimeoutSec, [hashtable]$Headers)
+                if ($Uri -eq 'https://wocli.yhan.fun/api/releases/latest') {
+                    return @{ tag_name = $global:WocliInstallerFixtureTag }
+                }
+                $text = Microsoft.PowerShell.Utility\Invoke-RestMethod @PSBoundParameters
+                if ($Uri -eq $GatewayUrl) {
+                    if ($text -isnot [string]) { throw 'HTTP installer must be decoded script text' }
+                    if ($text[0] -eq [char]0xFEFF) { throw 'HTTP installer contains a literal BOM; irm | iex cannot parse it' }
+                }
+                return $text
+            }
+            $env:LOCALAPPDATA = Join-Path $temp 'gateway-profile'
+            $env:WOCLI_DOWNLOAD_BASE = $null
+            $env:Path = $savedProcessPath
+            $gatewayExpectedExe = Join-Path $env:LOCALAPPDATA 'Programs/wocli-music/wocli.exe'
+            # This is the README one-liner, evaluated with a real HTTP response.
+            irm $GatewayUrl | iex
+            Assert-Equal (Get-Command wocli -CommandType Application | Select-Object -First 1).Source ([IO.Path]::GetFullPath($gatewayExpectedExe))
+            & wocli --version
+            if ($LASTEXITCODE -ne 0) { throw 'HTTP-installed command failed' }
+            # Also verify the documented custom-directory ScriptBlock invocation.
+            $gatewayCustomDir = Join-Path $temp 'gateway custom install'
+            & ([scriptblock]::Create((irm $GatewayUrl))) -InstallDir $gatewayCustomDir -Version $global:WocliInstallerFixtureTag
+            if (-not (Test-Path (Join-Path $gatewayCustomDir 'wocli.exe'))) { throw 'HTTP ScriptBlock installation failed' }
+            Write-Host 'PASS: live irm | iex and ScriptBlock installation with immediate command availability.'
+        }
     } finally {
         Remove-Item Function:\curl.exe -ErrorAction SilentlyContinue
-        Remove-Variable WocliInstallerFixtureZip, WocliInstallerFixtureSums -Scope Global -ErrorAction SilentlyContinue
+        if ($GatewayUrl) { Remove-Item Function:\Invoke-RestMethod -ErrorAction SilentlyContinue }
+        Remove-Variable WocliInstallerFixtureZip, WocliInstallerFixtureSums, WocliInstallerFixtureTag -Scope Global -ErrorAction SilentlyContinue
         [Environment]::SetEnvironmentVariable('Path', $savedUserPath, 'User')
         $env:Path = $savedProcessPath
         $env:WOCLI_HOME = $savedHome
         $env:WOCLI_RUNTIME_DIR = $savedRuntime
         $env:WOCLI_AUDIO_OUTPUT = $savedAudio
         $env:WOCLI_DOWNLOAD_BASE = $savedDownloadBase
+        $env:LOCALAPPDATA = $savedLocalAppData
         Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

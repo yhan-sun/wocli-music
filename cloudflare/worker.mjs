@@ -95,7 +95,7 @@ export default {
       if (url.pathname === '/') response = home();
       else if (url.pathname === '/install.sh' || url.pathname === '/install.ps1') {
         const script = env.INSTALLERS?.[url.pathname];
-        response = script ? reply(script, 200, 'text/plain; charset=utf-8', 300) : reply('Installer not bundled\n', 503);
+        response = script ? reply(script.replace(/^\uFEFF/, ''), 200, 'text/plain; charset=utf-8') : reply('Installer not bundled\n', 503);
       } else if (url.pathname === '/api/releases/latest') response = await latest(ctx);
       else if (url.pathname.startsWith('/download/') && PLATFORMS.includes(url.pathname.slice(10))) {
         const metadata = await latest(ctx);

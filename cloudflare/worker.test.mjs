@@ -13,7 +13,7 @@ globalThis.caches = {default: {
 const request = (path, options) => new Request(`https://wocli.yhan.fun${path}`, options);
 const get = (path, env = {}, options) => worker.fetch(request(path, options), env, ctx);
 
-test('fixed repository, server-side redirects, sanitized metadata, cache, HEAD and installer BOM', async () => {
+test('fixed repository, server-side redirects, sanitized metadata, cache, HEAD and BOM-free installer text', async () => {
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push(url);
@@ -44,7 +44,9 @@ test('fixed repository, server-side redirects, sanitized metadata, cache, HEAD a
     assert.equal(calls.length, 3);
     const bom = '\ufeff# PowerShell';
     result = await get('/install.ps1', {INSTALLERS:{'/install.ps1':bom}});
-    assert.deepEqual(new Uint8Array(await result.arrayBuffer()).slice(0,3), new Uint8Array([239,187,191]));
+    assert.equal(result.headers.get('content-type'), 'text/plain; charset=utf-8');
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+    assert.equal(await result.text(), '# PowerShell');
     for (const bad of ['/proxy?url=https://example.com', '/releases/download/v0.3.4/evil.exe', '/releases/download/v0.3.4/wocli-music-0.3.3-windows-x86_64.zip', '/releases/download/v0.3.4/wocli-music-0.3.4-linux-x86_64.zip']) {
       assert.equal((await get(bad)).status, 404, bad);
     }
@@ -83,4 +85,19 @@ test('GitHub API quota failure falls back to stable-release redirect and caches 
     assert.equal((await get('/api/releases/latest')).status, 200);
     assert.equal(count, 2);
   } finally {globalThis.fetch = originFetch; cache.clear();}
+});
+
+
+test('bundled HTTP installer is UTF-8 without BOM while the PS5.1 source file retains its BOM', async () => {
+  const {readFileSync} = await import('node:fs');
+  const {execFileSync} = await import('node:child_process');
+  execFileSync('python3', ['cloudflare/build.py']);
+  const bytes = readFileSync(new URL('../install.ps1', import.meta.url));
+  assert.deepEqual(bytes.subarray(0,3), Buffer.from([239,187,191]));
+  const {default: bundled} = await import('../dist/cloudflare-worker.mjs');
+  const result = await bundled.fetch(request('/install.ps1'), {}, ctx);
+  const served = Buffer.from(await result.arrayBuffer());
+  assert.deepEqual(served, bytes.subarray(3));
+  assert.equal(result.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(result.headers.get('cache-control'), 'no-store');
 });

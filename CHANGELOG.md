@@ -1,5 +1,10 @@
 # 更新日志
 
+## 分发服务修复 — 2026-10-22
+
+- 修复 Cloudflare 返回 PowerShell 安装器时保留文件 BOM，导致 `irm … | iex` 无法解析 `[CmdletBinding()]` 和 `param`；HTTP 改用无 BOM UTF-8 文本并禁用缓存，本地 `.ps1` 文件继续保留 BOM。
+- 补充打包后响应字节、PowerShell 7 / Windows PowerShell 5.1 的真实 HTTP 管道安装与自定义目录安装验证。
+
 ## 0.3.5 — 2026-10-22
 
 - 新增 `wocli.yhan.fun` Cloudflare 安装、版本查询、安装包与源码分发；新客户端自更新和安装器默认使用分发地址，可用 `WOCLI_DOWNLOAD_BASE=github` 切回直连。

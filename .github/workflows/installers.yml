@@ -1,0 +1,54 @@
+name: Verify distribution installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - cloudflare/**
+      - install.ps1
+      - scripts/test_install_windows.ps1
+      - .github/workflows/installers.yml
+  pull_request:
+    paths:
+      - cloudflare/**
+      - install.ps1
+      - scripts/test_install_windows.ps1
+      - .github/workflows/installers.yml
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: node --test cloudflare/worker.test.mjs
+
+  powershell:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Obtain a verified release binary for offline installation fixtures
+        shell: pwsh
+        run: |
+          $name = 'wocli-music-0.3.5-windows-x86_64.zip'
+          $base = 'https://wocli.yhan.fun/releases/download/v0.3.5'
+          $zip = Join-Path $env:RUNNER_TEMP $name
+          $sums = Invoke-RestMethod "$base/SHA256SUMS"
+          $match = [regex]::Match($sums, '(?m)^([a-fA-F0-9]{64})\s+' + [regex]::Escape($name) + '\s*$')
+          if (-not $match.Success) { throw 'Release checksum not found' }
+          Invoke-WebRequest "$base/$name" -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ine $match.Groups[1].Value) { throw 'Release checksum mismatch' }
+          $destination = Join-Path $env:RUNNER_TEMP 'installer-fixture'
+          Expand-Archive $zip $destination
+          $binary = Join-Path $destination 'wocli-music-0.3.5-windows-x86_64/wocli.exe'
+          "WOCLI_FIXTURE_BINARY=$binary" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Verify live HTTP install with PowerShell 7
+        shell: pwsh
+        run: ./scripts/test_install_windows.ps1 -BinaryPath $env:WOCLI_FIXTURE_BINARY -GatewayUrl https://wocli.yhan.fun/install.ps1
+      - name: Verify live HTTP install with Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test_install_windows.ps1 -BinaryPath $env:WOCLI_FIXTURE_BINARY -GatewayUrl https://wocli.yhan.fun/install.ps1
