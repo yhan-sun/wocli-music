@@ -240,6 +240,7 @@ wocli
 | `D` | 打开下载任务 |
 | `a` | 将歌曲添加到播放队列末尾 |
 | `x` | 打开歌曲快捷操作菜单 |
+| `Shift+B` / `Ctrl+B` | **老板模式**：一键切换工作伪装终端（仿真开发编译与测试），音频暂停，按 `B` / `Ctrl+B` / `Esc` 恢复 |
 | `Tab` | 侧栏曲库与主列表焦点切换 |
 | `b` | 唤出曲库切换菜单 |
 | `?` | 弹出快捷键帮助弹窗 |
@@ -250,6 +251,11 @@ wocli
 > - 托盘后台运行时，macOS 原生接入 `MPRemoteCommandCenter` 及系统播控中心（Now Playing），Windows 原生注册全局多媒体快捷键；键盘物理媒体按键（播放/暂停、上一首、下一首、音量）全局可用。
 > - 在终端 TUI 界面中，无论身处列表、歌词全屏或弹窗，键盘硬件媒体按键均可直接控制播放、切歌和音量。
 > - 系统快捷键工具（如 macOS 快捷指令/Raycast/Alfred、Windows 快捷键或 Linux 桌面热键）可无缝调用 `wocli toggle`、`wocli prev`、`wocli next`，空闲/停止时自动唤醒并起播。
+> - **全局老板键（Boss Key）与防查模式**：
+>   - **Windows**：托盘后台原生支持全局系统快捷键 **Ctrl+Shift+B** 或 **Ctrl+Alt+B**，一键暂停音频并完全隐蔽任务栏歌词条与通知区提示。
+>   - **macOS**：托盘支持点击「老板模式 (Shift+B)」，即刻清除菜单栏歌词、收起悬浮歌词条并清空系统 Control Center / Now Playing 播控状态。
+>   - **Linux**：可通过桌面快捷键设置将任意全局快捷键绑定至命令 `wocli boss`，一键全隐蔽并暂停。
+>   - **终端 TUI**：界面中按 **Shift+B** 或 **Ctrl+B** 进入高度逼真的真实开发与测试运行仿真界面（仿真 `cargo test` 及终端提示符），按 **B**、**Ctrl+B** 或 **Esc** 即可瞬间恢复并继续播放。
 
 ## MCP：让 AI 客户端控制播放器
 
@@ -310,6 +316,10 @@ wocli tray stop            # 停止托盘服务
 wocli lyrics-bar on        # 开启任务栏 / 状态栏实时歌词
 wocli lyrics-bar off       # 关闭任务栏实时歌词
 wocli lyrics-bar toggle    # 快速切换开启/关闭
+
+wocli boss                 # 一键切换老板模式（暂停音频并隐藏所有托盘/任务栏/桌面视觉指示器）
+wocli boss on              # 开启老板模式
+wocli boss off             # 退出老板模式并恢复播放
 ```
 
 - **macOS**：菜单栏显示当前逐句歌词，点击展开播放控制菜单。

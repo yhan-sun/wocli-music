@@ -32,6 +32,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
+  boss [on|off|toggle]               老板模式（一键暂停/静音并隐蔽托盘与歌词）
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
   retry [--quality best]             重试当前歌曲及备用音源
@@ -577,6 +578,33 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 println!("任务栏歌词：{}", if target { "已开启" } else { "已关闭" });
             }
             res
+        }
+        "boss" => {
+            let sub = args.pos.get(1).map(String::as_str);
+            let target = match sub {
+                Some("on" | "enable" | "1" | "true") => Some(true),
+                Some("off" | "disable" | "0" | "false") => Some(false),
+                Some("toggle") | None => None,
+                Some(other) => {
+                    return Err(Error::new(format!(
+                        "未知参数 '{other}'。用法：wocli boss [on|off|toggle]"
+                    )))
+                }
+            };
+            let value = if let Some(active) = target {
+                request(&paths, json!({"op":"boss","active":active}))?
+            } else {
+                request(&paths, json!({"op":"boss"}))?
+            };
+            if !args.flag("--json") {
+                let is_boss = value["boss"].as_bool().unwrap_or(false);
+                if is_boss {
+                    println!("老板模式已开启：已隐蔽所有托盘与桌面指示器，音频已静音/暂停。");
+                } else {
+                    println!("老板模式已退出：已恢复播放与托盘显示。");
+                }
+            }
+            value
         }
         "tray" => {
             let action = args.pos.get(1).map(String::as_str).unwrap_or("status");

@@ -203,6 +203,7 @@ mod macos {
     const TAG_VOL_UP: isize = 14;
     const TAG_VOL_DOWN: isize = 15;
     const TAG_LYRICS_BAR: isize = 16;
+    const TAG_BOSS: isize = 18;
     const TAG_TUI: isize = 17;
     const TAG_QUIT: isize = 99;
 
@@ -439,6 +440,9 @@ mod macos {
             let item_lyrics_bar = create_item("任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
             let _: () = msg_send![menu, addItem: item_lyrics_bar];
 
+            let item_boss = create_item("老板模式 (Shift+B)", TAG_BOSS, target_obj);
+            let _: () = msg_send![menu, addItem: item_boss];
+
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
@@ -539,6 +543,7 @@ mod macos {
             let mut last_menu_mode = String::new();
             let mut last_menu_vol = String::new();
             let mut last_menu_lyrics_bar = String::new();
+            let mut last_menu_boss = String::new();
 
             let mut last_title = String::new();
             let mut last_bar_text = String::new();
@@ -598,6 +603,9 @@ mod macos {
                                 json!({"op":"config","key":"lyrics_bar","value":next_lb}),
                                 true,
                             );
+                        }
+                        TAG_BOSS => {
+                            let _ = ipc::request(&paths, json!({"op":"boss"}), true);
                         }
                         TAG_TUI => {
                             let exe =
@@ -697,8 +705,21 @@ mod macos {
                         last_menu_lyrics_bar = new_lb;
                     }
 
+                    let is_boss = st["boss"].as_bool().unwrap_or(false);
+                    let new_boss = if is_boss {
+                        "老板模式: 开启 (点击退出)"
+                    } else {
+                        "老板模式 (Shift+B)"
+                    };
+                    if new_boss != last_menu_boss {
+                        set_item_title(item_boss, new_boss);
+                        last_menu_boss = new_boss.to_string();
+                    }
+
                     // 顶部菜单栏标题：实时呈现当前唱到的歌词（未唱到歌词或间奏时显示歌名·歌手）
-                    let menu_bar_title = if phase == "playing" {
+                    let menu_bar_title = if is_boss {
+                        "wocli".to_string()
+                    } else if phase == "playing" {
                         if let Some(lyr) = &active_lyr {
                             let count = lyr.chars().count();
                             if count > 25 {
@@ -744,7 +765,7 @@ mod macos {
                     }
 
                     // 桌面/任务栏悬浮歌词条更新
-                    let bar_display = if !lyrics_bar_enabled {
+                    let bar_display = if is_boss || !lyrics_bar_enabled {
                         None
                     } else if phase == "playing" || phase == "paused" {
                         if let Some(lyr) = &active_lyr {
@@ -771,7 +792,7 @@ mod macos {
                         let _: () = msg_send![lyrics_window, orderOut: nil];
                     }
 
-                    if phase == "playing" || phase == "paused" {
+                    if !is_boss && (phase == "playing" || phase == "paused") {
                         update_now_playing(title, artist, dur, pos, phase == "playing");
                     } else {
                         clear_now_playing();
@@ -833,7 +854,9 @@ mod windows {
         DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD,
         PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+    };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
         NOTIFYICONDATAW,
@@ -867,6 +890,7 @@ mod windows {
     const CMD_VOL_UP: usize = 206;
     const CMD_VOL_DOWN: usize = 207;
     const CMD_LYRICS_BAR: usize = 208;
+    const CMD_BOSS: usize = 211;
     const CMD_TUI: usize = 209;
     const CMD_QUIT: usize = 210;
 
@@ -874,11 +898,14 @@ mod windows {
     const HOTKEY_PREV: i32 = 1002;
     const HOTKEY_NEXT: i32 = 1003;
     const HOTKEY_STOP: i32 = 1004;
+    const HOTKEY_BOSS: i32 = 1005;
+    const HOTKEY_BOSS_ALT: i32 = 1006;
 
     const VK_MEDIA_NEXT_TRACK: u32 = 0xB0;
     const VK_MEDIA_PREV_TRACK: u32 = 0xB1;
     const VK_MEDIA_STOP: u32 = 0xB2;
     const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
+    const VK_KEY_B: u32 = 0x42;
 
     static CUSTOM_BAR_X: AtomicI32 = AtomicI32::new(-1);
     static HOVER_BTN: AtomicU8 = AtomicU8::new(0);
@@ -893,6 +920,7 @@ mod windows {
         current_mode: String,
         current_volume: u8,
         lyrics_bar_enabled: bool,
+        boss: bool,
         phase: String,
     }
 
@@ -1159,6 +1187,9 @@ mod windows {
                             HOTKEY_STOP => {
                                 let _ = ipc::request(&state.paths, json!({"op":"stop"}), true);
                             }
+                            HOTKEY_BOSS | HOTKEY_BOSS_ALT => {
+                                let _ = ipc::request(&state.paths, json!({"op":"boss"}), true);
+                            }
                             _ => {}
                         }
                     }
@@ -1171,6 +1202,8 @@ mod windows {
                 UnregisterHotKey(hwnd, HOTKEY_PREV);
                 UnregisterHotKey(hwnd, HOTKEY_NEXT);
                 UnregisterHotKey(hwnd, HOTKEY_STOP);
+                UnregisterHotKey(hwnd, HOTKEY_BOSS);
+                UnregisterHotKey(hwnd, HOTKEY_BOSS_ALT);
                 STATE.with(|st| {
                     if let Some(mut state) = st.borrow_mut().take() {
                         Shell_NotifyIconW(NIM_DELETE, &mut state.nid);
@@ -1527,9 +1560,12 @@ mod windows {
             state.current_volume = st["volume"].as_u64().unwrap_or(60) as u8;
             state.current_mode = st["mode"].as_str().unwrap_or("list").to_string();
             state.lyrics_bar_enabled = st["lyrics_bar"].as_bool().unwrap_or(true);
+            state.boss = st["boss"].as_bool().unwrap_or(false);
 
             let active_lyr = active_lyric(lyrics_text, pos, offset);
-            let display_text = if state.phase == "playing" {
+            let display_text = if state.boss {
+                "wocli-music".to_string()
+            } else if state.phase == "playing" {
                 active_lyr.unwrap_or_else(|| {
                     format!("{} · {}", state.current_title, state.current_artist)
                 })
@@ -1551,20 +1587,24 @@ mod windows {
             }
 
             // 更新托盘 Tooltip（严格保证尾部 \0 结尾）
-            let tip = format!(
-                "wocli: {} · {}\n{}  {} / {}\n{}",
-                state.current_title,
-                state.current_artist,
-                match state.phase.as_str() {
-                    "playing" => "播放中",
-                    "paused" => "已暂停",
-                    "loading" => "加载中",
-                    _ => "已停止",
-                },
-                clock(pos),
-                clock(dur),
-                state.current_text
-            );
+            let tip = if state.boss {
+                "wocli".to_string()
+            } else {
+                format!(
+                    "wocli: {} · {}\n{}  {} / {}\n{}",
+                    state.current_title,
+                    state.current_artist,
+                    match state.phase.as_str() {
+                        "playing" => "播放中",
+                        "paused" => "已暂停",
+                        "loading" => "加载中",
+                        _ => "已停止",
+                    },
+                    clock(pos),
+                    clock(dur),
+                    state.current_text
+                )
+            };
             let wide_tip = to_wide(&tip);
             let buf_len = state.nid.szTip.len();
             let copy_len = (buf_len - 1).min(wide_tip.len());
@@ -1575,7 +1615,9 @@ mod windows {
 
             // 控制任务栏歌词条显隐
             if state.lyrics_hwnd != 0 {
-                if state.lyrics_bar_enabled && (state.phase == "playing" || state.phase == "paused")
+                if !state.boss
+                    && state.lyrics_bar_enabled
+                    && (state.phase == "playing" || state.phase == "paused")
                 {
                     ShowWindow(state.lyrics_hwnd, SW_SHOWNOACTIVATE);
                 } else {
@@ -1637,6 +1679,13 @@ mod windows {
                     }
                 );
                 AppendMenuW(hmenu, MF_STRING, CMD_LYRICS_BAR, to_wide(&lb_str).as_ptr());
+
+                let boss_str = if state.boss {
+                    "老板模式: 开启 (点击退出)"
+                } else {
+                    "老板模式 (Ctrl+Shift+B)"
+                };
+                AppendMenuW(hmenu, MF_STRING, CMD_BOSS, to_wide(boss_str).as_ptr());
 
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
@@ -1705,6 +1754,9 @@ mod windows {
                             true,
                         );
                     }
+                    CMD_BOSS => {
+                        let _ = ipc::request(&state.paths, json!({"op":"boss"}), true);
+                    }
                     CMD_TUI => {
                         let exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
@@ -1752,11 +1804,23 @@ mod windows {
                 return Err(Error::new("无法创建托盘宿主窗口"));
             }
 
-            // 注册全局多媒体系统快捷键（播放/暂停、上一首、下一首、停止）
+            // 注册全局多媒体系统快捷键（播放/暂停、上一首、下一首、停止）及老板键（Ctrl+Shift+B / Ctrl+Alt+B）
             RegisterHotKey(hwnd, HOTKEY_PLAY_PAUSE, 0, VK_MEDIA_PLAY_PAUSE);
             RegisterHotKey(hwnd, HOTKEY_PREV, 0, VK_MEDIA_PREV_TRACK);
             RegisterHotKey(hwnd, HOTKEY_NEXT, 0, VK_MEDIA_NEXT_TRACK);
             RegisterHotKey(hwnd, HOTKEY_STOP, 0, VK_MEDIA_STOP);
+            RegisterHotKey(
+                hwnd,
+                HOTKEY_BOSS,
+                MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                VK_KEY_B,
+            );
+            RegisterHotKey(
+                hwnd,
+                HOTKEY_BOSS_ALT,
+                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                VK_KEY_B,
+            );
 
             // 创建系统托盘图标（动态生成金色音符图标）
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -1856,6 +1920,7 @@ mod windows {
                     current_mode: "list".into(),
                     current_volume: 60,
                     lyrics_bar_enabled: true,
+                    boss: false,
                     phase: "stopped".into(),
                 });
             });

@@ -72,6 +72,7 @@ pub struct Status {
     pub downloads: Vec<Job>,
     pub lyrics_bar: bool,
     pub tray: bool,
+    pub boss: bool,
 }
 #[derive(Serialize, Deserialize, Default)]
 struct Queue {
@@ -143,6 +144,8 @@ struct Service {
     job_sequence: u64,
     pool: crate::pool::WorkerPool,
     quit: Arc<AtomicBool>,
+    boss: bool,
+    boss_previous_phase: Option<String>,
 }
 impl Service {
     fn new(paths: Paths, tx: Sender<Event>, quit: Arc<AtomicBool>) -> Result<Self> {
@@ -200,6 +203,8 @@ impl Service {
             job_sequence: 0,
             pool: crate::pool::WorkerPool::new(4),
             quit,
+            boss: false,
+            boss_previous_phase: None,
         })
     }
     fn current(&self) -> Option<&Track> {
@@ -229,6 +234,7 @@ impl Service {
             mode: self.settings.mode.clone(),
             lyrics_bar: self.settings.lyrics_bar,
             tray: self.settings.tray,
+            boss: self.boss,
             error: self
                 .error
                 .as_ref()
@@ -906,6 +912,8 @@ impl Service {
         match op {
             "status" => {}
             "play" => {
+                self.boss = false;
+                self.boss_previous_phase = None;
                 self.direct_override = request["direct"].as_bool().unwrap_or(false);
                 if let Some(values) = request["tracks"].as_array().filter(|v| !v.is_empty()) {
                     let tracks: Vec<Track> = values
@@ -987,8 +995,16 @@ impl Service {
                 }
             }
             "stop" => self.stop(),
-            "next" => self.advance(false, false)?,
-            "prev" => self.advance(true, false)?,
+            "next" => {
+                self.boss = false;
+                self.boss_previous_phase = None;
+                self.advance(false, false)?;
+            }
+            "prev" => {
+                self.boss = false;
+                self.boss_previous_phase = None;
+                self.advance(true, false)?;
+            }
             "volume" | "mode" | "config" => {
                 let key = if op == "config" {
                     request["key"].as_str().unwrap_or_default()
@@ -1136,6 +1152,36 @@ impl Service {
                     self.job_queue.push_back(id.into());
                 }
                 self.kick_download();
+            }
+            "boss" => {
+                let target = if let Some(v) = request["active"].as_bool() {
+                    v
+                } else {
+                    !self.boss
+                };
+                self.boss = target;
+                if self.boss {
+                    if self.phase == "playing" {
+                        self.boss_previous_phase = Some("playing".into());
+                        self.player.pause(true);
+                        self.phase = "paused".into();
+                    } else if self.phase == "loading" {
+                        self.boss_previous_phase = Some("loading".into());
+                        self.stop();
+                    } else {
+                        self.boss_previous_phase = Some(self.phase.clone());
+                    }
+                } else if let Some(prev) = self.boss_previous_phase.take() {
+                    if prev == "playing" {
+                        if self.phase == "paused" {
+                            self.player.pause(false);
+                            self.phase = "playing".into();
+                        } else if self.phase == "stopped" && !self.queue.is_empty() {
+                            let idx = self.index.min(self.queue.len().saturating_sub(1));
+                            self.begin(idx, self.settings.quality.clone())?;
+                        }
+                    }
+                }
             }
             "shutdown" => {
                 self.stop();
@@ -1869,5 +1915,25 @@ mod playback_tests {
         h.service.shuffle.reset(2, 0);
         h.service.dispatch(json!({"op":"prev"})).unwrap();
         assert_eq!(h.service.phase, "loading");
+    }
+    #[test]
+    fn boss_mode_pauses_and_restores_playback() {
+        let mut h = Harness::new("list");
+        let t1 = h.track("one", true);
+        h.service.queue = vec![t1];
+        h.service.dispatch(json!({"op":"toggle"})).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.phase, "playing");
+        assert!(!h.service.boss);
+
+        // Enter boss mode: pauses and marks boss = true
+        let st = h.service.dispatch(json!({"op":"boss"})).unwrap();
+        assert_eq!(st["boss"], true);
+        assert_eq!(h.service.phase, "paused");
+
+        // Exit boss mode: unpauses and resumes playing
+        let st = h.service.dispatch(json!({"op":"boss"})).unwrap();
+        assert_eq!(st["boss"], false);
+        assert_eq!(h.service.phase, "playing");
     }
 }

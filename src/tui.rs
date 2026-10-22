@@ -72,6 +72,7 @@ enum Action {
     ConfirmDelete(String),
     SubmitInput,
     JobSelect(usize),
+    Boss,
 }
 #[derive(Clone)]
 struct Menu {
@@ -151,6 +152,7 @@ struct App {
     seek: Option<(String, f64, f64)>,
     last_click: Option<(usize, Instant)>,
     toast: Option<(String, Instant)>,
+    boss_mode: bool,
     tx: Sender<Request>,
     events: Sender<Message>,
 }
@@ -195,6 +197,7 @@ impl App {
             seek: None,
             last_click: None,
             toast: None,
+            boss_mode: false,
             tx,
             events,
         };
@@ -612,6 +615,11 @@ impl App {
             Action::Close => self.popup = None,
             Action::SubmitInput => self.submit_input()?,
             Action::JobSelect(index) => self.popup = Some(Popup::Jobs(index)),
+            Action::Boss => {
+                let target = !self.boss_mode;
+                self.boss_mode = target;
+                self.send(json!({"op":"boss","active":target}));
+            }
             Action::Seek => {}
         }
         Ok(())
@@ -643,10 +651,33 @@ impl App {
         Ok(())
     }
     fn key(&mut self, key: KeyEvent) -> Result<bool> {
+        if self.boss_mode {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('q' | 'c'))
+            {
+                return Ok(true);
+            }
+            if key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char('b' | 'B')) {
+                self.act(Action::Boss)?;
+            }
+            return Ok(false);
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('q' | 'c'))
         {
             return Ok(true);
+        }
+        if (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('b' | 'B')))
+            || (!self.editing
+                && !matches!(
+                    self.popup,
+                    Some(Popup::Input { .. } | Popup::Download { .. })
+                )
+                && key.code == KeyCode::Char('B'))
+        {
+            self.act(Action::Boss)?;
+            return Ok(false);
         }
         if let KeyCode::Media(media) = key.code {
             match media {
@@ -931,6 +962,7 @@ impl App {
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
             Message::State(state) => {
+                self.boss_mode = state.boss;
                 self.state = *state;
                 self.reload()?;
             }
@@ -1016,6 +1048,9 @@ impl App {
         self.hit(area, action);
     }
     fn mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) -> Result<()> {
+        if self.boss_mode {
+            return Ok(());
+        }
         match kind {
             MouseEventKind::Down(event::MouseButton::Left) => {
                 if self.popup.is_none()
@@ -1066,6 +1101,10 @@ impl App {
         let area = frame.area();
         self.hits.clear();
         self.timeline = Rect::default();
+        if self.boss_mode {
+            self.draw_camouflage(frame, area);
+            return;
+        }
         frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
         if area.width < 30 || area.height < 16 {
             frame.render_widget(
@@ -1162,6 +1201,146 @@ impl App {
                 );
             }
         }
+    }
+    fn draw_camouflage(&mut self, frame: &mut Frame, area: Rect) {
+        let bg = Color::Rgb(15, 17, 21);
+        let fg = Color::Rgb(205, 214, 224);
+        let green = Color::Rgb(130, 210, 120);
+        let cyan = Color::Rgb(110, 195, 240);
+
+        frame.render_widget(Block::default().style(Style::default().bg(bg).fg(fg)), area);
+
+        let is_windows = cfg!(windows);
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "developer".into());
+        let host = std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("NAME"))
+            .unwrap_or_else(|_| {
+                if is_windows {
+                    "WORKSTATION".into()
+                } else {
+                    "MacBook-Pro".into()
+                }
+            });
+
+        let initial_cmd = if is_windows {
+            format!("PS C:\\Users\\{user}\\projects\\music-service> cargo test --workspace")
+        } else {
+            format!("{user}@{host}:~/workspace/engine $ cargo test --workspace")
+        };
+
+        let next_prompt = if is_windows {
+            format!("PS C:\\Users\\{user}\\projects\\music-service> ")
+        } else {
+            format!("{user}@{host}:~/workspace/engine $ ")
+        };
+
+        let lines = vec![
+            Line::from(vec![Span::styled(
+                initial_cmd,
+                Style::default().fg(fg).bold(),
+            )]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("proc-macro2 v1.0.86"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("unicode-ident v1.0.12"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("quote v1.0.35"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("syn v2.0.72"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("serde v1.0.204"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw("tokio v1.38.0"),
+            ]),
+            Line::from(vec![
+                Span::styled("   Compiling ", Style::default().fg(green).bold()),
+                Span::raw(if is_windows {
+                    "music-service v0.4.2 (C:\\Users\\workspace\\music-service)"
+                } else {
+                    "music-service v0.4.2 (/workspace/engine)"
+                }),
+            ]),
+            Line::from(vec![
+                Span::styled("    Finished ", Style::default().fg(green).bold()),
+                Span::styled(
+                    "`test` profile [unoptimized + debuginfo] target(s) in 2.84s",
+                    Style::default().fg(fg),
+                ),
+            ]),
+            Line::from(vec![Span::raw(if is_windows {
+                "     Running unittests src\\lib.rs (target\\debug\\deps\\service-b49e21)"
+            } else {
+                "     Running unittests src/lib.rs (target/debug/deps/service-b49e21)"
+            })]),
+            Line::from(String::new()),
+            Line::from("running 18 tests"),
+            Line::from(vec![
+                Span::raw("test config::tests::loads_runtime_env ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test protocol::tests::handshake_v2 ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test auth::tests::token_verification ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test pool::tests::connection_pool_scale ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test cache::tests::lru_eviction_strategy ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test router::tests::dispatch_concurrent_requests ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test stream::tests::progressive_buffer_chunks ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test storage::tests::sqlite_wal_checkpoint ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(vec![
+                Span::raw("test telemetry::tests::metrics_histogram_percentiles ... "),
+                Span::styled("ok", Style::default().fg(green)),
+            ]),
+            Line::from(String::new()),
+            Line::from(vec![
+                Span::styled("test result: ", Style::default().bold()),
+                Span::styled("ok", Style::default().fg(green).bold()),
+                Span::raw(
+                    ". 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s",
+                ),
+            ]),
+            Line::from(String::new()),
+            Line::from(vec![
+                Span::styled(next_prompt, Style::default().fg(cyan).bold()),
+                Span::styled("█", Style::default().fg(fg)),
+            ]),
+        ];
+
+        let total_lines = lines.len() as u16;
+        let scroll_y = total_lines.saturating_sub(area.height);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     }
     fn draw_nav(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(
@@ -1795,7 +1974,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nShift+B / Ctrl+B  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2479,5 +2658,56 @@ mod interaction_tests {
         .unwrap();
         let cmd = rx.try_recv().unwrap();
         assert_eq!(cmd.value["op"], "play");
+    }
+    #[test]
+    fn boss_mode_camouflage_and_toggle() {
+        let (_root, mut app, rx) = setup();
+        assert!(!app.boss_mode);
+
+        // Press Shift+B ('B') to activate Boss Mode
+        app.key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert!(app.boss_mode);
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "boss");
+        assert_eq!(cmd.value["active"], true);
+
+        // While in camouflage mode, drawing renders cargo test output instead of music UI
+        let terminal = draw_terminal(&mut app, 100, 30);
+        let s = screen(&terminal);
+        assert!(s.contains("cargotest"));
+        assert!(s.contains("Compiling"));
+        assert!(s.contains("testresult:ok"));
+        assert!(!s.contains("wocli/music"));
+
+        // Random keys are ignored in boss mode
+        app.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+        assert!(app.boss_mode);
+
+        // Esc restores player UI and exits boss mode
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.boss_mode);
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "boss");
+        assert_eq!(cmd.value["active"], false);
+
+        // Press Ctrl+B to activate Boss Mode again
+        app.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(app.boss_mode);
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "boss");
+        assert_eq!(cmd.value["active"], true);
+
+        // Press 'b' to restore
+        app.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.boss_mode);
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "boss");
+        assert_eq!(cmd.value["active"], false);
     }
 }

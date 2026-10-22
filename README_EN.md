@@ -201,6 +201,10 @@ wocli tray stop
 wocli lyrics-bar on
 wocli lyrics-bar off
 wocli lyrics-bar toggle
+
+wocli boss                 # Toggle Boss Mode (stealth mute/pause and hide tray/lyrics)
+wocli boss on              # Enable Boss Mode
+wocli boss off             # Exit Boss Mode and resume playback
 ```
 
 macOS provides a menu-bar item with lyrics and playback controls. Windows provides a notification-area tray and taskbar lyrics with previous/play-pause/next buttons and a draggable text area. Linux currently uses the TUI/CLI without tray support.
@@ -223,6 +227,7 @@ macOS provides a menu-bar item with lyrics and playback controls. Windows provid
 | `c` / `f` | Add to playlist / toggle favorite |
 | `d` / `D` | Download selection / view download tasks |
 | `a` / `x` | Add to queue / open track menu |
+| `Shift+B` / `Ctrl+B` | **Boss Mode**: Work camouflage simulation (cargo test), instant mute/pause; press `B` / `Ctrl+B` / `Esc` to restore |
 | `Tab` / `b` | Switch focus / choose library |
 | `?` / `Esc` | Shortcut help / close current view or popup |
 | `q` | Close TUI; playback continues |
@@ -231,6 +236,11 @@ macOS provides a menu-bar item with lyrics and playback controls. Windows provid
 > - When the tray is running in the background, macOS natively integrates with `MPRemoteCommandCenter` and Control Center (Now Playing), and Windows natively registers global media hotkeys; physical hardware media keys (Play/Pause, Previous, Next, Volume) work globally.
 > - Inside the terminal TUI, keyboard hardware media keys directly control playback, track switching, and volume anywhere in the interface.
 > - System shortcut tools (macOS Shortcuts, Raycast, Alfred, Windows shortcuts, Linux hotkeys) can seamlessly trigger `wocli toggle`, `wocli prev`, `wocli next`, automatically waking and playing when idle or stopped.
+> - **Cross-Platform Boss Mode (Stealth & Camouflage)**:
+>   - **Windows**: Tray natively registers global hotkeys **Ctrl+Shift+B** and **Ctrl+Alt+B** to pause audio and immediately hide the taskbar lyrics and notification icon details.
+>   - **macOS**: Tray menu item "老板模式 (Shift+B)" clears menu bar lyrics, dismisses the floating lyrics overlay, and clears Control Center / Now Playing widgets.
+>   - **Linux & CLI**: `wocli boss [on|off|toggle]` provides instant scriptable stealth for system shortcut bindings (GNOME, KDE, i3, Sway).
+>   - **Terminal TUI**: Pressing **Shift+B** or **Ctrl+B** switches to a realistic build/test simulation (`cargo test` suite and active prompt), fully masking player activity; press **B**, **Ctrl+B**, or **Esc** to restore and resume.
 
 ![Compact TUI at 80×26](docs/screenshots/compact.png)
 
