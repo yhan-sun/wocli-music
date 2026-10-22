@@ -1196,17 +1196,9 @@ mod windows {
                         let exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
                         let exe_str = exe.to_string_lossy();
-                        // 优先尝试使用 Windows Terminal 打开
-                        let ok = Command::new("wt")
-                            .args(["-d", ".", &*exe_str])
-                            .spawn()
-                            .is_ok();
-                        // 未安装或启动失败时，无缝回退至标准 cmd 窗口
-                        if !ok {
-                            let _ = Command::new("cmd")
-                                .args(["/c", "start", "", &*exe_str])
-                                .spawn();
-                        }
+                        let _ = Command::new("cmd")
+                            .args(["/c", "start", "wocli-music", &*exe_str])
+                            .spawn();
                     }
                     CMD_QUIT => {
                         let _ = super::stop(&state.paths);
