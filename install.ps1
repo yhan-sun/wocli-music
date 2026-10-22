@@ -1,4 +1,4 @@
-﻿# wocli-music official Windows installer
+# wocli-music official Windows installer
 # https://github.com/yhan-sun/wocli-music
 
 [CmdletBinding()]
@@ -12,7 +12,7 @@ param (
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
-$DefaultTag = "v0.3.3"
+$DefaultTag = "v0.3.4"
 
 function Write-Info($msg) {
     Write-Host "==> " -ForegroundColor Blue -NoNewline

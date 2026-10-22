@@ -705,29 +705,34 @@ mod windows {
     use super::*;
     use std::cell::RefCell;
     use std::ptr::null;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect,
-        SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX,
-        DT_SINGLELINE, DT_VCENTER, FW_BOLD, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
+        InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor, DT_CENTER,
+        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD,
+        PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
         NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW,
-        PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW,
-        TrackPopupMenuEx, TranslateMessage, CS_HREDRAW, CS_VREDRAW, IDI_APPLICATION, LWA_COLORKEY,
-        MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA,
-        SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-        TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_LBUTTONUP,
-        WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW,
+        GetClientRect, GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowRect, LoadCursorW,
+        LoadIconW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetCursor,
+        SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+        SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS,
+        CS_HREDRAW, CS_VREDRAW, HICON, HTCAPTION, HTCLIENT, ICONINFO, IDC_HAND, IDC_SIZEALL,
+        IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN,
+        SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE,
+        WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCHITTEST,
+        WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+        WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -744,6 +749,9 @@ mod windows {
     const CMD_LYRICS_BAR: usize = 208;
     const CMD_TUI: usize = 209;
     const CMD_QUIT: usize = 210;
+
+    static CUSTOM_BAR_X: AtomicI32 = AtomicI32::new(-1);
+    static HOVER_BTN: AtomicU8 = AtomicU8::new(0);
 
     struct TrayState {
         paths: Paths,
@@ -777,24 +785,166 @@ mod windows {
         registered
     }
 
+    unsafe fn create_music_tray_icon() -> HICON {
+        let dc = GetDC(0);
+        if dc == 0 {
+            return LoadIconW(0, IDI_APPLICATION);
+        }
+        let color_dc = CreateCompatibleDC(dc);
+        let mask_dc = CreateCompatibleDC(dc);
+        let sz = 32;
+        let color_bmp = CreateCompatibleBitmap(dc, sz, sz);
+        let mask_bmp = CreateBitmap(sz, sz, 1, 1, null());
+
+        let old_color = SelectObject(color_dc, color_bmp);
+        let old_mask = SelectObject(mask_dc, mask_bmp);
+
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: sz,
+            bottom: sz,
+        };
+
+        // Mask bitmap: 1 (白色) 为透明，0 (黑色) 为不透明
+        let white_brush = CreateSolidBrush(0x00FFFFFF);
+        FillRect(mask_dc, &rect, white_brush);
+        DeleteObject(white_brush);
+
+        // Color bitmap: 底色全黑
+        let black_brush = CreateSolidBrush(0x00000000);
+        FillRect(color_dc, &rect, black_brush);
+        DeleteObject(black_brush);
+
+        SetBkMode(color_dc, TRANSPARENT as i32);
+        SetBkMode(mask_dc, TRANSPARENT as i32);
+
+        let font_name = to_wide("Segoe UI Symbol");
+        let font = CreateFontW(
+            22,
+            0,
+            0,
+            0,
+            FW_BOLD as i32,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            5,
+            0,
+            font_name.as_ptr(),
+        );
+        let old_f1 = SelectObject(color_dc, font);
+        let old_f2 = SelectObject(mask_dc, font);
+
+        let note_text = to_wide("♫");
+        let note_len = 1;
+
+        // Mask 绘制黑色（不透明）
+        SetTextColor(mask_dc, 0x00000000);
+        DrawTextW(
+            mask_dc,
+            note_text.as_ptr(),
+            note_len,
+            &mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+
+        // Color 绘制金黄色音符
+        SetTextColor(color_dc, 0x0000D7FF);
+        DrawTextW(
+            color_dc,
+            note_text.as_ptr(),
+            note_len,
+            &mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+
+        SelectObject(color_dc, old_f1);
+        SelectObject(mask_dc, old_f2);
+        DeleteObject(font);
+
+        SelectObject(color_dc, old_color);
+        SelectObject(mask_dc, old_mask);
+        DeleteDC(color_dc);
+        DeleteDC(mask_dc);
+        ReleaseDC(0, dc);
+
+        let icon_info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask_bmp,
+            hbmColor: color_bmp,
+        };
+        let hicon = CreateIconIndirect(&icon_info);
+
+        DeleteObject(color_bmp);
+        DeleteObject(mask_bmp);
+
+        if hicon != 0 {
+            hicon
+        } else {
+            LoadIconW(0, IDI_APPLICATION)
+        }
+    }
+
     unsafe fn reposition_lyrics_bar(hwnd: HWND) {
+        let screen_w = GetSystemMetrics(SM_CXSCREEN).max(800);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN).max(600);
+
         let mut work_area: RECT = std::mem::zeroed();
         let has_work_area =
             SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work_area as *mut _ as *mut _, 0) != 0;
-        let (screen_w, work_bottom) = if has_work_area {
-            (
-                (work_area.right - work_area.left).max(800),
-                work_area.bottom,
-            )
+        let work_bottom = if has_work_area {
+            work_area.bottom
         } else {
-            let sw = GetSystemMetrics(SM_CXSCREEN).max(800);
-            let sh = GetSystemMetrics(SM_CYSCREEN);
-            (sw, sh - 48)
+            screen_h - 48
         };
-        let bar_w = 920.min(screen_w - 40);
-        let bar_h = 46;
-        let bar_x = (screen_w - bar_w) / 2;
-        let bar_y = (work_bottom - bar_h - 8).max(0);
+
+        // 获取 Windows 任务栏 Shell_TrayWnd 实际几何坐标
+        let tb_hwnd = FindWindowW(to_wide("Shell_TrayWnd").as_ptr(), null());
+        let mut tb_rect: RECT = std::mem::zeroed();
+        let (tb_left, tb_top, tb_right, tb_bottom) =
+            if tb_hwnd != 0 && GetWindowRect(tb_hwnd, &mut tb_rect) != 0 {
+                (tb_rect.left, tb_rect.top, tb_rect.right, tb_rect.bottom)
+            } else {
+                (0, work_bottom, screen_w, screen_h)
+            };
+
+        let tb_h = (tb_bottom - tb_top).max(36);
+        let bar_h = (tb_h - 8).min(40).max(30);
+        let bar_y = tb_top + (tb_h - bar_h) / 2;
+
+        let bar_w = 400.min(screen_w - 40);
+
+        let custom_x = CUSTOM_BAR_X.load(Ordering::Relaxed);
+        let bar_x = if custom_x >= 0 && custom_x + bar_w <= screen_w {
+            custom_x
+        } else {
+            // 自动对齐任务栏右侧通知区前，或在任务栏居中呈现
+            let notify_hwnd = if tb_hwnd != 0 {
+                FindWindowExW(tb_hwnd, 0, to_wide("TrayNotifyWnd").as_ptr(), null())
+            } else {
+                0
+            };
+            let mut notify_rect: RECT = std::mem::zeroed();
+            let right_bound =
+                if notify_hwnd != 0 && GetWindowRect(notify_hwnd, &mut notify_rect) != 0 {
+                    notify_rect.left - 12
+                } else {
+                    tb_right - 180
+                };
+
+            let candidate_x = right_bound - bar_w;
+            if candidate_x >= tb_left + 60 {
+                candidate_x
+            } else {
+                ((screen_w - bar_w) / 2).max(tb_left + 10)
+            }
+        };
 
         SetWindowPos(
             hwnd,
@@ -818,6 +968,16 @@ mod windows {
                 STATE.with(|st| {
                     if let Some(state) = st.borrow_mut().as_mut() {
                         update_status(state);
+
+                        // 检查鼠标是否已移出歌词窗口以重置悬停按钮状态
+                        if state.lyrics_hwnd != 0 && HOVER_BTN.load(Ordering::Relaxed) != 0 {
+                            let mut cur_pt: POINT = std::mem::zeroed();
+                            GetCursorPos(&mut cur_pt);
+                            if WindowFromPoint(cur_pt) != state.lyrics_hwnd {
+                                HOVER_BTN.store(0, Ordering::Relaxed);
+                                InvalidateRect(state.lyrics_hwnd, null(), 0);
+                            }
+                        }
                     }
                 });
                 0
@@ -856,6 +1016,9 @@ mod windows {
                 STATE.with(|st| {
                     if let Some(mut state) = st.borrow_mut().take() {
                         Shell_NotifyIconW(NIM_DELETE, &mut state.nid);
+                        if state.nid.hIcon != 0 {
+                            DestroyIcon(state.nid.hIcon);
+                        }
                         if state.lyrics_hwnd != 0 {
                             DestroyWindow(state.lyrics_hwnd);
                         }
@@ -887,6 +1050,89 @@ mod windows {
     ) -> LRESULT {
         match msg {
             WM_ERASEBKGND => 1,
+            WM_NCHITTEST => {
+                let screen_x = (lparam & 0xFFFF) as i16 as i32;
+                let mut wr: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut wr);
+                if screen_x < wr.left + 98 {
+                    HTCLIENT as LRESULT
+                } else {
+                    HTCAPTION as LRESULT
+                }
+            }
+            WM_SETCURSOR => {
+                let hit = (lparam & 0xFFFF) as u32;
+                if hit == HTCLIENT {
+                    SetCursor(LoadCursorW(0, IDC_HAND));
+                    1
+                } else if hit == HTCAPTION {
+                    SetCursor(LoadCursorW(0, IDC_SIZEALL));
+                    1
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_MOUSEMOVE => {
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let new_hover = if (6..=34).contains(&x) {
+                    1
+                } else if (36..=64).contains(&x) {
+                    2
+                } else if (66..=94).contains(&x) {
+                    3
+                } else {
+                    0
+                };
+                let old_hover = HOVER_BTN.swap(new_hover, Ordering::Relaxed);
+                if old_hover != new_hover {
+                    InvalidateRect(hwnd, null(), 0);
+                }
+                0
+            }
+            WM_LBUTTONDOWN => {
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow().as_ref() {
+                        if (6..=34).contains(&x) {
+                            let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
+                        } else if (36..=64).contains(&x) {
+                            let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
+                        } else if (66..=94).contains(&x) {
+                            let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
+                        }
+                    }
+                });
+                0
+            }
+            WM_MOVE => {
+                let mut wr: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut wr);
+                if wr.left > 0 {
+                    CUSTOM_BAR_X.store(wr.left, Ordering::Relaxed);
+                }
+                0
+            }
+            WM_NCRBUTTONUP | WM_RBUTTONUP => {
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow().as_ref() {
+                        show_menu(state.nid.hWnd);
+                    }
+                });
+                0
+            }
+            WM_NCLBUTTONDBLCLK => {
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow().as_ref() {
+                        let exe =
+                            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
+                        let exe_str = exe.to_string_lossy();
+                        let _ = Command::new("cmd")
+                            .args(["/c", "start", "wocli-music", &*exe_str])
+                            .spawn();
+                    }
+                });
+                0
+            }
             WM_PAINT => {
                 let mut ps: PAINTSTRUCT = std::mem::zeroed();
                 let hdc = BeginPaint(hwnd, &mut ps);
@@ -908,13 +1154,135 @@ mod windows {
 
                     SetBkMode(mem_dc, TRANSPARENT as i32);
 
-                    let font_name = to_wide("Microsoft YaHei");
-                    let font = CreateFontW(
-                        28,
+                    let (text, is_paused, phase) = STATE.with(|st| {
+                        let borrowed = st.borrow();
+                        let s = borrowed.as_ref();
+                        let txt = s.map(|x| x.current_text.clone()).unwrap_or_default();
+                        let paused = s.map(|x| x.phase.as_str() == "paused").unwrap_or(false);
+                        let ph = s.map(|x| x.phase.clone()).unwrap_or_default();
+                        (txt, paused, ph)
+                    });
+
+                    let hover = HOVER_BTN.load(Ordering::Relaxed);
+
+                    // 1. 绘制控制按钮背景（悬停浅底）
+                    let hover_brush = CreateSolidBrush(0x00282828);
+                    if hover == 1 {
+                        let btn_rc = RECT {
+                            left: 6,
+                            top: 4,
+                            right: 34,
+                            bottom: h - 4,
+                        };
+                        FillRect(mem_dc, &btn_rc, hover_brush);
+                    } else if hover == 2 {
+                        let btn_rc = RECT {
+                            left: 36,
+                            top: 4,
+                            right: 64,
+                            bottom: h - 4,
+                        };
+                        FillRect(mem_dc, &btn_rc, hover_brush);
+                    } else if hover == 3 {
+                        let btn_rc = RECT {
+                            left: 66,
+                            top: 4,
+                            right: 94,
+                            bottom: h - 4,
+                        };
+                        FillRect(mem_dc, &btn_rc, hover_brush);
+                    }
+                    DeleteObject(hover_brush);
+
+                    // 2. 绘制上一首、播放/暂停、下一首矢量文字图标
+                    let btn_font_name = to_wide("Segoe UI Symbol");
+                    let btn_font = CreateFontW(
+                        16,
                         0,
                         0,
                         0,
                         FW_BOLD as i32,
+                        0,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        5,
+                        0,
+                        btn_font_name.as_ptr(),
+                    );
+                    let old_btn_font = SelectObject(mem_dc, btn_font);
+
+                    let btn_configs = [
+                        (1, "⏮", 6, 34),
+                        (2, if phase == "playing" { "⏸" } else { "▶" }, 36, 64),
+                        (3, "⏭", 66, 94),
+                    ];
+
+                    for (btn_idx, glyph, left, right) in btn_configs {
+                        let mut btn_rc = RECT {
+                            left,
+                            top: 0,
+                            right,
+                            bottom: h,
+                        };
+                        let wide_glyph = to_wide(glyph);
+                        let glyph_len = wide_glyph.len() as i32 - 1;
+
+                        // 阴影
+                        let mut shadow_rc = btn_rc;
+                        shadow_rc.left += 1;
+                        shadow_rc.top += 1;
+                        shadow_rc.right += 1;
+                        shadow_rc.bottom += 1;
+                        SetTextColor(mem_dc, 0x00000000);
+                        DrawTextW(
+                            mem_dc,
+                            wide_glyph.as_ptr(),
+                            glyph_len,
+                            &mut shadow_rc,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+
+                        // 前景色：悬停金色，默认典雅银白
+                        let color = if hover == btn_idx {
+                            0x0000D7FF
+                        } else {
+                            0x00D0D0D0
+                        };
+                        SetTextColor(mem_dc, color);
+                        DrawTextW(
+                            mem_dc,
+                            wide_glyph.as_ptr(),
+                            glyph_len,
+                            &mut btn_rc,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                    }
+
+                    SelectObject(mem_dc, old_btn_font);
+                    DeleteObject(btn_font);
+
+                    // 3. 绘制精致纵向分割线
+                    let sep_brush = CreateSolidBrush(0x00404040);
+                    let sep_rc = RECT {
+                        left: 98,
+                        top: 8,
+                        right: 99,
+                        bottom: h - 8,
+                    };
+                    FillRect(mem_dc, &sep_rc, sep_brush);
+                    DeleteObject(sep_brush);
+
+                    // 4. 绘制歌词文本
+                    let font_name = to_wide("Microsoft YaHei");
+                    let font = CreateFontW(
+                        16,
+                        0,
+                        0,
+                        0,
+                        FW_SEMIBOLD as i32,
                         0,
                         0,
                         0,
@@ -927,34 +1295,21 @@ mod windows {
                     );
                     let old_font = SelectObject(mem_dc, font);
 
-                    let (text, is_paused) = STATE.with(|st| {
-                        let borrowed = st.borrow();
-                        let s = borrowed.as_ref();
-                        let txt = s.map(|x| x.current_text.clone()).unwrap_or_default();
-                        let paused = s.map(|x| x.phase.as_str() == "paused").unwrap_or(false);
-                        (txt, paused)
-                    });
-                    let wide_text = to_wide(&text);
+                    let mut text_rect = RECT {
+                        left: 104,
+                        top: 0,
+                        right: w - 8,
+                        bottom: h,
+                    };
 
+                    let wide_text = to_wide(&text);
                     if wide_text.len() > 1 {
                         let text_len = wide_text.len() as i32 - 1;
 
-                        // 绘制深黑 8 邻域阴影，确保在任何桌面壁纸下清晰易读
+                        // 绘制深黑 4 邻域阴影，确保在任何壁纸与任务栏主题下清晰易读
                         SetTextColor(mem_dc, 0x00000000);
-                        for (dx, dy) in [
-                            (-1, -1),
-                            (0, -1),
-                            (1, -1),
-                            (-1, 0),
-                            (1, 0),
-                            (-1, 1),
-                            (0, 1),
-                            (1, 1),
-                            (0, 2),
-                            (1, 2),
-                            (-1, 2),
-                        ] {
-                            let mut shadow_rect = rect;
+                        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1)] {
+                            let mut shadow_rect = text_rect;
                             shadow_rect.left += dx;
                             shadow_rect.right += dx;
                             shadow_rect.top += dy;
@@ -964,7 +1319,7 @@ mod windows {
                                 wide_text.as_ptr(),
                                 text_len,
                                 &mut shadow_rect,
-                                DT_CENTER
+                                DT_LEFT
                                     | DT_VCENTER
                                     | DT_SINGLELINE
                                     | DT_NOPREFIX
@@ -979,12 +1334,12 @@ mod windows {
                             mem_dc,
                             wide_text.as_ptr(),
                             text_len,
-                            &mut rect,
-                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+                            &mut text_rect,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
                         );
                     }
 
-                    // 双缓冲原子复制到前台屏幕，杜绝闪烁
+                    // 双缓冲原子复制到前台屏幕，完全杜绝闪烁
                     BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
 
                     SelectObject(mem_dc, old_font);
@@ -1099,13 +1454,13 @@ mod windows {
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
                 let toggle_label = if state.phase == "playing" {
-                    "暂停"
+                    "⏸ 暂停"
                 } else {
-                    "播放"
+                    "▶ 播放"
                 };
                 AppendMenuW(hmenu, MF_STRING, CMD_TOGGLE, to_wide(toggle_label).as_ptr());
-                AppendMenuW(hmenu, MF_STRING, CMD_PREV, to_wide("上一首").as_ptr());
-                AppendMenuW(hmenu, MF_STRING, CMD_NEXT, to_wide("下一首").as_ptr());
+                AppendMenuW(hmenu, MF_STRING, CMD_PREV, to_wide("⏮ 上一首").as_ptr());
+                AppendMenuW(hmenu, MF_STRING, CMD_NEXT, to_wide("⏭ 下一首").as_ptr());
 
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
@@ -1239,51 +1594,79 @@ mod windows {
                 return Err(Error::new("无法创建托盘宿主窗口"));
             }
 
-            // 创建系统托盘图标
+            // 创建系统托盘图标（动态生成金色音符图标）
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
             nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
             nid.hWnd = hwnd;
             nid.uID = 1;
             nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY;
-            nid.hIcon = LoadIconW(0, IDI_APPLICATION);
+            nid.hIcon = create_music_tray_icon();
             let tip = to_wide("wocli-music");
             nid.szTip[..tip.len().min(128)].copy_from_slice(&tip[..tip.len().min(128)]);
             Shell_NotifyIconW(NIM_ADD, &mut nid);
 
-            // 注册任务栏歌词条窗口
+            // 注册任务栏歌词条窗口（支持双击）
             let lyrics_class_name = to_wide("wocli_lyrics_bar_class");
             let mut lwc: WNDCLASSW = std::mem::zeroed();
-            lwc.style = CS_HREDRAW | CS_VREDRAW;
+            lwc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
             lwc.lpfnWndProc = Some(lyrics_wnd_proc);
             lwc.hInstance = hinstance;
             lwc.lpszClassName = lyrics_class_name.as_ptr();
             RegisterClassW(&lwc);
 
+            let screen_w = GetSystemMetrics(SM_CXSCREEN).max(800);
+            let screen_h = GetSystemMetrics(SM_CYSCREEN).max(600);
+
             let mut work_area: RECT = std::mem::zeroed();
             let has_work_area =
                 SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work_area as *mut _ as *mut _, 0)
                     != 0;
-            let (screen_w, work_bottom) = if has_work_area {
-                (
-                    (work_area.right - work_area.left).max(800),
-                    work_area.bottom,
-                )
+            let work_bottom = if has_work_area {
+                work_area.bottom
             } else {
-                let sw = GetSystemMetrics(SM_CXSCREEN).max(800);
-                let sh = GetSystemMetrics(SM_CYSCREEN);
-                (sw, sh - 48)
+                screen_h - 48
             };
-            let bar_w = 920.min(screen_w - 40);
-            let bar_h = 46;
-            let bar_x = (screen_w - bar_w) / 2;
-            let bar_y = (work_bottom - bar_h - 8).max(0);
+
+            let tb_hwnd = FindWindowW(to_wide("Shell_TrayWnd").as_ptr(), null());
+            let mut tb_rect: RECT = std::mem::zeroed();
+            let (tb_left, tb_top, tb_right, tb_bottom) =
+                if tb_hwnd != 0 && GetWindowRect(tb_hwnd, &mut tb_rect) != 0 {
+                    (tb_rect.left, tb_rect.top, tb_rect.right, tb_rect.bottom)
+                } else {
+                    (0, work_bottom, screen_w, screen_h)
+                };
+
+            let tb_h = (tb_bottom - tb_top).max(36);
+            let bar_h = (tb_h - 8).min(40).max(30);
+            let bar_y = tb_top + (tb_h - bar_h) / 2;
+
+            let bar_w = 400.min(screen_w - 40);
+
+            let notify_hwnd = if tb_hwnd != 0 {
+                FindWindowExW(tb_hwnd, 0, to_wide("TrayNotifyWnd").as_ptr(), null())
+            } else {
+                0
+            };
+            let mut notify_rect: RECT = std::mem::zeroed();
+            let right_bound =
+                if notify_hwnd != 0 && GetWindowRect(notify_hwnd, &mut notify_rect) != 0 {
+                    notify_rect.left - 12
+                } else {
+                    tb_right - 180
+                };
+
+            let candidate_x = right_bound - bar_w;
+            let bar_x = if candidate_x >= tb_left + 60 {
+                candidate_x
+            } else {
+                ((screen_w - bar_w) / 2).max(tb_left + 10)
+            };
 
             let lyrics_hwnd = CreateWindowExW(
                 WS_EX_TOPMOST
                     | WS_EX_TOOLWINDOW
                     | WS_EX_LAYERED
-                    | WS_EX_TRANSPARENT
                     | WS_EX_NOACTIVATE,
                 lyrics_class_name.as_ptr(),
                 lyrics_class_name.as_ptr(),
