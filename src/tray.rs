@@ -206,27 +206,52 @@ mod macos {
     const TAG_TUI: isize = 17;
     const TAG_QUIT: isize = 99;
 
+    unsafe fn trigger_action(tag: isize) {
+        PENDING_ACTION.store(tag as u32, Ordering::SeqCst);
+        let app = NSApp();
+        let empty_event: id = msg_send![
+            class!(NSEvent),
+            otherEventWithType: 14isize // NSEventTypeApplicationDefined
+            location: cocoa::foundation::NSPoint::new(0.0, 0.0)
+            modifierFlags: 0usize
+            timestamp: 0.0f64
+            windowNumber: 0isize
+            context: nil
+            subtype: 0i16
+            data1: 0isize
+            data2: 0isize
+        ];
+        if empty_event != nil {
+            let _: () = msg_send![app, postEvent: empty_event atStart: YES];
+        }
+    }
+
     extern "C" fn on_menu_action(_this: &Object, _cmd: Sel, sender: id) {
         unsafe {
             let tag: isize = msg_send![sender, tag];
-            PENDING_ACTION.store(tag as u32, Ordering::SeqCst);
-            let app = NSApp();
-            let empty_event: id = msg_send![
-                class!(NSEvent),
-                otherEventWithType: 14isize // NSEventTypeApplicationDefined
-                location: cocoa::foundation::NSPoint::new(0.0, 0.0)
-                modifierFlags: 0usize
-                timestamp: 0.0f64
-                windowNumber: 0isize
-                context: nil
-                subtype: 0i16
-                data1: 0isize
-                data2: 0isize
-            ];
-            if empty_event != nil {
-                let _: () = msg_send![app, postEvent: empty_event atStart: YES];
-            }
+            trigger_action(tag);
         }
+    }
+
+    extern "C" fn on_remote_toggle(_this: &Object, _cmd: Sel, _event: id) -> isize {
+        unsafe {
+            trigger_action(TAG_TOGGLE);
+        }
+        0 // MPRemoteCommandHandlerStatusSuccess
+    }
+
+    extern "C" fn on_remote_prev(_this: &Object, _cmd: Sel, _event: id) -> isize {
+        unsafe {
+            trigger_action(TAG_PREV);
+        }
+        0
+    }
+
+    extern "C" fn on_remote_next(_this: &Object, _cmd: Sel, _event: id) -> isize {
+        unsafe {
+            trigger_action(TAG_NEXT);
+        }
+        0
     }
 
     fn target_class() -> &'static Class {
@@ -239,10 +264,95 @@ mod macos {
                     sel!(onAction:),
                     on_menu_action as extern "C" fn(&Object, Sel, id),
                 );
+                decl.add_method(
+                    sel!(onRemoteToggle:),
+                    on_remote_toggle as extern "C" fn(&Object, Sel, id) -> isize,
+                );
+                decl.add_method(
+                    sel!(onRemotePrev:),
+                    on_remote_prev as extern "C" fn(&Object, Sel, id) -> isize,
+                );
+                decl.add_method(
+                    sel!(onRemoteNext:),
+                    on_remote_next as extern "C" fn(&Object, Sel, id) -> isize,
+                );
             }
             decl.register();
         });
         class!(WocliTrayActionTarget)
+    }
+
+    unsafe fn setup_remote_commands(target: id) {
+        let mp_path = to_nsstring("/System/Library/Frameworks/MediaPlayer.framework");
+        let bundle: id = msg_send![class!(NSBundle), bundleWithPath: mp_path];
+        if bundle != nil {
+            let _: () = msg_send![bundle, load];
+        }
+        if let Some(center_cls) = Class::get("MPRemoteCommandCenter") {
+            let center: id = msg_send![center_cls, sharedCommandCenter];
+            if center != nil {
+                let cmds: &[(Sel, Sel)] = &[
+                    (sel!(togglePlayPauseCommand), sel!(onRemoteToggle:)),
+                    (sel!(playCommand), sel!(onRemoteToggle:)),
+                    (sel!(pauseCommand), sel!(onRemoteToggle:)),
+                    (sel!(previousTrackCommand), sel!(onRemotePrev:)),
+                    (sel!(nextTrackCommand), sel!(onRemoteNext:)),
+                ];
+                for &(cmd_sel, action_sel) in cmds {
+                    let cmd: id = msg_send![center, performSelector: cmd_sel];
+                    if cmd != nil {
+                        let _: () = msg_send![cmd, setEnabled: YES];
+                        let _: () = msg_send![cmd, addTarget: target action: action_sel];
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe fn update_now_playing(
+        title: &str,
+        artist: &str,
+        duration: f64,
+        elapsed: f64,
+        playing: bool,
+    ) {
+        if let Some(info_cls) = Class::get("MPNowPlayingInfoCenter") {
+            let center: id = msg_send![info_cls, defaultCenter];
+            if center != nil {
+                let dict: id = msg_send![class!(NSMutableDictionary), dictionary];
+                let title_ns = to_nsstring(title);
+                let artist_ns = to_nsstring(artist);
+                let dur_num: id = msg_send![class!(NSNumber), numberWithDouble: duration];
+                let pos_num: id = msg_send![class!(NSNumber), numberWithDouble: elapsed];
+                let rate_num: id = msg_send![
+                    class!(NSNumber),
+                    numberWithDouble: if playing { 1.0f64 } else { 0.0f64 }
+                ];
+
+                let k_title = to_nsstring("title");
+                let k_artist = to_nsstring("artist");
+                let k_dur = to_nsstring("playbackDuration");
+                let k_pos = to_nsstring("MPNowPlayingInfoPropertyElapsedPlaybackTime");
+                let k_rate = to_nsstring("MPNowPlayingInfoPropertyPlaybackRate");
+
+                let _: () = msg_send![dict, setObject: title_ns forKey: k_title];
+                let _: () = msg_send![dict, setObject: artist_ns forKey: k_artist];
+                let _: () = msg_send![dict, setObject: dur_num forKey: k_dur];
+                let _: () = msg_send![dict, setObject: pos_num forKey: k_pos];
+                let _: () = msg_send![dict, setObject: rate_num forKey: k_rate];
+
+                let _: () = msg_send![center, setNowPlayingInfo: dict];
+            }
+        }
+    }
+
+    unsafe fn clear_now_playing() {
+        if let Some(info_cls) = Class::get("MPNowPlayingInfoCenter") {
+            let center: id = msg_send![info_cls, defaultCenter];
+            if center != nil {
+                let _: () = msg_send![center, setNowPlayingInfo: nil];
+            }
+        }
     }
 
     unsafe fn to_nsstring(s: &str) -> id {
@@ -277,6 +387,7 @@ mod macos {
 
             let target_obj: id = msg_send![target_class(), alloc];
             let target_obj: id = msg_send![target_obj, init];
+            setup_remote_commands(target_obj);
 
             // 1. 顶部菜单栏 StatusItem
             let status_bar = NSStatusBar::systemStatusBar(nil);
@@ -498,6 +609,7 @@ mod macos {
                             let _ = Command::new("osascript").args(["-e", &script]).spawn();
                         }
                         TAG_QUIT => {
+                            clear_now_playing();
                             let _: () = msg_send![lyrics_window, orderOut: nil];
                             let _ = super::stop(&paths);
                             let _ = ipc::request(&paths, json!({"op":"shutdown"}), false);
@@ -658,7 +770,14 @@ mod macos {
                         }
                         let _: () = msg_send![lyrics_window, orderOut: nil];
                     }
+
+                    if phase == "playing" || phase == "paused" {
+                        update_now_playing(title, artist, dur, pos, phase == "playing");
+                    } else {
+                        clear_now_playing();
+                    }
                 } else {
+                    clear_now_playing();
                     let new_status = "后台未运行";
                     if new_status != last_menu_status {
                         set_item_title(item_status, new_status);
@@ -714,6 +833,7 @@ mod windows {
         DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD,
         PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
         NOTIFYICONDATAW,
@@ -729,10 +849,10 @@ mod windows {
         IDC_SIZEALL, IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
         SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE,
         SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY,
-        WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE,
-        WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
-        WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_MOVE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP,
+        WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -749,6 +869,16 @@ mod windows {
     const CMD_LYRICS_BAR: usize = 208;
     const CMD_TUI: usize = 209;
     const CMD_QUIT: usize = 210;
+
+    const HOTKEY_PLAY_PAUSE: i32 = 1001;
+    const HOTKEY_PREV: i32 = 1002;
+    const HOTKEY_NEXT: i32 = 1003;
+    const HOTKEY_STOP: i32 = 1004;
+
+    const VK_MEDIA_NEXT_TRACK: u32 = 0xB0;
+    const VK_MEDIA_PREV_TRACK: u32 = 0xB1;
+    const VK_MEDIA_STOP: u32 = 0xB2;
+    const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
 
     static CUSTOM_BAR_X: AtomicI32 = AtomicI32::new(-1);
     static HOVER_BTN: AtomicU8 = AtomicU8::new(0);
@@ -1012,7 +1142,35 @@ mod windows {
                 });
                 0
             }
+            WM_HOTKEY => {
+                let id = wparam as i32;
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow().as_ref() {
+                        match id {
+                            HOTKEY_PLAY_PAUSE => {
+                                let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
+                            }
+                            HOTKEY_PREV => {
+                                let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
+                            }
+                            HOTKEY_NEXT => {
+                                let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
+                            }
+                            HOTKEY_STOP => {
+                                let _ = ipc::request(&state.paths, json!({"op":"stop"}), true);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
+                0
+            }
             WM_DESTROY => {
+                UnregisterHotKey(hwnd, HOTKEY_PLAY_PAUSE);
+                UnregisterHotKey(hwnd, HOTKEY_PREV);
+                UnregisterHotKey(hwnd, HOTKEY_NEXT);
+                UnregisterHotKey(hwnd, HOTKEY_STOP);
                 STATE.with(|st| {
                     if let Some(mut state) = st.borrow_mut().take() {
                         Shell_NotifyIconW(NIM_DELETE, &mut state.nid);
@@ -1593,6 +1751,12 @@ mod windows {
             if hwnd == 0 {
                 return Err(Error::new("无法创建托盘宿主窗口"));
             }
+
+            // 注册全局多媒体系统快捷键（播放/暂停、上一首、下一首、停止）
+            RegisterHotKey(hwnd, HOTKEY_PLAY_PAUSE, 0, VK_MEDIA_PLAY_PAUSE);
+            RegisterHotKey(hwnd, HOTKEY_PREV, 0, VK_MEDIA_PREV_TRACK);
+            RegisterHotKey(hwnd, HOTKEY_NEXT, 0, VK_MEDIA_NEXT_TRACK);
+            RegisterHotKey(hwnd, HOTKEY_STOP, 0, VK_MEDIA_STOP);
 
             // 创建系统托盘图标（动态生成金色音符图标）
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();

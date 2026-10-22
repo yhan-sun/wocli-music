@@ -211,12 +211,12 @@ macOS provides a menu-bar item with lyrics and playback controls. Windows provid
 | --- | --- |
 | `j` / `k` or `↓` / `↑` | Move down / up |
 | `g` / `G` or `Home` / `End` | First / last item |
-| `[` / `]` or `<` / `>` | Previous / next track |
-| `Space` | Play / pause |
+| `[` / `]` or `<` / `>` or Media Keys | Previous / next track |
+| `Space` or Play/Pause Media Key | Play / pause (starts playback if idle/stopped) |
 | `Enter` | Play selection / confirm |
 | `/` or `Ctrl+F` | Search |
 | `←` / `→` | Seek backward / forward 5 seconds |
-| `+` / `-` | Adjust volume |
+| `+` / `-` or Volume Media Keys | Adjust volume |
 | `Ctrl+U` / `Ctrl+D` | Page up / down |
 | `v` | Toggle full-screen lyrics |
 | `m` | Cycle playback mode |
@@ -226,6 +226,11 @@ macOS provides a menu-bar item with lyrics and playback controls. Windows provid
 | `Tab` / `b` | Switch focus / choose library |
 | `?` / `Esc` | Shortcut help / close current view or popup |
 | `q` | Close TUI; playback continues |
+
+> **Global System Shortcuts & Media Keys**:
+> - When the tray is running in the background, macOS natively integrates with `MPRemoteCommandCenter` and Control Center (Now Playing), and Windows natively registers global media hotkeys; physical hardware media keys (Play/Pause, Previous, Next, Volume) work globally.
+> - Inside the terminal TUI, keyboard hardware media keys directly control playback, track switching, and volume anywhere in the interface.
+> - System shortcut tools (macOS Shortcuts, Raycast, Alfred, Windows shortcuts, Linux hotkeys) can seamlessly trigger `wocli toggle`, `wocli prev`, `wocli next`, automatically waking and playing when idle or stopped.
 
 ![Compact TUI at 80×26](docs/screenshots/compact.png)
 

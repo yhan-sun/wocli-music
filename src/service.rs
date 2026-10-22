@@ -471,6 +471,12 @@ impl Service {
     }
     fn advance(&mut self, previous: bool, automatic: bool) -> Result<()> {
         if self.queue.is_empty() {
+            let favs = self.store.favorites().unwrap_or_default();
+            if !favs.is_empty() {
+                self.queue = favs;
+                self.index = 0;
+                return self.begin(0, self.settings.quality.clone());
+            }
             return Ok(());
         }
         if automatic {
@@ -480,7 +486,7 @@ impl Service {
             if previous {
                 self.shuffle
                     .previous()
-                    .ok_or_else(|| Error::new("没有上一首播放记录"))?
+                    .unwrap_or_else(|| (self.index + self.queue.len() - 1) % self.queue.len())
             } else {
                 self.shuffle.next(self.queue.len(), self.index)
             }
@@ -947,12 +953,35 @@ impl Service {
                 }
             }
             "pause" | "resume" | "toggle" => {
-                if self.phase == "loading" && op == "toggle" {
+                if self.phase == "loading" && (op == "toggle" || op == "pause") {
                     self.stop();
                 } else if ["playing", "paused"].contains(&self.phase.as_str()) {
                     let paused = op == "pause" || (op == "toggle" && self.phase == "playing");
                     self.player.pause(paused);
                     self.phase = if paused { "paused" } else { "playing" }.into();
+                } else if op == "pause" && self.phase == "stopped" {
+                    // 已经处于停止状态，无需重复报错
+                } else if (op == "toggle" || op == "resume") && self.phase == "stopped" {
+                    if !self.queue.is_empty() {
+                        let idx = self.index.min(self.queue.len().saturating_sub(1));
+                        self.begin(idx, self.settings.quality.clone())?;
+                    } else {
+                        let favs = self.store.favorites().unwrap_or_default();
+                        if !favs.is_empty() {
+                            self.queue = favs;
+                            self.index = 0;
+                            self.begin(0, self.settings.quality.clone())?;
+                        } else {
+                            return Err(Error::new("当前没有可暂停或继续的音频"));
+                        }
+                    }
+                } else if (op == "toggle" || op == "resume") && self.phase == "error" {
+                    if !self.queue.is_empty() {
+                        let idx = self.index.min(self.queue.len().saturating_sub(1));
+                        self.begin(idx, self.settings.quality.clone())?;
+                    } else {
+                        return Err(Error::new("当前没有可暂停或继续的音频"));
+                    }
                 } else {
                     return Err(Error::new("当前没有可暂停或继续的音频"));
                 }
@@ -1817,5 +1846,28 @@ mod playback_tests {
                 }
             }
         }
+    }
+    #[test]
+    fn stopped_toggle_plays_queue_and_shuffle_prev_falls_back() {
+        let mut h = Harness::new("shuffle");
+        let t1 = h.track("one", true);
+        let t2 = h.track("two", true);
+        h.service.queue = vec![t1, t2];
+        h.service.phase = "stopped".into();
+
+        // 1. Stopped + pause succeeds cleanly as no-op
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        assert_eq!(h.service.phase, "stopped");
+
+        // 2. Stopped + toggle starts playing current queue track
+        h.service.dispatch(json!({"op":"toggle"})).unwrap();
+        assert_eq!(h.service.phase, "loading");
+        h.pump("playing");
+        assert_eq!(h.service.phase, "playing");
+
+        // 3. Shuffle prev without previous history falls back to previous track instead of error
+        h.service.shuffle.reset(2, 0);
+        h.service.dispatch(json!({"op":"prev"})).unwrap();
+        assert_eq!(h.service.phase, "loading");
     }
 }

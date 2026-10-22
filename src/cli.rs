@@ -242,7 +242,7 @@ fn wait(paths: &Paths) -> Result<Value> {
         if start.elapsed() > Duration::from_secs(360) {
             return Err(Error::new("等待音频加载超时"));
         }
-        thread::sleep(Duration::from_millis(120));
+        thread::sleep(Duration::from_millis(40));
     }
 }
 fn print_status(value: &Value) {

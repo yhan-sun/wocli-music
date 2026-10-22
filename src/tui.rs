@@ -5,7 +5,9 @@ use crate::{
     service::Status,
     store::{Paths, Store},
 };
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MediaKeyCode, MouseEventKind,
+};
 use ratatui::{
     prelude::*,
     widgets::{
@@ -645,6 +647,33 @@ impl App {
             && matches!(key.code, KeyCode::Char('q' | 'c'))
         {
             return Ok(true);
+        }
+        if let KeyCode::Media(media) = key.code {
+            match media {
+                MediaKeyCode::PlayPause | MediaKeyCode::Play | MediaKeyCode::Pause => {
+                    self.act(Action::Toggle)?;
+                }
+                MediaKeyCode::TrackNext | MediaKeyCode::FastForward => {
+                    self.act(Action::Control(json!({"op":"next"})))?;
+                }
+                MediaKeyCode::TrackPrevious | MediaKeyCode::Rewind => {
+                    self.act(Action::Control(json!({"op":"prev"})))?;
+                }
+                MediaKeyCode::Stop => {
+                    self.act(Action::Control(json!({"op":"stop"})))?;
+                }
+                MediaKeyCode::LowerVolume => {
+                    self.act(Action::Volume(-5))?;
+                }
+                MediaKeyCode::RaiseVolume => {
+                    self.act(Action::Volume(5))?;
+                }
+                MediaKeyCode::MuteVolume => {
+                    self.act(Action::Control(json!({"op":"volume","value":0})))?;
+                }
+                _ => {}
+            }
+            return Ok(false);
         }
         if let Some(popup) = &mut self.popup {
             if key.code == KeyCode::Esc {
@@ -1766,7 +1795,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ]  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ −  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2425,5 +2454,30 @@ mod interaction_tests {
             .unwrap();
         let cmd = rx.try_recv().unwrap();
         assert_eq!(cmd.value["op"], "next");
+
+        // Media keys: TrackPrevious, TrackNext, PlayPause
+        app.key(KeyEvent::new(
+            KeyCode::Media(MediaKeyCode::TrackPrevious),
+            KeyModifiers::NONE,
+        ))
+        .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "prev");
+
+        app.key(KeyEvent::new(
+            KeyCode::Media(MediaKeyCode::TrackNext),
+            KeyModifiers::NONE,
+        ))
+        .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "next");
+
+        app.key(KeyEvent::new(
+            KeyCode::Media(MediaKeyCode::PlayPause),
+            KeyModifiers::NONE,
+        ))
+        .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd.value["op"], "play");
     }
 }

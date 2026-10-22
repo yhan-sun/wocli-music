@@ -46,7 +46,7 @@ cocoa = "0.25"
 objc = "0.2.7"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.52", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
+windows-sys = { version = "0.52", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [profile.release]
 opt-level = "z"

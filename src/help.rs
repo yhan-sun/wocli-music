@@ -32,7 +32,7 @@ pub const COMMANDS: &[&str] = &[
     "daemon",
     "help",
 ];
-pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
+pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\n键盘多媒体按键（播放/暂停、上一首、下一首、音量调节）原生可用\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
 
 pub fn text(topic: Option<&str>) -> Result<String> {
     let topic = topic.unwrap_or("");
@@ -58,7 +58,7 @@ pub fn text(topic: Option<&str>) -> Result<String> {
         "update"=>"用法：wocli update [--check --force --direct --json]\n--check 仅检查；--force 重装当前稳定版；默认校验并安装最新稳定版。\n保留曲库和设置；更新前下载并校验完整，重启先前运行的后台/托盘。",
         "doctor"=>"用法：wocli doctor [--json]\n查看版本、平台、数据目录、网络环境及后台运行状态。\n音源故障可进一步运行 wocli source list / test。",
         "mcp"=>"用法：wocli mcp [serve] [--read-only --direct --home 目录]\n      wocli mcp prompt [--read-only --direct --home 目录 --json]\n      wocli mcp config [--read-only --direct --home 目录]\n      wocli mcp tools [--read-only]\n\nserve 通过标准输入/输出提供本地 MCP 服务，供 AI 客户端启动；不监听 HTTP 端口。\n直接在终端运行 serve 会显示启动成功及可复制给 AI 的接入提示词，等待客户端连接；Ctrl+C 退出。\nprompt 单独输出提示词后退出，包含本机配置与连接验证步骤；--json 输出提示词及配置。\n请复制提示词给支持本地 stdio MCP 的 AI 客户端，由客户端启动自己的服务进程。\nconfig 输出包含当前程序绝对路径的 mcpServers JSON 配置。\ntools 查看工具目录及参数 Schema。--read-only 只开放查询工具。\n\n支持搜索、播放控制、队列、收藏/歌单、歌词、后台下载和已有音源管理。\n播放/下载立即返回，请继续查询状态；关闭 MCP 不会关闭音乐后台。\n不会通过 MCP 执行更新、导入脚本或任意命令。详见 docs/mcp.md。",
-        "pause"|"resume"|"toggle"|"play-pause"|"stop"|"next"|"skip"|"prev"|"previous"=>"播放控制：pause 暂停；resume 继续；toggle / play-pause 切换；stop 停止。\nnext / skip 下一首；prev / previous 上一首。切歌支持 --no-wait。",
+        "pause"|"resume"|"toggle"|"play-pause"|"stop"|"next"|"skip"|"prev"|"previous"=>"播放控制：pause 暂停；resume 继续；toggle / play-pause 切换；stop 停止。\nnext / skip 下一首；prev / previous 上一首。切歌支持 --no-wait。\n停止或空闲状态下按播放/暂停或切歌可直接唤起播放；无缝兼容系统全局快捷键与媒体按键绑定。",
         "status"|"favorites"|"history"=>"用法：wocli status | favorites | history [--json]\n分别查看当前播放状态、喜欢列表、最近播放历史。",
         _=>return Err(Error::new(format!("没有“{topic}”的帮助，运行 wocli help 查看命令"))),
     };
