@@ -722,17 +722,17 @@ mod windows {
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW,
         GetClientRect, GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowRect, LoadCursorW,
-        LoadIconW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetCursor,
-        SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-        SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS,
-        CS_HREDRAW, CS_VREDRAW, HICON, HTCAPTION, HTCLIENT, ICONINFO, IDC_HAND, IDC_SIZEALL,
-        IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN,
-        SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE,
-        WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCHITTEST,
-        WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE,
-        WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_POPUP,
+        LoadIconW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW,
+        SetCursor, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos,
+        ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint,
+        CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, HICON, HTCAPTION, HTCLIENT, ICONINFO, IDC_HAND,
+        IDC_SIZEALL, IDI_APPLICATION, LWA_COLORKEY, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
+        SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE,
+        SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY,
+        WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE,
+        WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+        WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -1122,7 +1122,7 @@ mod windows {
             }
             WM_NCLBUTTONDBLCLK => {
                 STATE.with(|st| {
-                    if let Some(state) = st.borrow().as_ref() {
+                    if st.borrow().is_some() {
                         let exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
                         let exe_str = exe.to_string_lossy();
