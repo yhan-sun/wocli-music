@@ -42,11 +42,12 @@ test('fixed repository, server-side redirects, sanitized metadata, cache, HEAD a
     result = await get(path);
     assert.equal(await result.text(), 'abc');
     assert.equal(calls.length, 3);
-    const bom = '\ufeff# PowerShell';
+    const bom = '\ufeff# PowerShell 安装器';
     result = await get('/install.ps1', {INSTALLERS:{'/install.ps1':bom}});
     assert.equal(result.headers.get('content-type'), 'text/plain; charset=utf-8');
     assert.equal(result.headers.get('cache-control'), 'no-store');
-    assert.equal(await result.text(), '# PowerShell');
+    // Response.text() strips a leading UTF-8 BOM itself; inspect raw bytes.
+    assert.deepEqual(Buffer.from(await result.arrayBuffer()), Buffer.from('# PowerShell 安装器'));
     for (const bad of ['/proxy?url=https://example.com', '/releases/download/v0.3.4/evil.exe', '/releases/download/v0.3.4/wocli-music-0.3.3-windows-x86_64.zip', '/releases/download/v0.3.4/wocli-music-0.3.4-linux-x86_64.zip']) {
       assert.equal((await get(bad)).status, 404, bad);
     }
