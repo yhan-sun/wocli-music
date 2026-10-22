@@ -267,20 +267,26 @@ mod macos {
         class!(WocliTrayActionTarget)
     }
 
+    unsafe fn to_nsstring(s: &str) -> id {
+        let str_obj = NSString::alloc(nil).init_str(s);
+        let _: () = msg_send![str_obj, autorelease];
+        str_obj
+    }
+
     unsafe fn create_item(title: &str, tag: isize, target: id) -> id {
         let item: id = msg_send![class!(NSMenuItem), alloc];
-        let title_ns = NSString::alloc(nil).init_str(title);
-        let key_ns = NSString::alloc(nil).init_str("");
+        let title_ns = to_nsstring(title);
+        let key_ns = to_nsstring("");
         let item: id =
             msg_send![item, initWithTitle:title_ns action:sel!(onAction:) keyEquivalent:key_ns];
         let _: () = msg_send![item, setTarget: target];
         let _: () = msg_send![item, setTag: tag];
-        let _: () = msg_send![item, retain];
+        let _: () = msg_send![item, autorelease];
         item
     }
 
     unsafe fn set_item_title(item: id, title: &str) {
-        let title_ns = NSString::alloc(nil).init_str(title);
+        let title_ns = to_nsstring(title);
         let _: () = msg_send![item, setTitle: title_ns];
     }
 
@@ -357,7 +363,7 @@ mod macos {
             let _: () = msg_send![status_item, setMenu: menu];
 
             // 优先使用 macOS 原生 SF Symbol 矢量单色模板图标 (music.note)，自适应深浅色模式
-            let symbol_name = NSString::alloc(nil).init_str("music.note");
+            let symbol_name = to_nsstring("music.note");
             let symbol_img: id = msg_send![
                 class!(NSImage),
                 imageWithSystemSymbolName: symbol_name
@@ -369,7 +375,7 @@ mod macos {
                 let _: () = msg_send![button, setImagePosition: 2usize]; // NSImageLeft
             }
 
-            let init_title = NSString::alloc(nil).init_str("wocli");
+            let init_title = to_nsstring("wocli");
             let _: () = msg_send![button, setTitle: init_title];
 
             // 2. 桌面 / 任务栏悬浮透明歌词窗口 (NSPanel)
@@ -430,7 +436,21 @@ mod macos {
             let _: () = msg_send![shadow, setShadowOffset: NSSize::new(1.0, -2.0)];
             let _: () = msg_send![shadow, setShadowBlurRadius: 4.0f64];
             let _: () = msg_send![lyrics_label, setShadow: shadow];
+            let _: () = msg_send![shadow, release];
             let _: () = msg_send![content_view, addSubview: lyrics_label];
+
+            let empty_str = to_nsstring("");
+            let _: () = msg_send![empty_str, retain];
+            let mode_str = to_nsstring("kCFRunLoopDefaultMode");
+            let _: () = msg_send![mode_str, retain];
+
+            let mut last_menu_info = String::new();
+            let mut last_menu_status = String::new();
+            let mut last_menu_lyric = String::new();
+            let mut last_menu_toggle = String::new();
+            let mut last_menu_mode = String::new();
+            let mut last_menu_vol = String::new();
+            let mut last_menu_lyrics_bar = String::new();
 
             let mut last_title = String::new();
             let mut last_bar_text = String::new();
@@ -535,34 +555,58 @@ mod macos {
                         _ => "已停止",
                     };
 
-                    set_item_title(item_info, &format!("{title} · {artist}"));
-                    set_item_title(
-                        item_status,
-                        &format!("{phase_label}  {} / {}", clock(pos), clock(dur)),
-                    );
-                    set_item_title(item_lyric, active_lyr.as_deref().unwrap_or("暂无歌词"));
-                    set_item_title(
-                        item_toggle,
-                        if phase == "playing" {
-                            "暂停"
+                    let new_info = format!("{title} · {artist}");
+                    if new_info != last_menu_info {
+                        set_item_title(item_info, &new_info);
+                        last_menu_info = new_info;
+                    }
+
+                    let new_status = format!("{phase_label}  {} / {}", clock(pos), clock(dur));
+                    if new_status != last_menu_status {
+                        set_item_title(item_status, &new_status);
+                        last_menu_status = new_status;
+                    }
+
+                    let new_lyric = active_lyr.as_deref().unwrap_or("暂无歌词");
+                    if new_lyric != last_menu_lyric {
+                        set_item_title(item_lyric, new_lyric);
+                        last_menu_lyric = new_lyric.to_string();
+                    }
+
+                    let new_toggle = if phase == "playing" {
+                        "暂停"
+                    } else {
+                        "播放"
+                    };
+                    if new_toggle != last_menu_toggle {
+                        set_item_title(item_toggle, new_toggle);
+                        last_menu_toggle = new_toggle.to_string();
+                    }
+
+                    let new_mode = format!("模式: {}", mode_label(mode));
+                    if new_mode != last_menu_mode {
+                        set_item_title(item_mode, &new_mode);
+                        last_menu_mode = new_mode;
+                    }
+
+                    let new_vol = format!("音量 +10% (当前 {vol}%)");
+                    if new_vol != last_menu_vol {
+                        set_item_title(item_vol_up, &new_vol);
+                        last_menu_vol = new_vol;
+                    }
+
+                    let new_lb = format!(
+                        "任务栏歌词: {}",
+                        if lyrics_bar_enabled {
+                            "开启"
                         } else {
-                            "播放"
-                        },
+                            "关闭"
+                        }
                     );
-                    set_item_title(item_mode, &format!("模式: {}", mode_label(mode)));
-                    set_item_title(item_vol_up, &format!("音量 +10% (当前 {vol}%)"));
-                    set_item_title(item_vol_down, "音量 -10%");
-                    set_item_title(
-                        item_lyrics_bar,
-                        &format!(
-                            "任务栏歌词: {}",
-                            if lyrics_bar_enabled {
-                                "开启"
-                            } else {
-                                "关闭"
-                            }
-                        ),
-                    );
+                    if new_lb != last_menu_lyrics_bar {
+                        set_item_title(item_lyrics_bar, &new_lb);
+                        last_menu_lyrics_bar = new_lb;
+                    }
 
                     // 顶部菜单栏标题：实时呈现当前唱到的歌词（未唱到歌词或间奏时显示歌名·歌手）
                     let menu_bar_title = if phase == "playing" {
@@ -605,7 +649,7 @@ mod macos {
                     };
 
                     if menu_bar_title != last_title {
-                        let ns_title = NSString::alloc(nil).init_str(&menu_bar_title);
+                        let ns_title = to_nsstring(&menu_bar_title);
                         let _: () = msg_send![button, setTitle: ns_title];
                         last_title = menu_bar_title;
                     }
@@ -625,37 +669,38 @@ mod macos {
 
                     if let Some(text) = bar_display {
                         if text != last_bar_text {
-                            let ns_lyr = NSString::alloc(nil).init_str(&text);
+                            let ns_lyr = to_nsstring(&text);
                             let _: () = msg_send![lyrics_label, setStringValue: ns_lyr];
                             last_bar_text = text;
                         }
                         let _: () = msg_send![lyrics_window, orderFrontRegardless];
                     } else {
                         if !last_bar_text.is_empty() {
-                            let empty = NSString::alloc(nil).init_str("");
-                            let _: () = msg_send![lyrics_label, setStringValue: empty];
+                            let _: () = msg_send![lyrics_label, setStringValue: empty_str];
                             last_bar_text.clear();
                         }
                         let _: () = msg_send![lyrics_window, orderOut: nil];
                     }
                 } else {
-                    set_item_title(item_status, "后台未运行");
+                    let new_status = "后台未运行";
+                    if new_status != last_menu_status {
+                        set_item_title(item_status, new_status);
+                        last_menu_status = new_status.to_string();
+                    }
                     if last_title != "wocli" {
-                        let ns_title = NSString::alloc(nil).init_str("wocli");
+                        let ns_title = to_nsstring("wocli");
                         let _: () = msg_send![button, setTitle: ns_title];
                         last_title = "wocli".to_string();
                     }
                     if !last_bar_text.is_empty() {
-                        let empty = NSString::alloc(nil).init_str("");
-                        let _: () = msg_send![lyrics_label, setStringValue: empty];
+                        let _: () = msg_send![lyrics_label, setStringValue: empty_str];
                         last_bar_text.clear();
                     }
                     let _: () = msg_send![lyrics_window, orderOut: nil];
                 }
 
-                // 3. 处理 Cocoa 事件（0.08 秒超时自动循环，消除事件响应延迟）
-                let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.08];
-                let mode_str = NSString::alloc(nil).init_str("kCFRunLoopDefaultMode");
+                // 3. 处理 Cocoa 事件（0.12 秒超时自动循环，应用自定义事件即刻唤醒）
+                let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.12f64];
                 let event: id = msg_send![
                     app,
                     nextEventMatchingMask: usize::MAX
