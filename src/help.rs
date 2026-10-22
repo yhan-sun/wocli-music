@@ -1,0 +1,64 @@
+use crate::model::{Error, Result};
+
+pub const COMMANDS: &[&str] = &[
+    "tui",
+    "search",
+    "play",
+    "pause",
+    "resume",
+    "toggle",
+    "stop",
+    "next",
+    "prev",
+    "seek",
+    "volume",
+    "mode",
+    "status",
+    "favorites",
+    "history",
+    "queue",
+    "playlist",
+    "like",
+    "lyrics",
+    "lyrics-bar",
+    "tray",
+    "download",
+    "retry",
+    "source",
+    "config",
+    "update",
+    "doctor",
+    "daemon",
+    "help",
+];
+pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
+
+pub fn text(topic: Option<&str>) -> Result<String> {
+    let topic = topic.unwrap_or("");
+    let body=match topic{
+        ""|"help"|"thelp"=>return Ok(format!("{}\n分项帮助：wocli help <命令>（也支持 thelp、<命令> --help）\n例如：wocli help download、wocli help source、wocli help keys\n",crate::cli::HELP)),
+        "keys"|"tui"=>return Ok(KEYS.into()),
+        "source"|"sources"=>"用法：\n  wocli source list                    按尝试顺序列出音源\n  wocli source show ID                 查看单个音源\n  wocli source add 文件或网址 [--name 名称]\n  wocli source enable ID               启用\n  wocli source disable ID              停用\n  wocli source prefer ID               启用并优先使用\n  wocli source remove ID               移除用户音源\n  wocli source test ID [--id 歌曲ID --quality 128k]\n\n默认先尝试酷我内置，再尝试酷我移动接口，均直连国内平台。\n播放、下载共用换源顺序，全部失败才跳过歌曲或报告下载错误。\n支持本地/HTTP(S) 的 LX .js 及 HTTP 模板 .json，改动在下次请求生效。\n示例：wocli source add ./音源.js\n      wocli source prefer user-xxxxxxxxxxxx\n当前适配酷我 kw/musicUrl，不混用 QQ、网易等平台 ID。\nLX 支持事件、Promise、HTTP、定时器、Buffer 工具、MD5、zlib；暂不支持 AES/RSA/Node.js API。\n详见 docs/sources.md。",
+        "download"=>"用法：wocli download --id ID [--quality best --lyrics --output 目录 --force --direct]\n      wocli download 关键词 --pick N [选项]\n示例：wocli download --id 228908 --quality 128k --lyrics --output ~/Music\n--lyrics 同时保存 .lrc；--force 覆盖已有文件；--direct 忽略代理。\n终端界面选中歌曲按 d，或在下载任务中点击“新建 d”。\n下载失败会尝试其他启用音源。已有同名文件需要 --force；本地音频无需再下载。",
+        "search"=>"用法：wocli search 关键词 [--page 1 --limit 20 --json --direct]\n示例：wocli search 周杰伦 --page 2 --limit 10\n页码从 1 开始，每页 1–100 首。目前搜索使用酷我目录。",
+        "play"=>"用法：wocli play 关键词 [--pick N --quality best]\n      wocli play --id ID [--quality best --no-wait --direct]\n      wocli play /path/song.flac\n      wocli play                       继续当前歌曲/队列\n示例：wocli play 晴天 --pick 1\n质量：best / flac / 320k / 128k；会依序降级并尝试其他音源。\n脚本调用请用 --pick 或 --id 明确选择；--no-wait 不等待加载。",
+        "retry"=>"用法：wocli retry [--quality best --no-wait]\n重新解析并播放当前歌曲，重新尝试所有启用音源。\n终端快捷键：Ctrl+R。",
+        "queue"=>"用法：wocli queue list\n      wocli queue add --id ID [--next]\n      wocli queue add 关键词 --pick N\n      wocli queue remove N\n      wocli queue clear\nN 从 1 开始；--next 将歌曲加入当前歌曲之后。",
+        "playlist"=>"用法：wocli playlist list\n      wocli playlist create 名称\n      wocli playlist show 名称\n      wocli playlist add 名称 --id ID\n      wocli playlist remove 名称 --id ID\n      wocli playlist rename 旧名称 新名称\n      wocli playlist delete 名称\n      wocli playlist play 名称 [--quality best --no-wait]\n含空格的名称请加引号。",
+        "seek"=>"用法：wocli seek 秒数\n示例：wocli seek 10（快进），wocli seek -10（后退）。\n相对当前进度跳转，缓冲等待最多 10 秒。",
+        "volume"=>"用法：wocli volume 0-100\n示例：wocli volume 60；0 为静音。",
+        "mode"=>"用法：wocli mode list|repeat|single|shuffle\n依次为：顺序播放、列表循环、单曲循环、随机播放。\n无法播放的歌曲在所有模式下都会自动跳过。",
+        "like"=>"用法：wocli like [--id ID]\n喜欢或取消喜欢指定歌曲；不传 ID 则操作当前歌曲。",
+        "lyrics"=>"用法：wocli lyrics [--id ID --refresh --output song.lrc --force]\n不传 ID 则读取当前歌曲歌词。--refresh 忽略歌词缓存，--force 覆盖输出文件。",
+        "lyrics-bar"=>"用法：wocli lyrics-bar [on|off|toggle|status]\n开启、关闭、切换或查看任务栏/状态栏实时歌词。",
+        "tray"=>"用法：wocli tray start|stop|status\n控制系统托盘小图标；start 会启动后台。",
+        "daemon"=>"用法：wocli daemon start [--tray]\n      wocli daemon status\n      wocli daemon stop\nstop 同时关闭托盘和播放后台。",
+        "config"=>"用法：wocli config [配置项 [值]]\n配置项：quality、volume、mode、direct、lyric_offset、lyrics_bar、tray。\n示例：wocli config quality 320k；wocli config direct true\nlyric_offset 使用毫秒，范围 -60000 至 60000；布尔值为 true/false。\n音源请使用 wocli source 管理。",
+        "update"=>"用法：wocli update [--check --force --direct --json]\n--check 仅检查；--force 重装当前稳定版；默认校验并安装最新稳定版。\n保留曲库和设置；更新前下载并校验完整，重启先前运行的后台/托盘。",
+        "doctor"=>"用法：wocli doctor [--json]\n查看版本、平台、数据目录、网络环境及后台运行状态。\n音源故障可进一步运行 wocli source list / test。",
+        "pause"|"resume"|"toggle"|"play-pause"|"stop"|"next"|"skip"|"prev"|"previous"=>"播放控制：pause 暂停；resume 继续；toggle / play-pause 切换；stop 停止。\nnext / skip 下一首；prev / previous 上一首。切歌支持 --no-wait。",
+        "status"|"favorites"|"history"=>"用法：wocli status | favorites | history [--json]\n分别查看当前播放状态、喜欢列表、最近播放历史。",
+        _=>return Err(Error::new(format!("没有“{topic}”的帮助，运行 wocli help 查看命令"))),
+    };
+    Ok(format!("wocli {topic}\n\n{body}\n\n通用选项：--json 结构化输出；--home 目录 指定数据目录；-h/--help 帮助。\n"))
+}

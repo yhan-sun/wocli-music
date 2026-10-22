@@ -34,6 +34,9 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
+  retry [--quality best]             重试当前歌曲及备用音源
+  source list|add|show|enable|disable|prefer|remove|test  音源管理
+  help [命令] | thelp [命令]         分项帮助（keys 查看快捷键）
   config [配置项 值]                 quality / volume / mode / direct / lyric_offset / lyrics_bar / tray
   update [--check] [--force]         检查或安装最新稳定版
   doctor | daemon start|stop|status [--tray]  诊断及后台服务
@@ -74,6 +77,7 @@ impl Args {
                 "--page",
                 "--limit",
                 "--home",
+                "--name",
             ]
             .contains(&value.as_str())
             {
@@ -264,18 +268,111 @@ fn print_status(value: &Value) {
         println!("{phase}");
     }
 }
+
+fn source_command(paths: &Paths, args: &Args) -> Result<()> {
+    use crate::sources::{self, SourceKind, Sources};
+    use std::sync::{atomic::AtomicBool, Arc};
+    let action = args.pos.get(1).map(String::as_str).unwrap_or("list");
+    let direct = args.flag("--direct") || paths.settings()?.direct;
+    let provider = Provider::new(direct);
+    let value = match action {
+        "list" => sources::describe(&Sources::load(&paths.home)?),
+        "show" => serde_json::to_value(Sources::load(&paths.home)?.get(args.arg(2)?)?)?,
+        "add" => serde_json::to_value(sources::add(
+            paths,
+            args.arg(2)?,
+            args.value("--name"),
+            provider.agent(),
+        )?)?,
+        "enable" | "disable" => sources::describe(&sources::enable(
+            &paths.home,
+            args.arg(2)?,
+            action == "enable",
+        )?),
+        "prefer" => sources::describe(&sources::prefer(&paths.home, args.arg(2)?)?),
+        "remove" => sources::describe(&sources::remove(&paths.home, args.arg(2)?)?),
+        "test" => {
+            let list = Sources::load(&paths.home)?;
+            let source = list.get(args.arg(2)?)?;
+            let quality = args.value("--quality").unwrap_or("128k");
+            if !crate::model::QUALITIES.contains(&quality) {
+                return Err(Error::new("音质无效"));
+            }
+            let track = Track {
+                id: normalize_id(args.value("--id").unwrap_or("228908"))?,
+                ..Default::default()
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let stream = if matches!(source.kind, SourceKind::Native) {
+                provider.native_stream(&source.id, &track, quality, &cancelled)?
+            } else {
+                let q = sources::quality_order(quality)
+                    .iter()
+                    .find(|q| source.qualities.iter().any(|s| s == **q))
+                    .ok_or_else(|| Error::new("音源不支持所选音质"))?;
+                let mut stream =
+                    sources::resolve(source, &paths.home, &track, q, provider.agent(), cancelled)?;
+                stream.size = provider.kuwo.probe(&stream.url, 0)?;
+                stream
+            };
+            json!({"source":source.id,"name":source.name,"status":"ok","quality":stream.quality,"bytes":stream.size,"track_id":track.id})
+        }
+        _ => return Err(Error::new("未知音源操作，运行 wocli help source")),
+    };
+    if args.flag("--json") {
+        println!("{}", serde_json::to_string(&value)?);
+    } else if let Some(list) = value["sources"].as_array() {
+        for (i, s) in list.iter().enumerate() {
+            println!(
+                "{:>2}. {}  {}  {}{}",
+                i + 1,
+                s["id"].as_str().unwrap_or_default(),
+                if s["enabled"] == true {
+                    "启用"
+                } else {
+                    "停用"
+                },
+                s["name"].as_str().unwrap_or_default(),
+                if s["builtin"] == true {
+                    "（内置）"
+                } else {
+                    ""
+                }
+            );
+        }
+    } else {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    }
+    Ok(())
+}
 pub fn run(raw: Vec<String>) -> Result<()> {
     let args = Args::parse(raw)?;
     if args.flag("--version") {
         println!("wocli-music {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    if args.flag("--help") || args.flag("-h") {
-        print!("{HELP}");
+    let command = args.pos.first().map(String::as_str).unwrap_or("tui");
+    if args.flag("--help") || args.flag("-h") || matches!(command, "help" | "thelp") {
+        let topic = if matches!(command, "help" | "thelp") {
+            args.pos.get(1).map(String::as_str)
+        } else {
+            args.pos.first().map(String::as_str)
+        };
+        let help = crate::help::text(topic)?;
+        if args.flag("--json") {
+            println!(
+                "{}",
+                json!({"topic":topic.unwrap_or("help"),"text":help,"commands":crate::help::COMMANDS})
+            );
+        } else {
+            print!("{help}");
+        }
         return Ok(());
     }
     let paths = Paths::discover_opt(args.value("--home"))?;
-    let command = args.pos.first().map(String::as_str).unwrap_or("tui");
+    if matches!(command, "source" | "sources") {
+        return source_command(&paths, &args);
+    }
     if command == "update" {
         let direct = args.flag("--direct") || paths.settings().is_ok_and(|s| s.direct);
         let report =
@@ -344,6 +441,21 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             let value = request(
                 &paths,
                 json!({"op":"play","tracks":tracks,"quality":args.value("--quality"),"direct":args.flag("--direct")}),
+            )?;
+            let value = if args.flag("--no-wait") {
+                value
+            } else {
+                wait(&paths)?
+            };
+            if !args.flag("--json") {
+                print_status(&value);
+            }
+            value
+        }
+        "retry" => {
+            let value = request(
+                &paths,
+                json!({"op":"retry","quality":args.value("--quality"),"direct":args.flag("--direct") || settings.direct}),
             )?;
             let value = if args.flag("--no-wait") {
                 value
@@ -587,8 +699,15 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                         if tracks.is_empty() {
                             return Err(Error::new("收藏夹为空"));
                         }
-                        request(&paths, json!({"op":"play","tracks":tracks,"index":0}))?;
-                        let value = wait(&paths)?;
+                        let value = request(
+                            &paths,
+                            json!({"op":"play","tracks":tracks,"index":0,"quality":args.value("--quality"),"direct":args.flag("--direct") || settings.direct}),
+                        )?;
+                        let value = if args.flag("--no-wait") {
+                            value
+                        } else {
+                            wait(&paths)?
+                        };
                         if !args.flag("--json") {
                             print_status(&value);
                         }

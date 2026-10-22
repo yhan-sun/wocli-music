@@ -1,6 +1,6 @@
 # wocli-music
 
-A terminal music player built in 100% pure Rust. Search, stream, view synchronized lyrics, and manage playlists. Lightweight, single-binary, keyboard-first, and keeps playing in the background even after you exit the TUI.
+A native terminal music player built with Rust. Search, stream, view synchronized lyrics, and manage playlists. Lightweight, single-binary, keyboard-first, and keeps playing in the background even after you exit the TUI.
 
 [中文文档 (Chinese)](README.md) · [Latest Release](https://github.com/yhan-sun/wocli-music/releases/latest) · [Installation](#installation) · [Keybindings](#keybindings) · [CLI Usage](#cli-usage) · [Configuration](#environment-variables--configuration) · [Changelog](CHANGELOG.md)
 
@@ -16,7 +16,7 @@ A terminal music player built in 100% pure Rust. Search, stream, view synchroniz
 - **Synced Lyrics & System Integration**: High-precision LRC parsing, native macOS menu bar status with SF Symbols, Windows notification area tray, and desktop transparent floating lyrics overlay.
 - **Unified Library Management**: Search public online streams or play local audio files (MP3, FLAC, AAC, M4A, WAV); manage Favorites, custom playlists, queue, and playback history.
 - **CLI Automation**: Every player operation can be controlled via CLI commands with `--json` output, easily integrated into shell scripts, shortcuts, and tmux status bars.
-- **100% Pure Rust & Tiny Footprint**: Zero Python, zero mpv, and zero FFmpeg dependencies. Compressed release bundle is only ~**2.2 MB** (macOS ARM64).
+- **Native Single Binary**: Zero Python, Node.js, mpv, or FFmpeg runtime dependencies. QuickJS is embedded for compatible LX sources.
 
 ---
 
@@ -110,6 +110,12 @@ Also supports `--json` and `--direct`. The installation directory must be writab
 ---
 
 ## CLI Usage
+
+Use `wocli help`, `wocli thelp download`, or `wocli download --help` for topic help. `wocli help keys` lists terminal shortcuts.
+
+Sources default to direct Kuwo endpoints in China (native and mobile fallback). Playback and downloads try the next enabled source after a failure. Manage them with `wocli source list`, `source prefer ID`, `source enable ID`, and `source disable ID`. Import an LX script with `wocli source add ./source.js`, then test it with `wocli source test ID --id 228908 --quality 128k`. `wocli retry` restarts the current track's source chain.
+
+LX scripts run in embedded QuickJS with resource limits; no Node.js installation is required. Current compatibility covers Kuwo `kw/musicUrl`, HTTP, promises, timers, basic buffers, MD5 and zlib. AES/RSA, multipart form data, Node modules and other platforms' song IDs are not supported. Scripts are stored locally; playback does not fetch scripts from GitHub. See [source configuration](docs/sources.md) for HTTP JSON templates and details.
 
 Control the player daemon directly from any terminal or script:
 

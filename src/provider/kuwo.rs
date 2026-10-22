@@ -382,7 +382,7 @@ impl KuwoProvider {
                 .unwrap_or(q.size),
         ))
     }
-    fn probe(&self, address: &str, expected: u64) -> Result<u64> {
+    pub(crate) fn probe(&self, address: &str, expected: u64) -> Result<u64> {
         let response = self.request(
             address,
             None,
@@ -506,6 +506,95 @@ impl KuwoProvider {
                 "source_unavailable"
             }
             .into(),
+            details,
+        })
+    }
+    pub fn mobile_stream(
+        &self,
+        track: &Track,
+        preference: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Stream> {
+        let id = normalize_id(&track.id)?;
+        let rid = id.trim_start_matches("kuwo:");
+        let mut details = Vec::new();
+        for quality in crate::sources::quality_order(preference) {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(Error::coded("cancelled", "已取消"));
+            }
+            let result = (|| {
+                let (br, extension) = if *quality == "flac" {
+                    ("2000kflac".into(), ".flac")
+                } else {
+                    (format!("{quality}mp3"), ".mp3")
+                };
+                let value = self.json(
+                    &url(
+                        "https://mobi.kuwo.cn/mobi.s",
+                        &[
+                            ("user", "0".into()),
+                            ("source", "kwplayer_ar_8.5.5.0_apk_keluze.apk".into()),
+                            ("type", "convert_url_with_sign".into()),
+                            ("sig", "0".into()),
+                            ("rid", rid.into()),
+                            ("br", br),
+                            ("format", extension.trim_start_matches('.').into()),
+                            ("network", "WIFI".into()),
+                            ("f", "web".into()),
+                        ],
+                    ),
+                    &[],
+                    Duration::from_secs(6),
+                )?;
+                let data = &value["data"];
+                if number(&value["code"]) != 200. || normalize_id(&text(&data["rid"]))? != id {
+                    return Err(Error::coded(
+                        "source_unavailable",
+                        "移动接口未返回匹配的歌曲",
+                    ));
+                }
+                if track.duration > 0.
+                    && number(&data["duration"]) > 0.
+                    && number(&data["duration"]) < track.duration * 0.8
+                {
+                    return Err(Error::coded("incomplete_audio", "移动接口仅提供试听片段"));
+                }
+                let actual_quality = match number(&data["bitrate"]) as u64 {
+                    128 => "128k",
+                    320 => "320k",
+                    2000 if data["format"] == "flac" => "flac",
+                    _ => return Err(Error::coded("source_unavailable", "移动接口未返回所需音质")),
+                };
+                if crate::sources::quality_order(preference)
+                    .iter()
+                    .all(|q| *q != actual_quality)
+                {
+                    return Err(Error::new("移动接口返回的音质超出请求范围"));
+                }
+                let address = data["url"]
+                    .as_str()
+                    .ok_or_else(|| Error::new("移动接口没有音频地址"))?;
+                let size = self.probe(address, 0)?;
+                Ok(Stream {
+                    url: address.into(),
+                    quality: actual_quality.into(),
+                    size,
+                    extension: if actual_quality == "flac" {
+                        ".flac"
+                    } else {
+                        ".mp3"
+                    }
+                    .into(),
+                })
+            })();
+            match result {
+                Ok(stream) => return Ok(stream),
+                Err(error) => details.push(format!("{quality}: {error}")),
+            }
+        }
+        Err(Error {
+            code: "source_unavailable".into(),
+            message: "酷我移动接口不可用".into(),
             details,
         })
     }
@@ -706,11 +795,12 @@ impl KuwoProvider {
                     remaining.min(Duration::from_secs(12)),
                 )?;
                 let segment = if response.status() == 206 {
-                    let (start, end, total) =
-                        range(response.header("Content-Range").unwrap_or_default())
-                            .ok_or_else(|| Error::new("服务器返回错误分块"))?;
+                    let (start, end, total) = range(
+                        response.header("Content-Range").unwrap_or_default(),
+                    )
+                    .ok_or_else(|| Error::coded("incomplete_audio", "服务器返回错误分块"))?;
                     if start != received || end < start || end >= total {
-                        return Err(Error::new("服务器返回错误分块"));
+                        return Err(Error::coded("incomplete_audio", "服务器返回错误分块"));
                     }
                     expected = total;
                     Some(end - start + 1)
@@ -721,7 +811,7 @@ impl KuwoProvider {
                         .unwrap_or(expected);
                     None
                 } else {
-                    return Err(Error::new("服务器不支持连续音频分块"));
+                    return Err(Error::coded("incomplete_audio", "服务器不支持连续音频分块"));
                 };
                 if stream.size > 0 && expected > 0 && expected < stream.size * 8 / 10 {
                     return Err(Error::coded(
@@ -751,7 +841,7 @@ impl KuwoProvider {
                     if received + count as u64 > 1024 * 1024 * 1024
                         || segment.is_some_and(|n| chunk_total + count as u64 > n)
                     {
-                        return Err(Error::new("音频分块长度异常"));
+                        return Err(Error::coded("incomplete_audio", "音频分块长度异常"));
                     }
                     file.write_all(&buffer[..count])?;
                     digest.update(&buffer[..count]);
@@ -774,7 +864,7 @@ impl KuwoProvider {
                 if expected.trim_matches('"').to_lowercase() != format!("{value:x}")
                     && expected.trim_matches('"') != STANDARD.encode(value)
                 {
-                    return Err(Error::new("音频 MD5 校验失败"));
+                    return Err(Error::coded("incomplete_audio", "音频 MD5 校验失败"));
                 }
             }
             file.sync_all()?;

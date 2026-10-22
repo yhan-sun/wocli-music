@@ -1,6 +1,6 @@
 # wocli-music
 
-在终端搜索、听歌、看歌词和整理收藏夹。100% 纯 Rust 原生单二进制音乐播放器，毫秒级渐进流式播放，退出界面后音乐继续播放。
+在终端搜索、听歌、看歌词和整理收藏夹。Rust 原生单二进制音乐播放器，支持渐进流式播放，退出界面后音乐继续播放。
 
 [English Documentation](README_EN.md) · [下载发行版](https://github.com/yhan-sun/wocli-music/releases/latest) · [一键安装](#安装) · [使用方案](#使用方案) · [命令行](#命令行) · [快捷键](#快捷键) · [环境变量与配置](#环境变量与配置) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
 
@@ -14,7 +14,8 @@
 - **本地与在线统一管理**：搜索公开音源，支持本地 MP3、FLAC、AAC/M4A、WAV；自建收藏夹、我喜欢、播放队列、最近播放。
 - **同步歌词与状态栏小图标**：动态解析逐句 LRC，支持 macOS 原生状态栏小图标与自适应桌面透明歌词条。
 - **CLI 自动化与脚本控制**：每个控制均有独立 CLI 与 `--json` 输出，无缝融入终端工作流。
-- **100% 纯 Rust 实现**：零 Python、零 mpv、零 FFmpeg 外部依赖，体积仅约 2.2 MB（macOS ARM64 压缩包）。
+- **原生单二进制**：零 Python、零 Node.js、零 mpv、零 FFmpeg 外部运行依赖，内嵌 QuickJS 兼容 LX 音源。
+- **国内接口与自定义音源**：默认酷我原生与移动备用接口，支持导入 LX `.js` 和 HTTP 模板 `.json`，播放及下载失败自动换源。
 
 音乐来自公开音源，搜索不需要登录；部分曲目或音质可能无完整音频。程序会拒绝明显的试听片段、错误内容和不完整传输，并显示具体错误。没有账号歌单同步、封面或系统媒体键。
 
@@ -179,6 +180,7 @@ wocli
 | `c` | 收藏选中的歌曲到指定歌单 |
 | `f` | 将歌曲加入 / 移出「我喜欢」 |
 | `d` | 下载当前选中的歌曲 |
+| `D` | 打开下载任务 |
 | `a` | 将歌曲添加到播放队列末尾 |
 | `x` | 打开歌曲快捷操作菜单 |
 | `Tab` | 侧栏曲库与主列表焦点切换 |
@@ -188,6 +190,18 @@ wocli
 | `q` | 退出 TUI 界面（后台继续播放） |
 
 ## 命令行
+
+```bash
+wocli help                  # 全部命令
+wocli thelp download        # 分项说明，也可用 wocli download --help
+wocli help keys             # 终端快捷键
+wocli source list           # 音源顺序与启用状态
+wocli source add ./qdy.js    # 从本地导入 LX 音源
+wocli source test kuwo-mobile --id 228908 --quality 128k
+wocli retry                 # 重新尝试当前歌曲及备用源
+```
+
+默认音源直接访问国内平台，无需播放时从 GitHub 下载脚本。支持音乐源的启停、优先级与用户导入，详见[音乐源与帮助说明](docs/sources.md)。目前 LX 兼容 `kw/musicUrl`，仍使用酷我搜索目录；部分高级脚本 API 尚不支持。
 
 ```bash
 wocli search '心做し majiko'
@@ -345,6 +359,6 @@ cargo build --release --locked
 
 发布构建使用 `opt-level=z`、LTO、单 codegen unit、符号裁剪。GitHub Actions 为 macOS ARM64 / Intel、Linux x86_64 构建，验证解压后的实际产物，再发布 `v*` 标签；Linux 额外运行无 Python/mpv 的干净容器测试。Python 仅用于 CI 打包和截图，不是播放器运行依赖。
 
-截图由真实 Rust TUI 的 TestBackend 渲染，使用隔离的虚构示例曲库：`uv run --with resvg-py python scripts/screenshots_native.py`。v0.3.0 已完全移除旧版 Python 实现，代码库为 100% 纯 Rust 实现。
+截图由真实 Rust TUI 的 TestBackend 渲染，使用隔离的虚构示例曲库：`uv run --with resvg-py python scripts/screenshots_native.py`。v0.3.0 已完全移除旧版 Python 实现，播放器由 Rust 实现，LX 兼容层内嵌 QuickJS。
 
 项目交互参考 [MiaowCham/ncm-cli](https://github.com/MiaowCham/ncm-cli)，音源协议从原有 `../music` 脚本整理移植；不要求登录网易云账号。

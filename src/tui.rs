@@ -792,6 +792,7 @@ impl App {
                 Some(Action::Page(-1))
             }
             KeyCode::Char('d') => self.current().map(Action::Download),
+            KeyCode::Char('D') => Some(Action::Jobs),
             KeyCode::Char('f') => self
                 .current()
                 .map(|t| Action::Control(json!({"op":"like","track":t}))),
@@ -1647,7 +1648,12 @@ impl App {
             self.state.quality.clone()
         };
         let tail = if area.width >= 60 {
-            format!("{}  {suffix}", clock(duration))
+            let source = if area.width >= 90 && !self.state.source.is_empty() {
+                format!(" · {}", self.state.source)
+            } else {
+                String::new()
+            };
+            format!("{}  {suffix}{source}", clock(duration))
         } else {
             clock(duration)
         };
@@ -1756,7 +1762,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ]  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ −  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ]  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ −  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }

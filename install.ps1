@@ -12,7 +12,7 @@ param (
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
-$DefaultTag = "v0.3.1"
+$DefaultTag = "v0.3.2"
 
 function Write-Info($msg) {
     Write-Host "==> " -ForegroundColor Blue -NoNewline

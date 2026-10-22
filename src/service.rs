@@ -61,6 +61,8 @@ pub struct Status {
     pub error_code: String,
     pub error_details: Vec<String>,
     pub retry_attempt: u8,
+    pub source: String,
+    pub source_failures: Vec<String>,
     pub lyrics: String,
     pub lyrics_status: String,
     pub lyrics_error: String,
@@ -90,6 +92,8 @@ enum Event {
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
     Attempt(u64, u8),
+    Source(u64, String, HashSet<String>),
+    SourceFailure(u64, String, String),
     JobProgress(String, u64, u64, u64),
     JobPhase(String, u64, String, String),
     JobDone(String, u64, Result<(String, String)>),
@@ -112,6 +116,9 @@ struct Service {
     received: u64,
     total: u64,
     retry_attempt: u8,
+    current_source: String,
+    rejected_sources: HashSet<String>,
+    source_failures: Vec<String>,
     lyric_text: String,
     lyric_status: String,
     lyric_error: String,
@@ -166,6 +173,9 @@ impl Service {
             received: 0,
             total: 0,
             retry_attempt: 1,
+            current_source: String::new(),
+            rejected_sources: HashSet::new(),
+            source_failures: vec![],
             lyric_text: String::new(),
             lyric_status: "idle".into(),
             lyric_error: String::new(),
@@ -241,6 +251,8 @@ impl Service {
             received: self.received,
             total: self.total,
             retry_attempt: self.retry_attempt,
+            source: self.current_source.clone(),
+            source_failures: self.source_failures.clone(),
             downloads: self.jobs.clone(),
         }
     }
@@ -290,6 +302,15 @@ impl Service {
         });
     }
     fn begin(&mut self, index: usize, quality: String) -> Result<()> {
+        self.source_failures.clear();
+        self.begin_attempt(index, quality, HashSet::new())
+    }
+    fn begin_attempt(
+        &mut self,
+        index: usize,
+        quality: String,
+        rejected: HashSet<String>,
+    ) -> Result<()> {
         if index >= self.queue.len() {
             return Err(Error::new("队列序号无效"));
         }
@@ -298,6 +319,8 @@ impl Service {
         }
         self.stop();
         self.stream_retries = 0;
+        self.current_source.clear();
+        self.rejected_sources = rejected.clone();
         self.index = index;
         self.requested_quality = quality.clone();
         self.phase = "loading".into();
@@ -310,7 +333,10 @@ impl Service {
         let generation = self.generation;
         let tx = self.tx.clone();
         let track = self.current().unwrap().clone();
-        let provider = Provider::new(self.settings.direct || self.direct_override);
+        let provider = Provider::with_sources(
+            self.settings.direct || self.direct_override,
+            self.paths.home.clone(),
+        );
         self.lyric_text = self.store.lyric(&track.id)?;
         if lyrics::parse(&self.lyric_text).is_empty() {
             self.lyric_text.clear();
@@ -331,11 +357,18 @@ impl Service {
                     return Ok(Some((PathBuf::from(&track.path), "local".into())));
                 }
                 let mut last_error = Error::new("音源不可用");
-                for attempt in 1..=2 {
+                let mut rejected = rejected;
+                for attempt in 1..=32 {
                     let _ = tx.send(Event::Attempt(generation, attempt));
-                    let resolved = provider.stream(&track, &quality, &cancelled);
+                    let resolved = provider.resolve(&track, &quality, cancelled.clone(), &rejected);
                     match resolved {
-                        Ok(stream) => {
+                        Ok((source, stream)) => {
+                            let _ = tx.send(Event::Source(
+                                generation,
+                                source.clone(),
+                                rejected.clone(),
+                            ));
+                            rejected.insert(source.clone());
                             if stream.url.starts_with("http://")
                                 || stream.url.starts_with("https://")
                             {
@@ -345,9 +378,18 @@ impl Service {
                                         stream_tx.send(Event::Buffer(generation, received, total));
                                 };
                                 let complete_tx = tx.clone();
+                                // Publish readiness before completion. Failed prebuffer attempts
+                                // must not race a later source with a stale completion event.
+                                let completion = Arc::new(std::sync::Mutex::new((false, None)));
+                                let complete_state = completion.clone();
                                 let on_complete = move |result| {
-                                    let _ =
-                                        complete_tx.send(Event::StreamFinished(generation, result));
+                                    let mut state = complete_state.lock().unwrap();
+                                    if state.0 {
+                                        let _ = complete_tx
+                                            .send(Event::StreamFinished(generation, result));
+                                    } else {
+                                        state.1 = Some(result);
+                                    }
                                 };
                                 match crate::stream::start_stream(
                                     provider.agent(),
@@ -367,6 +409,12 @@ impl Service {
                                                 stream_handle,
                                             )),
                                         ));
+                                        let mut state = completion.lock().unwrap();
+                                        state.0 = true;
+                                        if let Some(result) = state.1.take() {
+                                            let _ =
+                                                tx.send(Event::StreamFinished(generation, result));
+                                        }
                                         return Ok(None);
                                     }
                                     Err(_) => {
@@ -386,13 +434,21 @@ impl Service {
                             match result {
                                 Ok(_) => return Ok(Some((target.clone(), stream.quality))),
                                 Err(error) => {
+                                    let _ = tx.send(Event::SourceFailure(
+                                        generation,
+                                        source,
+                                        error.message.clone(),
+                                    ));
                                     last_error = error;
                                 }
                             }
                         }
-                        Err(error) => last_error = error,
+                        Err(error) => {
+                            last_error = error;
+                            break;
+                        }
                     }
-                    if last_error.code != "network" || cancelled.load(Ordering::Relaxed) {
+                    if cancelled.load(Ordering::Relaxed) {
                         break;
                     }
                 }
@@ -507,6 +563,23 @@ impl Service {
         }
     }
     fn playback_failed(&mut self, mut error: Error) {
+        if error.code != "audio_device"
+            && error.code != "cancelled"
+            && self.current().is_some_and(|t| t.path.is_empty())
+            && !self.current_source.is_empty()
+            && self.rejected_sources.insert(self.current_source.clone())
+        {
+            self.source_failures
+                .push(format!("{}: {}", self.current_source, error));
+            let excluded = self.rejected_sources.clone();
+            if self
+                .begin_attempt(self.index, self.requested_quality.clone(), excluded)
+                .is_ok()
+            {
+                return;
+            }
+        }
+        error.details.extend(self.source_failures.clone());
         eprintln!(
             "播放失败，{}: {}",
             self.current().map(|t| t.title.as_str()).unwrap_or_default(),
@@ -682,48 +755,99 @@ impl Service {
         let cancelled = control.cancelled.clone();
         self.job_active = Some((id.clone(), serial));
         let tx = self.tx.clone();
-        let provider = Provider::new(job.direct);
+        let provider = Provider::with_sources(job.direct, self.paths.home.clone());
         self.pool.execute(move || {
             let result = (|| {
                 prepare_download_directory(&job.directory)?;
-                let stream = provider.stream(&job.track, &job.requested_quality, &cancelled)?;
-                let basename = format!(
-                    "{} - {} [{}-{}]",
-                    job.track.artist,
-                    job.track.title,
-                    job.track.id.replace(':', "-"),
-                    stream.quality
-                );
-                let safe: String = basename
-                    .chars()
-                    .map(|c| {
-                        if c.is_control() || "\\/:*?\"<>|".contains(c) {
-                            '_'
-                        } else {
-                            c
+                let mut excluded = HashSet::new();
+                let path = loop {
+                    let (source, stream) = provider.resolve(
+                        &job.track,
+                        &job.requested_quality,
+                        cancelled.clone(),
+                        &excluded,
+                    )?;
+                    excluded.insert(source);
+                    let basename = format!(
+                        "{} - {} [{}-{}]",
+                        job.track.artist,
+                        job.track.title,
+                        job.track.id.replace(':', "-"),
+                        stream.quality
+                    );
+                    let safe: String = basename
+                        .chars()
+                        .map(|c| {
+                            if c.is_control() || "\\/:*?\"<>|".contains(c) {
+                                '_'
+                            } else {
+                                c
+                            }
+                        })
+                        .collect();
+                    let path = PathBuf::from(&job.directory).join(format!(
+                        "{}{}",
+                        safe.trim_matches(['.', ' ']),
+                        stream.extension
+                    ));
+                    if path.exists() && !job.overwrite {
+                        return Err(Error::new("文件已存在，覆盖需 --force"));
+                    }
+                    let staging = tempfile::Builder::new()
+                        .prefix(".wocli-download-")
+                        .tempdir_in(&job.directory)?;
+                    let candidate = staging.path().join(format!("audio{}", stream.extension));
+                    let _ = tx.send(Event::JobPhase(
+                        id.clone(),
+                        serial,
+                        "downloading".into(),
+                        stream.quality.clone(),
+                    ));
+                    let downloaded = provider
+                        .download(&stream, &candidate, false, &cancelled, |received, total| {
+                            let _ =
+                                tx.send(Event::JobProgress(id.clone(), serial, received, total));
+                        })
+                        .and_then(|bytes| {
+                            // An endpoint can pass a probe and later return a preview/error body.
+                            let validation = AudioInput {
+                                path: candidate.clone(),
+                                hint: stream.extension.trim_start_matches('.').into(),
+                                stream: None,
+                            }
+                            .prepare(
+                                &job.track,
+                                0.,
+                                cancelled.clone(),
+                                true,
+                            );
+                            match validation {
+                                Ok(audio) => {
+                                    drop(audio);
+                                    if cancelled.load(Ordering::Relaxed) {
+                                        return Err(Error::coded("cancelled", "已取消"));
+                                    }
+                                    if job.overwrite {
+                                        fs::rename(&candidate, &path)?;
+                                    } else {
+                                        fs::hard_link(&candidate, &path)?;
+                                    }
+                                    Ok(bytes)
+                                }
+                                Err(error) => Err(error),
+                            }
+                        });
+                    match downloaded {
+                        Ok(_) => break path,
+                        Err(error)
+                            if ["network", "incomplete_audio", "decode_error"]
+                                .contains(&error.code.as_str()) =>
+                        {
+                            continue
                         }
-                    })
-                    .collect();
-                let path = PathBuf::from(&job.directory).join(format!(
-                    "{}{}",
-                    safe.trim_matches(['.', ' ']),
-                    stream.extension
-                ));
-                let _ = tx.send(Event::JobPhase(
-                    id.clone(),
-                    serial,
-                    "downloading".into(),
-                    stream.quality.clone(),
-                ));
-                provider.download(
-                    &stream,
-                    &path,
-                    job.overwrite,
-                    &cancelled,
-                    |received, total| {
-                        let _ = tx.send(Event::JobProgress(id.clone(), serial, received, total));
-                    },
-                )?;
+                        Err(error) => return Err(error),
+                    }
+                };
                 let mut warning = String::new();
                 if job.lyrics && !cancelled.load(Ordering::Relaxed) {
                     let _ = tx.send(Event::JobPhase(
@@ -805,6 +929,9 @@ impl Service {
             }
             "retry" => {
                 if self.phase != "loading" {
+                    if let Some(direct) = request["direct"].as_bool() {
+                        self.direct_override = direct;
+                    }
                     self.begin(
                         self.index,
                         request["quality"]
@@ -1027,7 +1154,9 @@ impl Service {
                 if let Err(error) = result {
                     if error.code == "network" && self.stream_retries == 0 {
                         let quality = self.requested_quality.clone();
-                        if let Err(error) = self.begin(self.index, quality) {
+                        if let Err(error) =
+                            self.begin_attempt(self.index, quality, self.rejected_sources.clone())
+                        {
                             self.playback_failed(error);
                         } else {
                             self.stream_retries = 1;
@@ -1139,6 +1268,19 @@ impl Service {
                     self.retry_attempt = attempt;
                 }
             }
+            Event::Source(generation, source, rejected) => {
+                if generation == self.generation {
+                    self.current_source = source;
+                    self.rejected_sources = rejected;
+                }
+            }
+            Event::SourceFailure(generation, source, message) => {
+                if generation == self.generation {
+                    self.rejected_sources.insert(source.clone());
+                    self.source_failures.push(format!("{source}: {message}"));
+                    self.current_source.clear();
+                }
+            }
             Event::JobProgress(id, serial, received, total) => {
                 if self
                     .job_controls
@@ -1188,7 +1330,11 @@ impl Service {
                                     "error"
                                 }
                                 .into();
-                                job.error = error.message;
+                                job.error = if error.details.is_empty() {
+                                    error.message
+                                } else {
+                                    format!("{}；{}", error.message, error.details.join("；"))
+                                };
                             }
                         }
                     }
