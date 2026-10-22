@@ -5,7 +5,16 @@
 set -euo pipefail
 
 REPO="yhan-sun/wocli-music"
-DEFAULT_TAG="v0.3.4"
+DEFAULT_TAG="v0.3.5"
+# Set WOCLI_DOWNLOAD_BASE=github to bypass the distribution gateway.
+DOWNLOAD_BASE="${WOCLI_DOWNLOAD_BASE:-https://wocli.yhan.fun}"
+DOWNLOAD_BASE="${DOWNLOAD_BASE%/}"
+if [ "$DOWNLOAD_BASE" = "github" ]; then
+    DOWNLOAD_BASE="https://github.com/${REPO}"
+    LATEST_URL="https://api.github.com/repos/${REPO}/releases/latest"
+else
+    LATEST_URL="${DOWNLOAD_BASE}/api/releases/latest"
+fi
 TMPDIR_CLEANUP=""
 
 cleanup() {
@@ -45,7 +54,7 @@ usage() {
 wocli-music 官方安装脚本
 
 用法:
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash
   或: ./install.sh [选项]
 
 选项:
@@ -57,6 +66,7 @@ wocli-music 官方安装脚本
 环境变量:
   INSTALL_DIR           覆盖可执行文件安装目录
   VERSION               覆盖安装版本 (例如 v0.2.0)
+  WOCLI_DOWNLOAD_BASE   分发地址 (默认 https://wocli.yhan.fun；github 表示直连)
 EOF
 }
 
@@ -114,12 +124,12 @@ fetch_latest_tag() {
     info "正在查询最新版本..."
     local latest=""
     if [ "$DOWNLOADER" = "curl" ]; then
-        latest=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+        latest=$(curl --connect-timeout 10 --max-time 30 -fsSL "$LATEST_URL" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
     else
-        latest=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+        latest=$(wget --timeout=30 -qO- "$LATEST_URL" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
     fi
 
-    if [ -n "$latest" ]; then
+    if [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         TAG="$latest"
     else
         TAG="$DEFAULT_TAG"
@@ -137,8 +147,7 @@ verify_sha256() {
     elif command -v sha256sum >/dev/null 2>&1; then
         actual=$(sha256sum "$file" | awk '{print $1}')
     else
-        warn "系统未找到 shasum 或 sha256sum，跳过校验"
-        return 0
+        error "系统未找到 shasum 或 sha256sum，无法校验安装包"
     fi
 
     if [ "$actual" != "$expected" ]; then
@@ -227,8 +236,9 @@ main() {
 
     local version_clean="${TAG#v}"
     local filename="wocli-music-${version_clean}-${PLATFORM}.tar.gz"
-    local download_url="https://github.com/${REPO}/releases/download/${TAG}/${filename}"
-    local sums_url="https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS"
+    [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || error "版本号无效: $TAG (例如 v0.3.4)"
+    local download_url="${DOWNLOAD_BASE}/releases/download/${TAG}/${filename}"
+    local sums_url="${DOWNLOAD_BASE}/releases/download/${TAG}/SHA256SUMS"
 
     TMPDIR_CLEANUP="$(mktemp -d 2>/dev/null || mktemp -d -t 'wocli-install')"
     local tmpdir="$TMPDIR_CLEANUP"
@@ -241,18 +251,11 @@ main() {
     download_file "$sums_url" "$tmpdir/SHA256SUMS"
 
     local expected_hash
-    expected_hash=$(grep "  ${filename}\$" "$tmpdir/SHA256SUMS" | awk '{print $1}' || true)
-    if [ -z "$expected_hash" ]; then
-        expected_hash=$(grep "${filename}" "$tmpdir/SHA256SUMS" | awk '{print $1}' || true)
-    fi
-
-    if [ -n "$expected_hash" ]; then
-        info "正在校验 SHA256 签名..."
-        verify_sha256 "$tmpdir/$filename" "$expected_hash"
-        success "SHA256 校验通过: $expected_hash"
-    else
-        warn "未在 SHA256SUMS 中找到该文件的校验值，跳过签名检查"
-    fi
+    expected_hash=$(awk -v name="$filename" '$2 == name && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ { print tolower($1) }' "$tmpdir/SHA256SUMS")
+    [[ "$expected_hash" =~ ^[0-9a-f]{64}$ ]] || error "SHA256SUMS 中缺少唯一有效的安装包校验值"
+    info "正在校验 SHA256..."
+    verify_sha256 "$tmpdir/$filename" "$expected_hash"
+    success "SHA256 校验通过: $expected_hash"
 
     info "正在解压安装包..."
     tar -xzf "$tmpdir/$filename" -C "$tmpdir"

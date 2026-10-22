@@ -1,0 +1,9 @@
+name = "wocli-dist"
+main = "../dist/cloudflare-worker.mjs"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+
+[[routes]]
+pattern = "wocli.yhan.fun"
+custom_domain = true

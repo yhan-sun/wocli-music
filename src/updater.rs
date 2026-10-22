@@ -18,6 +18,34 @@ use std::{
 };
 
 const REPO: &str = "yhan-sun/wocli-music";
+const DISTRIBUTION: &str = "https://wocli.yhan.fun";
+
+fn distribution(value: Option<&str>) -> Result<(String, String)> {
+    let base = value.unwrap_or(DISTRIBUTION).trim_end_matches('/');
+    if base == "github" {
+        return Ok((
+            format!("https://api.github.com/repos/{REPO}/releases/latest"),
+            format!("https://github.com/{REPO}"),
+        ));
+    }
+    let parsed = ureq::get(base)
+        .request_url()
+        .map_err(|_| Error::new("WOCLI_DOWNLOAD_BASE 不是有效 URL"))?;
+    let url = parsed.as_url();
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::new(
+            "WOCLI_DOWNLOAD_BASE 必须为不含凭据、查询参数的 HTTPS 地址，或 github",
+        ));
+    }
+    Ok((format!("{base}/api/releases/latest"), base.to_string()))
+}
+
 const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 256 * 1024 * 1024;
 
@@ -43,14 +71,11 @@ impl Release {
         }
         Ok(version)
     }
-    fn asset(&self, name: &str) -> Result<String> {
+    fn asset(&self, base: &str, name: &str) -> Result<String> {
         if !self.assets.iter().any(|a| a.name == name) {
             return Err(Error::new(format!("发行版缺少 {name}")));
         }
-        Ok(format!(
-            "https://github.com/{REPO}/releases/download/{}/{name}",
-            self.tag_name
-        ))
+        Ok(format!("{base}/releases/download/{}/{name}", self.tag_name))
     }
 }
 #[derive(Serialize)]
@@ -296,12 +321,10 @@ pub fn run(paths: &Paths, check: bool, force: bool, direct: bool) -> Result<Upda
         .timeout(Duration::from_secs(120))
         .user_agent(concat!("wocli-updater/", env!("CARGO_PKG_VERSION")))
         .build();
+    let (latest_url, download_base) =
+        distribution(std::env::var("WOCLI_DOWNLOAD_BASE").ok().as_deref())?;
     let metadata = read_limited(
-        response(
-            &agent,
-            &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-        )?
-        .into_reader(),
+        response(&agent, &latest_url)?.into_reader(),
         2 * 1024 * 1024,
     )?;
     let release: Release = serde_json::from_slice(&metadata)?;
@@ -325,8 +348,8 @@ pub fn run(paths: &Paths, check: bool, force: bool, direct: bool) -> Result<Upda
     let zip = platform.starts_with("windows");
     let root = format!("wocli-music-{latest}-{platform}");
     let name = format!("{root}.{}", if zip { "zip" } else { "tar.gz" });
-    let archive_url = release.asset(&name)?;
-    let sums_url = release.asset("SHA256SUMS")?;
+    let archive_url = release.asset(&download_base, &name)?;
+    let sums_url = release.asset(&download_base, "SHA256SUMS")?;
     if check {
         report.status = "available".into();
         return Ok(report);
@@ -415,7 +438,7 @@ mod tests {
             serde_json::from_value(json!({"tag_name":"v0.3.10", "assets":[{"name":"SHA256SUMS"}]}))
                 .unwrap();
         assert!(release.version().unwrap() > Version::parse("0.3.9").unwrap());
-        assert!(release.asset("missing.zip").is_err());
+        assert!(release.asset(DISTRIBUTION, "missing.zip").is_err());
         release.tag_name = "v0.4.0-beta.1".into();
         assert!(release.version().is_err());
         release.tag_name = "../../evil".into();
@@ -427,6 +450,42 @@ mod tests {
         assert!(checksum("bad  app.zip", "app.zip").is_err());
         assert!(checksum(&(sums.clone() + &sums), "app.zip").is_err());
         assert!(read_limited(&b"12345"[..], 4).is_err());
+    }
+    #[test]
+    fn distribution_routes_metadata_and_assets_together() {
+        let (latest, base) = distribution(None).unwrap();
+        assert_eq!(latest, "https://wocli.yhan.fun/api/releases/latest");
+        let release: Release =
+            serde_json::from_value(json!({"tag_name":"v0.3.4", "assets":[{"name":"SHA256SUMS"}]}))
+                .unwrap();
+        assert_eq!(
+            release.asset(&base, "SHA256SUMS").unwrap(),
+            "https://wocli.yhan.fun/releases/download/v0.3.4/SHA256SUMS"
+        );
+        let (latest, base) = distribution(Some("github")).unwrap();
+        assert_eq!(
+            latest,
+            format!("https://api.github.com/repos/{REPO}/releases/latest")
+        );
+        assert!(release
+            .asset(&base, "SHA256SUMS")
+            .unwrap()
+            .starts_with("https://github.com/"));
+        assert_eq!(
+            distribution(Some("https://mirror.example/dist/"))
+                .unwrap()
+                .1,
+            "https://mirror.example/dist"
+        );
+        for invalid in [
+            "http://mirror.example",
+            "https://user:secret@mirror.example",
+            "https://mirror.example?token=x",
+            "https://mirror.example/#x",
+            "invalid",
+        ] {
+            assert!(distribution(Some(invalid)).is_err());
+        }
     }
     #[test]
     fn failure_restores_library_and_a_moved_executable() {

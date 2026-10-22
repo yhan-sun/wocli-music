@@ -37,6 +37,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   retry [--quality best]             重试当前歌曲及备用音源
   source list|add|show|enable|disable|prefer|remove|test  音源管理
   help [命令] | thelp [命令]         分项帮助（keys 查看快捷键）
+  mcp [serve|config|tools] [--read-only]  本地 MCP 服务及客户端配置
   config [配置项 值]                 quality / volume / mode / direct / lyric_offset / lyrics_bar / tray
   update [--check] [--force]         检查或安装最新稳定版
   doctor | daemon start|stop|status [--tray]  诊断及后台服务
@@ -99,6 +100,7 @@ impl Args {
                 "--next",
                 "--tray",
                 "--check",
+                "--read-only",
             ]
             .contains(&value.as_str())
             {
@@ -370,6 +372,28 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         return Ok(());
     }
     let paths = Paths::discover_opt(args.value("--home"))?;
+    if args.flag("--read-only") && command != "mcp" {
+        return Err(Error::new("--read-only 仅用于 mcp 命令"));
+    }
+    if command == "mcp" {
+        if args.pos.len() > 2 {
+            return Err(Error::new(
+                "用法：wocli mcp [serve|config|tools] [--read-only]",
+            ));
+        }
+        let value = match args.pos.get(1).map(String::as_str).unwrap_or("serve") {
+            "serve" => {
+                return crate::mcp::run(paths, args.flag("--read-only"), args.flag("--direct"))
+            }
+            "config" => {
+                crate::mcp::config(&paths, args.flag("--read-only"), args.flag("--direct"))?
+            }
+            "tools" => crate::mcp::tools(args.flag("--read-only"))?,
+            _ => return Err(Error::new("未知 MCP 操作，运行 wocli help mcp")),
+        };
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
     if matches!(command, "source" | "sources") {
         return source_command(&paths, &args);
     }

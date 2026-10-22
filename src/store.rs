@@ -223,6 +223,19 @@ impl Store {
         }
         Ok(!liked)
     }
+    pub fn set_favorite(&self, track: &Track, liked: bool) -> Result<()> {
+        self.remember(std::slice::from_ref(track))?;
+        if liked {
+            self.db.execute(
+                "INSERT OR IGNORE INTO favorites VALUES (?,?)",
+                params![track.id, now()],
+            )?;
+        } else {
+            self.db
+                .execute("DELETE FROM favorites WHERE id=?", [&track.id])?;
+        }
+        Ok(())
+    }
     pub fn played(&self, track: &Track) -> Result<()> {
         self.remember(std::slice::from_ref(track))?;
         self.db.execute(

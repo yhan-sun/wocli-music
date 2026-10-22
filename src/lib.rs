@@ -4,6 +4,7 @@ pub mod cli;
 pub mod help;
 pub mod ipc;
 pub mod lyrics;
+pub mod mcp;
 pub mod model;
 pub mod order;
 pub mod player;

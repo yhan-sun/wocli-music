@@ -136,6 +136,27 @@ def main():
 
         try:
             print(cli("--version"), flush=True)
+            tools = json.loads(cli("mcp", "tools"))["tools"]
+            assert len(tools) == 17
+            readonly_tools = json.loads(cli("mcp", "tools", "--read-only"))["tools"]
+            assert len(readonly_tools) == 8 and all(t["annotations"]["readOnlyHint"] for t in readonly_tools)
+            mcp_config = json.loads(cli("mcp", "config"))["mcpServers"]["wocli-music"]
+            assert mcp_config["args"][:2] == ["mcp", "serve"]
+            # Exercise the packaged stdio transport without a client runtime or network.
+            initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "bundle-smoke", "version": "1"},
+            }}
+            initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            mcp = subprocess.run(
+                [*prefix, str(executable), "mcp", "serve", "--read-only"],
+                cwd=root, env=None if args.docker else environment,
+                text=True, input=json.dumps(initialize) + "\n" + json.dumps(initialized) + "\n",
+                capture_output=True, timeout=15,
+            )
+            assert mcp.returncode == 0, mcp.stderr
+            replies = [json.loads(line) for line in mcp.stdout.splitlines()]
+            assert any(reply.get("id") == 1 and reply.get("result", {}).get("protocolVersion") == "2025-11-25" for reply in replies), replies
             doctor = json.loads(cli("doctor", "--json"))
             assert doctor["runtime"] == "native" and doctor["engine"] == "rodio/symphonia", doctor
             state = json.loads(cli("play", str(song), "--json"))

@@ -28,6 +28,7 @@ pub const COMMANDS: &[&str] = &[
     "config",
     "update",
     "doctor",
+    "mcp",
     "daemon",
     "help",
 ];
@@ -56,6 +57,7 @@ pub fn text(topic: Option<&str>) -> Result<String> {
         "config"=>"用法：wocli config [配置项 [值]]\n配置项：quality、volume、mode、direct、lyric_offset、lyrics_bar、tray。\n示例：wocli config quality 320k；wocli config direct true\nlyric_offset 使用毫秒，范围 -60000 至 60000；布尔值为 true/false。\n音源请使用 wocli source 管理。",
         "update"=>"用法：wocli update [--check --force --direct --json]\n--check 仅检查；--force 重装当前稳定版；默认校验并安装最新稳定版。\n保留曲库和设置；更新前下载并校验完整，重启先前运行的后台/托盘。",
         "doctor"=>"用法：wocli doctor [--json]\n查看版本、平台、数据目录、网络环境及后台运行状态。\n音源故障可进一步运行 wocli source list / test。",
+        "mcp"=>"用法：wocli mcp [serve] [--read-only --direct --home 目录]\n      wocli mcp config [--read-only --direct --home 目录]\n      wocli mcp tools [--read-only]\n\nserve 通过标准输入/输出提供本地 MCP 服务，供 AI 客户端启动；不监听 HTTP 端口。\nconfig 输出包含当前程序绝对路径的 mcpServers JSON 配置。\ntools 查看工具目录及参数 Schema。--read-only 只开放查询工具。\n\n支持搜索、播放控制、队列、收藏/歌单、歌词、后台下载和已有音源管理。\n播放/下载立即返回，请继续查询状态；关闭 MCP 不会关闭音乐后台。\n不会通过 MCP 执行更新、导入脚本或任意命令。详见 docs/mcp.md。",
         "pause"|"resume"|"toggle"|"play-pause"|"stop"|"next"|"skip"|"prev"|"previous"=>"播放控制：pause 暂停；resume 继续；toggle / play-pause 切换；stop 停止。\nnext / skip 下一首；prev / previous 上一首。切歌支持 --no-wait。",
         "status"|"favorites"|"history"=>"用法：wocli status | favorites | history [--json]\n分别查看当前播放状态、喜欢列表、最近播放历史。",
         _=>return Err(Error::new(format!("没有“{topic}”的帮助，运行 wocli help 查看命令"))),

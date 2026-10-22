@@ -2,7 +2,7 @@
 
 在终端搜索、听歌、看歌词和整理收藏夹。Rust 原生单二进制音乐播放器，支持渐进流式播放，退出界面后音乐继续播放。
 
-[English Documentation](README_EN.md) · [下载发行版](https://github.com/yhan-sun/wocli-music/releases/latest) · [一键安装](#安装) · [使用方案](#使用方案) · [命令行](#命令行) · [快捷键](#快捷键) · [环境变量与配置](#环境变量与配置) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
+[English Documentation](README_EN.md) · [下载发行版](https://wocli.yhan.fun/) · [一键安装](#安装) · [使用方案](#使用方案) · [命令行](#命令行) · [快捷键](#快捷键) · [环境变量与配置](#环境变量与配置) · [常见问题](#常见问题) · [更新日志](CHANGELOG.md)
 
 ![Rust 版：收藏夹、同步歌词和播放控制](docs/screenshots/library.png)
 
@@ -30,20 +30,20 @@
 在终端运行以下命令，脚本会自动识别你的系统（macOS ARM64 / Intel、Linux x86_64）、下载对应安装包、校验 SHA256 完整性并安装到用户命令路径：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash
+curl -fsSL https://wocli.yhan.fun/install.sh | bash
 ```
 
 - **自定义安装目录**（例如安装到 `/usr/local/bin`）：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --dir /usr/local/bin
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --dir /usr/local/bin
   ```
 - **指定安装版本**：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --version v0.2.0
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.2.0
   ```
 - **卸载**：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --uninstall
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --uninstall
   ```
 
 #### Windows (PowerShell)
@@ -51,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.s
 在 PowerShell 中执行以下命令，脚本会自动下载 Windows 原生版本、校验 SHA256 签名，并配置用户及当前 PowerShell 的 PATH，安装后可直接运行 `wocli`：
 
 ```powershell
-irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
+irm https://wocli.yhan.fun/install.ps1 | iex
 ```
 
 安装完成后，当前 PowerShell 无需重开。其他已经打开的终端需要完全退出并重新启动终端应用，才能继承更新后的 PATH。若旧安装仍提示找不到命令，可先在 PowerShell 执行：
@@ -65,11 +65,11 @@ wocli --version
 
 - **自定义安装目录**：
   ```powershell
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -InstallDir "C:\Tools\wocli"
+  & ([scriptblock]::Create((irm https://wocli.yhan.fun/install.ps1))) -InstallDir "C:\Tools\wocli"
   ```
 - **卸载**：
   ```powershell
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -Uninstall
+  & ([scriptblock]::Create((irm https://wocli.yhan.fun/install.ps1))) -Uninstall
   ```
 
 ### 更新
@@ -88,7 +88,7 @@ v0.3.0 及更早版本尚无 `update` 命令，首次升级请重新执行上面
 
 ### 手动下载安装
 
-你也可以直接从 [Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
+你也可以从 [Cloudflare 下载入口](https://wocli.yhan.fun/) 或 [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
 
 | 设备与架构 | 发行文件 | 解包安装方式 |
 | --- | --- | --- |
@@ -191,6 +191,17 @@ wocli
 
 ## 命令行
 
+### MCP：让 AI 客户端控制播放器
+
+```bash
+wocli mcp config             # 生成包含程序绝对路径的客户端 JSON 配置
+wocli mcp serve              # 本地 stdio MCP 服务，由客户端启动
+wocli mcp serve --read-only  # 仅搜索和查询
+wocli mcp tools              # 查看工具目录和参数 Schema
+```
+
+支持搜索、播放控制、队列、收藏/歌单、歌词、下载任务和已有音源管理；与 CLI/TUI 共享后台和曲库，关闭 MCP 后音乐继续播放。默认提供 17 个工具，只读模式开放 8 个查询工具。接入方式、资源和协议版本见 [MCP 文档](docs/mcp.md)。
+
 ```bash
 wocli help                  # 全部命令
 wocli thelp download        # 分项说明，也可用 wocli download --help
@@ -267,6 +278,7 @@ wocli-music 可以通过 CLI 命令设置持久化偏好，也可以使用环境
 | :--- | :--- | :--- |
 | `WOCLI_HOME` | `~/.config/wocli-music` (Linux/macOS)<br>`%APPDATA%\wocli-music` (Windows) | 数据与配置主目录。存放 SQLite 曲库 (`library.sqlite3`)、配置 (`settings.json`)、后台日志 (`service-rust.log`) 和歌词缓存。遵循 `XDG_CONFIG_HOME`。 |
 | `WOCLI_RUNTIME_DIR` | `/tmp/wocli-rust-{uid}-{hash}` (Linux/macOS)<br>`%LOCALAPPDATA%\wocli-music\run` (Windows) | 运行期 IPC 控制 Socket/Endpoint 目录。类 Unix 下存放 `control.sock`，Windows 下存放 `control.endpoint`。 |
+| `WOCLI_DOWNLOAD_BASE` | `https://wocli.yhan.fun` | 安装器与新版自更新的分发地址；设为 `github` 直连 GitHub。详见 [分发配置](docs/distribution.md)。 |
 | `WOCLI_DOWNLOAD_DIR` | `~/Music/wocli` (TUI) / `downloads` (CLI) | 歌曲与歌词下载的默认目标保存目录。 |
 | `WOCLI_AUDIO_OUTPUT` | *(默认系统声卡)* | 设为 `null` 时禁用实际音频硬件输出（仅解码不发声）。适用于无声卡服务器、容器环境或自动化测试。 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | *(无)* | HTTP / HTTPS 代理服务器地址（支持 socks5:// 或 http://），内部网络请求自动遵循代理设置。 |

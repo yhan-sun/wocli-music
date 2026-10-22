@@ -26,6 +26,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --yes libasound2-dev
       - name: Install Rust
         run: rustup toolchain install 1.93.1 --profile minimal --component clippy,rustfmt && rustup default 1.93.1
+      - name: Test distribution gateway
+        run: |
+          node --test cloudflare/worker.test.mjs
+          python3 scripts/test_distribution_install.py
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets

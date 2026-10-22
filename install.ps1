@@ -12,7 +12,12 @@ param (
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
-$DefaultTag = "v0.3.4"
+$DefaultTag = "v0.3.5"
+$DownloadBase = if ($env:WOCLI_DOWNLOAD_BASE) { $env:WOCLI_DOWNLOAD_BASE.TrimEnd('/') } else { "https://wocli.yhan.fun" }
+if ($DownloadBase -eq 'github') {
+    $DownloadBase = "https://github.com/$Repo"
+    $LatestUrl = "https://api.github.com/repos/$Repo/releases/latest"
+} else { $LatestUrl = "$DownloadBase/api/releases/latest" }
 
 function Write-Info($msg) {
     Write-Host "==> " -ForegroundColor Blue -NoNewline
@@ -83,7 +88,7 @@ if ($Help) {
 wocli-music 官方 Windows 安装脚本
 
 用法:
-  irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
+  irm https://wocli.yhan.fun/install.ps1 | iex
   或: .\install.ps1 [-InstallDir <目录>] [-Version <版本>] [-Uninstall]
 
 参数:
@@ -135,18 +140,20 @@ $tag = $Version
 if (-not $tag) {
     Write-Info "正在获取最新版本信息..."
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing -Headers @{ "User-Agent" = "wocli-installer" }
+        $release = Invoke-RestMethod -Uri $LatestUrl -TimeoutSec 30 -UseBasicParsing -Headers @{ "User-Agent" = "wocli-installer" }
         $tag = $release.tag_name
+        if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release version" }
     } catch {
         $tag = $DefaultTag
         Write-Warn "获取最新版本信息失败，将安装默认版本 $tag"
     }
 }
 
+if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { Write-Err "版本号无效: $tag (例如 v0.3.4)" }
 $cleanVer = $tag.TrimStart('v')
 $archiveName = "wocli-music-$cleanVer-$platform.zip"
-$downloadUrl = "https://github.com/$Repo/releases/download/$tag/$archiveName"
-$sumsUrl = "https://github.com/$Repo/releases/download/$tag/SHA256SUMS"
+$downloadUrl = "$DownloadBase/releases/download/$tag/$archiveName"
+$sumsUrl = "$DownloadBase/releases/download/$tag/SHA256SUMS"
 
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "wocli-install-$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -168,7 +175,7 @@ try {
         Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
     }
 
-    Write-Info "正在校验 SHA256 签名..."
+    Write-Info "正在校验 SHA256..."
     $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
 
     $expected = ""

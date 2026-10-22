@@ -29,22 +29,22 @@ No prerequisites needed (no Rust, Python, uv, mpv, or FFmpeg required).
 #### macOS / Linux (Terminal)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash
+curl -fsSL https://wocli.yhan.fun/install.sh | bash
 ```
 
 - **Custom install directory** (e.g., `/usr/local/bin`):
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --dir /usr/local/bin
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --dir /usr/local/bin
   ```
 - **Uninstall**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.sh | bash -s -- --uninstall
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --uninstall
   ```
 
 #### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
+irm https://wocli.yhan.fun/install.ps1 | iex
 ```
 
 The installer updates both the user PATH and the current PowerShell session. Other open terminals must fully restart their terminal application. To refresh a stale session from an older default installation:
@@ -58,11 +58,11 @@ For a custom installation, use its actual directory instead.
 
 - **Custom install directory**:
   ```powershell
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -InstallDir "C:\Tools\wocli"
+  & ([scriptblock]::Create((irm https://wocli.yhan.fun/install.ps1))) -InstallDir "C:\Tools\wocli"
   ```
 - **Uninstall**:
   ```powershell
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -Uninstall
+  & ([scriptblock]::Create((irm https://wocli.yhan.fun/install.ps1))) -Uninstall
   ```
 
 ---
@@ -110,6 +110,12 @@ Also supports `--json` and `--direct`. The installation directory must be writab
 ---
 
 ## CLI Usage
+
+### Local MCP server
+
+Run `wocli mcp config` to generate a client configuration with the executable's absolute path. Clients launch `wocli mcp serve` over stdio; add `--read-only` to expose only query tools. `wocli mcp tools` lists the schemas.
+
+The server shares the existing player daemon and library: 17 tools cover search, playback, queues, playlists, favorites, lyrics, background downloads and existing source management; read-only mode exposes 8 query tools. Closing MCP leaves playback running. No network MCP endpoint or external language runtime is required. See [MCP documentation](docs/mcp.md).
 
 Use `wocli help`, `wocli thelp download`, or `wocli download --help` for topic help. `wocli help keys` lists terminal shortcuts.
 
@@ -180,6 +186,7 @@ wocli-music supports both persistent settings and runtime environment variable o
 | :--- | :--- | :--- |
 | `WOCLI_HOME` | `~/.config/wocli-music` (Linux/macOS)<br>`%APPDATA%\wocli-music` (Windows) | Data & configuration root. Stores SQLite database (`library.sqlite3`), preferences (`settings.json`), daemon log (`service-rust.log`), and cached lyrics. |
 | `WOCLI_RUNTIME_DIR` | `/tmp/wocli-rust-{uid}-{hash}` (Linux/macOS)<br>`%LOCALAPPDATA%\wocli-music\run` (Windows) | Runtime IPC socket/endpoint directory. |
+| `WOCLI_DOWNLOAD_BASE` | `https://wocli.yhan.fun` | Installer/update distribution endpoint; use `github` for direct GitHub access. |
 | `WOCLI_DOWNLOAD_DIR` | `~/Music/wocli` (TUI) / `downloads` (CLI) | Default download directory for tracks and lyrics. |
 | `WOCLI_AUDIO_OUTPUT` | *(System default audio device)* | Set to `null` to disable physical audio hardware output (decodes without sound, useful for CI or headless servers). |
 | `HTTP_PROXY` / `HTTPS_PROXY` | *(None)* | Proxy URL for network stream requests. |

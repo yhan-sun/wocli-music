@@ -39,6 +39,7 @@ if ($BinaryPath) {
     $savedHome = $env:WOCLI_HOME
     $savedRuntime = $env:WOCLI_RUNTIME_DIR
     $savedAudio = $env:WOCLI_AUDIO_OUTPUT
+    $savedDownloadBase = $env:WOCLI_DOWNLOAD_BASE
     try {
         $env:WOCLI_HOME = Join-Path $temp 'test-data'
         $env:WOCLI_RUNTIME_DIR = Join-Path $temp 'test-run'
@@ -59,6 +60,8 @@ if ($BinaryPath) {
             if ($args.Count -ne 4 -or $args[0] -ne '-fL' -or $args[2] -ne '-o') { throw 'Unexpected fixture curl arguments' }
             $url = [string]$args[1]
             $outputPath = [string]$args[3]
+            $expectedBase = if ($env:WOCLI_DOWNLOAD_BASE -eq 'github') { 'https://github.com/yhan-sun/wocli-music/releases/download/' } else { 'https://wocli.yhan.fun/releases/download/' }
+            if (-not $url.StartsWith($expectedBase)) { throw "Unexpected distribution URL: $url" }
             if ($url.EndsWith('/SHA256SUMS')) { Copy-Item $global:WocliInstallerFixtureSums $outputPath }
             else { Copy-Item $global:WocliInstallerFixtureZip $outputPath }
             $global:LASTEXITCODE = 0
@@ -68,6 +71,7 @@ if ($BinaryPath) {
         [Environment]::SetEnvironmentVariable('Path', "$savedUserPath;$destination", 'User')
         for ($i = 0; $i -lt 2; $i++) {
             $env:Path = $savedProcessPath
+            $env:WOCLI_DOWNLOAD_BASE = if ($i -eq 0) { $null } else { 'github' }
             & $installer -InstallDir $destination -Version "v$version"
             Assert-Equal (Get-Command wocli -CommandType Application | Select-Object -First 1).Source (Join-Path $destination 'wocli.exe')
             & wocli --version
@@ -82,6 +86,7 @@ if ($BinaryPath) {
         $env:WOCLI_HOME = $savedHome
         $env:WOCLI_RUNTIME_DIR = $savedRuntime
         $env:WOCLI_AUDIO_OUTPUT = $savedAudio
+        $env:WOCLI_DOWNLOAD_BASE = $savedDownloadBase
         Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
