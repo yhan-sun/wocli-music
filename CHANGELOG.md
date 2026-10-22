@@ -2,6 +2,8 @@
 
 ## 分发服务修复 — 2026-10-22
 
+- 修复 PowerShell 5.1 版本查询将保留的 `User-Agent` 放入 `-Headers` 引发异常；改用 `-UserAgent`，查询失败时展示原因，并补充实际版本接口查询回归。
+
 - 修复 Cloudflare 返回 PowerShell 安装器时保留文件 BOM，导致 `irm … | iex` 无法解析 `[CmdletBinding()]` 和 `param`；HTTP 改用无 BOM UTF-8 文本并禁用缓存，本地 `.ps1` 文件继续保留 BOM。
 - 补充打包后响应字节、PowerShell 7 / Windows PowerShell 5.1 的真实 HTTP 管道安装与自定义目录安装验证。
 

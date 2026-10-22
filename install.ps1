@@ -40,6 +40,15 @@ function Write-Err($msg) {
     exit 1
 }
 
+# Use the dedicated UserAgent parameter: Windows PowerShell 5.1 rejects
+# User-Agent in -Headers before it even sends the HTTP request.
+function Get-WocliLatestTag([string]$Uri) {
+    $release = Invoke-RestMethod -Uri $Uri -TimeoutSec 30 -UseBasicParsing -UserAgent "wocli-installer"
+    $releaseTag = [string]$release.tag_name
+    if ($releaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release version" }
+    return $releaseTag
+}
+
 # Compare expanded, unquoted paths without changing unrelated PATH entries.
 function Get-NormalizedPathEntry([string]$Entry) {
     return [Environment]::ExpandEnvironmentVariables($Entry.Trim().Trim('"')).TrimEnd('\', '/')
@@ -140,12 +149,10 @@ $tag = $Version
 if (-not $tag) {
     Write-Info "正在获取最新版本信息..."
     try {
-        $release = Invoke-RestMethod -Uri $LatestUrl -TimeoutSec 30 -UseBasicParsing -Headers @{ "User-Agent" = "wocli-installer" }
-        $tag = $release.tag_name
-        if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release version" }
+        $tag = Get-WocliLatestTag -Uri $LatestUrl
     } catch {
         $tag = $DefaultTag
-        Write-Warn "获取最新版本信息失败，将安装默认版本 $tag"
+        Write-Warn "获取最新版本信息失败 ($($_.Exception.Message))，将安装默认版本 $tag"
     }
 }
 

@@ -5,7 +5,7 @@ $installer = Join-Path $PSScriptRoot "../install.ps1"
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @("Get-NormalizedPathEntry", "Get-WocliPathUpdate")) {
+foreach ($name in @("Get-NormalizedPathEntry", "Get-WocliPathUpdate", "Get-WocliLatestTag")) {
     $function = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $function) { throw "Missing function $name" }
     Invoke-Expression $function.Extent.Text
@@ -81,13 +81,20 @@ if ($BinaryPath) {
         }
         Write-Host 'Offline Windows install/reinstall command discovery tests passed.'
         if ($GatewayUrl) {
+            # Run the real installer metadata function with the actual PS web
+            # cmdlet before introducing fixture transport. This catches reserved
+            # header failures specific to Windows PowerShell 5.1.
+            $liveReleaseTag = Get-WocliLatestTag -Uri 'https://wocli.yhan.fun/api/releases/latest'
+            if ($liveReleaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Live metadata lookup failed' }
+            Write-Host "PASS: real PowerShell metadata lookup returned $liveReleaseTag"
             # Fetch the real HTTP script unchanged. Only release metadata/archive
             # transport is mocked so this test also works before the next release.
             function Invoke-RestMethod {
                 [CmdletBinding()]
                 param([Parameter(Position=0)][string]$Uri, [switch]$UseBasicParsing,
-                    [int]$TimeoutSec, [hashtable]$Headers)
+                    [int]$TimeoutSec, [hashtable]$Headers, [string]$UserAgent)
                 if ($Uri -eq 'https://wocli.yhan.fun/api/releases/latest') {
+                    if ($UserAgent -ne 'wocli-installer' -or ($Headers -and $Headers.ContainsKey('User-Agent'))) { throw 'Invalid metadata UserAgent parameter' }
                     return @{ tag_name = $global:WocliInstallerFixtureTag }
                 }
                 $text = Microsoft.PowerShell.Utility\Invoke-RestMethod @PSBoundParameters
