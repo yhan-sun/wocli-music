@@ -148,7 +148,7 @@ fn url(base: &str, pairs: &[(&str, String)]) -> String {
             .join("&")
     )
 }
-fn range(header: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn range(header: &str) -> Option<(u64, u64, u64)> {
     let (span, total) = header.strip_prefix("bytes ")?.split_once('/')?;
     let (start, end) = span.split_once('-')?;
     Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))

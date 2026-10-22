@@ -13,3 +13,5 @@ pub mod store;
 pub mod stream;
 pub mod tray;
 pub mod tui;
+
+pub mod updater;

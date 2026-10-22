@@ -1,4 +1,4 @@
-# wocli-music official Windows installer
+﻿# wocli-music official Windows installer
 # https://github.com/yhan-sun/wocli-music
 
 [CmdletBinding()]
@@ -12,7 +12,7 @@ param (
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
-$DefaultTag = "v0.3.0"
+$DefaultTag = "v0.3.1"
 
 function Write-Info($msg) {
     Write-Host "==> " -ForegroundColor Blue -NoNewline
@@ -34,6 +34,49 @@ function Write-Err($msg) {
     Write-Host $msg
     exit 1
 }
+
+# Compare expanded, unquoted paths without changing unrelated PATH entries.
+function Get-NormalizedPathEntry([string]$Entry) {
+    return [Environment]::ExpandEnvironmentVariables($Entry.Trim().Trim('"')).TrimEnd('\', '/')
+}
+
+function Get-WocliPathUpdate {
+    param([string]$UserPath, [string]$ProcessPath, [string]$Directory, [switch]$Remove)
+    $target = Get-NormalizedPathEntry $Directory
+    $updated = @()
+    foreach ($value in @($UserPath, $ProcessPath)) {
+        $parts = @($value -split ';' | Where-Object {
+            $_ -and (Get-NormalizedPathEntry $_) -ine $target
+        })
+        if (-not $Remove) { $parts += $Directory }
+        $updated += ($parts -join ';')
+    }
+    return @{ UserPath = $updated[0]; ProcessPath = $updated[1] }
+}
+
+# Tell Explorer and terminal launchers to refresh inherited environment variables.
+function Send-EnvironmentChange {
+    try {
+        if (-not ("Wocli.EnvironmentBroadcast" -as [type])) {
+            Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+namespace Wocli {
+    public static class EnvironmentBroadcast {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam,
+            string lParam, uint flags, uint timeout, out UIntPtr result);
+    }
+}
+"@
+        }
+        $result = [UIntPtr]::Zero
+        [void][Wocli.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001a,
+            [UIntPtr]::Zero, "Environment", 2, 3000, [ref]$result)
+    } catch { Write-Warn "环境变量已保存；请完全退出并重新打开终端应用以刷新 PATH。" }
+}
+
+$InstallDir = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($InstallDir))
 
 if ($Help) {
     Write-Host @"
@@ -69,14 +112,11 @@ if ($Uninstall) {
         Write-Success "已删除安装目录: $InstallDir"
     }
 
-    # 从用户 PATH 移除
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath) {
-        $paths = $userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $InstallDir.TrimEnd('\') }
-        $newUserPath = $paths -join ';'
-        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-        Write-Success "已从用户 PATH 环境变量中移除"
-    }
+    $pathUpdate = Get-WocliPathUpdate -UserPath ([Environment]::GetEnvironmentVariable("Path", "User")) -ProcessPath $env:Path -Directory $InstallDir -Remove
+    [Environment]::SetEnvironmentVariable("Path", $pathUpdate.UserPath, "User")
+    $env:Path = $pathUpdate.ProcessPath
+    Send-EnvironmentChange
+    Write-Success "已从用户和当前终端 PATH 中移除安装目录"
 
     Write-Success "wocli-music 已成功卸载。"
     Write-Host "`n注意：你的曲库数据与设置保存在 $env:APPDATA\wocli-music 中，如需彻底清理可手动删除该目录。`n"
@@ -84,7 +124,7 @@ if ($Uninstall) {
 }
 
 # 平台与架构检测
-$arch = $env:PROCESSOR_ARCHITECTURE
+$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne "AMD64" -and $arch -ne "ARM64") {
     Write-Err "当前 Windows 架构不支持: $arch (仅支持 x86_64 / ARM64 Windows 10/11)"
 }
@@ -120,7 +160,9 @@ try {
 
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
         curl.exe -fL "$downloadUrl" -o "$zipPath"
+        if ($LASTEXITCODE -ne 0) { throw "下载安装包失败 (curl: $LASTEXITCODE)" }
         curl.exe -fL "$sumsUrl" -o "$sumsPath"
+        if ($LASTEXITCODE -ne 0) { throw "下载校验文件失败 (curl: $LASTEXITCODE)" }
     } else {
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
         Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
@@ -139,7 +181,8 @@ try {
         }
     }
 
-    if ($expected -and $hash -ne $expected) {
+    if (-not $expected) { throw "SHA256SUMS 中没有安装包 $archiveName 的校验值" }
+    if ($hash -ne $expected) {
         Write-Err "SHA256 校验失败！`n期望: $expected`n实际: $hash"
     } elseif ($expected) {
         Write-Success "SHA256 校验通过: $hash"
@@ -148,6 +191,14 @@ try {
     Write-Info "正在解压安装..."
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+
+    $existingExe = Join-Path $InstallDir "wocli.exe"
+    if (Test-Path $existingExe) {
+        Write-Info "正在停止旧版本的托盘和后台服务..."
+        & $existingExe tray stop
+        & $existingExe daemon stop
+        if ($LASTEXITCODE -ne 0) { throw "旧版本后台未能退出，请先关闭播放器再重新安装" }
+    }
 
     $unpackedDir = Join-Path $tempDir "wocli-music-$cleanVer-$platform"
     if (Test-Path $unpackedDir) {
@@ -161,38 +212,28 @@ try {
         Write-Err "未找到解压后的可执行文件 wocli.exe"
     }
 
-    # 配置环境变量 PATH
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $userPath) { $userPath = "" }
-    $pathParts = $userPath -split ';' | Where-Object { $_ }
-
-    $normInstall = $InstallDir.TrimEnd('\')
-    $alreadyInPath = $false
-    foreach ($p in $pathParts) {
-        if ($p.TrimEnd('\') -eq $normInstall) {
-            $alreadyInPath = $true
-            break
-        }
+    # Update this shell even when the persistent user PATH already contains the directory.
+    $pathUpdate = Get-WocliPathUpdate -UserPath ([Environment]::GetEnvironmentVariable("Path", "User")) -ProcessPath $env:Path -Directory $InstallDir
+    [Environment]::SetEnvironmentVariable("Path", $pathUpdate.UserPath, "User")
+    $env:Path = $pathUpdate.ProcessPath
+    Send-EnvironmentChange
+    Write-Success "已配置用户和当前终端 PATH: $InstallDir"
+    $command = Get-Command wocli -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    if ((Get-NormalizedPathEntry $command.Source) -ine (Get-NormalizedPathEntry $binPath)) {
+        Write-Warn "PATH 中存在另一个 wocli，当前命令指向: $($command.Source)。本次安装可通过 & `"$binPath`" 启动。"
     }
-
-    if (-not $alreadyInPath) {
-        $newUserPath = if ($userPath) { "$userPath;$InstallDir" } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-        $env:Path = "$env:Path;$InstallDir"
-        Write-Success "已将 $InstallDir 添加到用户 PATH 环境变量"
-    }
-
-    Write-Success "wocli-music $tag 已成功安装至: $binPath"
 
     try {
         $verOutput = & $binPath --version
+        if ($LASTEXITCODE -ne 0) { throw "wocli.exe 启动失败 (退出码: $LASTEXITCODE)" }
         Write-Host "版本: $verOutput"
-    } catch {}
+    } catch { throw "安装的程序无法启动: $_" }
+    Write-Success "wocli-music $tag 已成功安装至: $binPath"
 
     Write-Host @"
 
 ==> 🎉 安装完成！快速开始：
-  • 打开新的终端窗口 (PowerShell / Windows Terminal)
+  • 当前 PowerShell 可直接运行 wocli；其他已打开终端需重启终端应用
   • 启动终端播放器:  wocli
   • 搜索并播放音乐:  wocli play "周杰伦"
   • 查看全部命令:    wocli --help

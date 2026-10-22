@@ -47,6 +47,15 @@ curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.s
 irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
 ```
 
+The installer updates both the user PATH and the current PowerShell session. Other open terminals must fully restart their terminal application. To refresh a stale session from an older default installation:
+
+```powershell
+$env:Path += ";$env:LOCALAPPDATA\Programs\wocli-music"
+wocli --version
+```
+
+For a custom installation, use its actual directory instead.
+
 - **Custom install directory**:
   ```powershell
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -InstallDir "C:\Tools\wocli"
@@ -57,6 +66,18 @@ irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | ie
   ```
 
 ---
+
+## Updating
+
+Starting with v0.3.1:
+
+```bash
+wocli update --check   # Check the latest stable release
+wocli update           # Verify SHA256 and update the current installation
+wocli update --force   # Reinstall the current stable release
+```
+
+Also supports `--json` and `--direct`. The installation directory must be writable. Library data, favorites, queues and settings are preserved. Running daemon/tray processes are restarted; playback must be started again. Linux launcher wrappers are preserved while the actual binary and bundled ALSA library are updated. Versions v0.3.0 and earlier need one upgrade using the installation commands above before `wocli update` becomes available.
 
 ## Keybindings
 

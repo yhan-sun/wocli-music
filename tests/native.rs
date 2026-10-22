@@ -227,3 +227,37 @@ fn environment_variables_configure_home_runtime_and_download_dirs() {
         .unwrap()
         .starts_with(runtime.to_str().unwrap()));
 }
+
+#[test]
+fn native_service_skips_broken_audio_and_stops_when_every_track_fails() {
+    let app = App::new();
+    let good = app.song("good.wav", 30);
+    let bad = app.root.path().join("broken.wav");
+    let missing = app.root.path().join("missing.wav");
+    fs::write(&bad, b"not audio").unwrap();
+    fs::write(bad.with_extension("lrc"), "[00:00]test").unwrap();
+    fs::write(missing.with_extension("lrc"), "[00:00]test").unwrap();
+    let good = wocli_music::model::Track::local(&good).unwrap();
+    let bad = wocli_music::model::Track::local(&bad).unwrap();
+    let missing = wocli_music::model::Track {
+        id: "local:missing".into(),
+        title: "missing".into(),
+        path: missing.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    app.cli(&["daemon", "start"]);
+    app.socket(json!({"op":"play", "tracks":[bad, missing, good]}));
+    let playing = app.phase("playing");
+    assert_eq!(playing["track"]["title"], "good");
+    app.cli(&["mode", "single"]);
+    app.socket(json!({"op":"play", "tracks":[bad, missing]}));
+    let failed = app.phase("error");
+    assert!(!failed["error"].as_str().unwrap().is_empty());
+    assert!(failed["error_details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("2")));
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(app.cli(&["status"])["phase"], "error");
+}

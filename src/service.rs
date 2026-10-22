@@ -3,7 +3,7 @@ use crate::{
     lyrics,
     model::{Error, Result, Settings, Track, MODES, QUALITIES},
     order::Shuffle,
-    player::Player,
+    player::{AudioInput, Player, PreparedAudio},
     provider::Provider,
     store::{now, Paths, Store},
 };
@@ -11,7 +11,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
@@ -21,7 +21,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -82,11 +82,10 @@ struct Call {
 enum Event {
     Call(Call),
     Ready(u64, Result<(PathBuf, String)>),
-    StreamReady(
-        u64,
-        Result<(PathBuf, String, String, crate::stream::StreamHandle)>,
-    ),
-    StreamComplete(u64, PathBuf, String),
+    StreamReady(u64, Result<(String, String, crate::stream::StreamHandle)>),
+    StreamFinished(u64, Result<u64>),
+    Loaded(u64, Result<PreparedAudio>),
+    SeekReady(u64, u64, Result<PreparedAudio>),
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
     Attempt(u64, u8),
@@ -122,6 +121,13 @@ struct Service {
     tx: Sender<Event>,
     shuffle: Shuffle,
     cache: Option<PathBuf>,
+    audio_input: Option<AudioInput>,
+    prepare_cancelled: Arc<AtomicBool>,
+    seek_cancelled: Arc<AtomicBool>,
+    seek_serial: u64,
+    pending_seek: Option<(Instant, Sender<Result<Value>>)>,
+    stream_retries: u8,
+    failed_indices: HashSet<usize>,
     jobs: Vec<Job>,
     job_controls: HashMap<String, JobControl>,
     job_queue: VecDeque<String>,
@@ -169,6 +175,13 @@ impl Service {
             tx,
             shuffle,
             cache: None,
+            audio_input: None,
+            prepare_cancelled: Arc::new(AtomicBool::new(false)),
+            seek_cancelled: Arc::new(AtomicBool::new(false)),
+            seek_serial: 0,
+            pending_seek: None,
+            stream_retries: 0,
+            failed_indices: HashSet::new(),
             jobs: vec![],
             job_controls: HashMap::new(),
             job_queue: VecDeque::new(),
@@ -241,6 +254,16 @@ impl Service {
     }
     fn stop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
+        self.prepare_cancelled.store(true, Ordering::Relaxed);
+        self.cancel_seek("播放已变化，已取消跳转");
+        if let Some(coord) = self
+            .audio_input
+            .as_ref()
+            .and_then(|input| input.stream.as_ref())
+        {
+            coord.mark_cancelled();
+        }
+        self.audio_input = None;
         self.generation += 1;
         self.player.stop();
         self.phase = "stopped".into();
@@ -273,6 +296,7 @@ impl Service {
             return Err(Error::new("音质无效"));
         }
         self.stop();
+        self.stream_retries = 0;
         self.index = index;
         self.requested_quality = quality.clone();
         self.phase = "loading".into();
@@ -303,7 +327,7 @@ impl Service {
         self.pool.execute(move || {
             let result = (|| {
                 if !track.path.is_empty() {
-                    return Ok((PathBuf::from(&track.path), "local".into()));
+                    return Ok(Some((PathBuf::from(&track.path), "local".into())));
                 }
                 let mut last_error = Error::new("音源不可用");
                 for attempt in 1..=2 {
@@ -320,14 +344,9 @@ impl Service {
                                         stream_tx.send(Event::Buffer(generation, received, total));
                                 };
                                 let complete_tx = tx.clone();
-                                let target_complete = target.clone();
-                                let quality_complete = stream.quality.clone();
-                                let on_complete = move |_downloaded| {
-                                    let _ = complete_tx.send(Event::StreamComplete(
-                                        generation,
-                                        target_complete.clone(),
-                                        quality_complete.clone(),
-                                    ));
+                                let on_complete = move |result| {
+                                    let _ =
+                                        complete_tx.send(Event::StreamFinished(generation, result));
                                 };
                                 match crate::stream::start_stream(
                                     provider.agent(),
@@ -342,13 +361,12 @@ impl Service {
                                         let _ = tx.send(Event::StreamReady(
                                             generation,
                                             Ok((
-                                                target.clone(),
                                                 stream.quality.clone(),
                                                 stream.extension.clone(),
                                                 stream_handle,
                                             )),
                                         ));
-                                        return Ok((target.clone(), stream.quality));
+                                        return Ok(None);
                                     }
                                     Err(_) => {
                                         // Streaming failed, fallback below
@@ -365,7 +383,7 @@ impl Service {
                                 },
                             );
                             match result {
-                                Ok(_) => return Ok((target.clone(), stream.quality)),
+                                Ok(_) => return Ok(Some((target.clone(), stream.quality))),
                                 Err(error) => {
                                     last_error = error;
                                 }
@@ -383,6 +401,11 @@ impl Service {
                 let _ = fs::remove_file(&target);
                 return;
             }
+            let result = match result {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => return,
+                Err(error) => Err(error),
+            };
             if tx.send(Event::Ready(generation, result)).is_err() {
                 let _ = fs::remove_file(&target);
             }
@@ -392,6 +415,9 @@ impl Service {
     fn advance(&mut self, previous: bool, automatic: bool) -> Result<()> {
         if self.queue.is_empty() {
             return Ok(());
+        }
+        if automatic {
+            self.failed_indices.clear();
         }
         let index = if self.settings.mode == "shuffle" {
             if previous {
@@ -412,6 +438,136 @@ impl Service {
             (self.index + 1) % self.queue.len()
         };
         self.begin(index, self.settings.quality.clone())
+    }
+    fn prepare_input(&mut self, input: AudioInput) {
+        self.prepare_cancelled.store(true, Ordering::Relaxed);
+        self.prepare_cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = self.prepare_cancelled.clone();
+        self.audio_input = Some(input.clone());
+        let track = self.current().unwrap().clone();
+        let null = self.player.null;
+        let generation = self.generation;
+        let tx = self.tx.clone();
+        self.pool.execute(move || {
+            let result = input.prepare(&track, 0., cancelled, null);
+            let _ = tx.send(Event::Loaded(generation, result));
+        });
+    }
+    fn cancel_seek(&mut self, message: &str) {
+        if let Some((_, reply)) = self.pending_seek.take() {
+            self.seek_cancelled.store(true, Ordering::Relaxed);
+            self.seek_serial += 1;
+            let _ = reply.send(Err(Error::coded("cancelled", message)));
+        }
+    }
+    fn seek_request(&mut self, request: Value, reply: Sender<Result<Value>>) {
+        let result = (|| {
+            if !["playing", "paused"].contains(&self.phase.as_str()) {
+                return Err(Error::new("当前没有可跳转的音频"));
+            }
+            if request["track_id"]
+                .as_str()
+                .is_some_and(|id| self.current().map(|t| t.id.as_str()) != Some(id))
+            {
+                let _ = reply.send(Ok(serde_json::to_value(self.status())?));
+                return Ok(());
+            }
+            let relative = request["op"] == "seek";
+            let value = request[if relative { "seconds" } else { "position" }]
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| Error::new("无效的跳转位置"))?;
+            let position = value + if relative { self.player.position() } else { 0. };
+            if !position.is_finite() {
+                return Err(Error::new("无效的跳转位置"));
+            }
+            let input = self
+                .audio_input
+                .clone()
+                .ok_or_else(|| Error::new("当前没有可跳转的音频"))?;
+            let track = self.current().unwrap().clone();
+            self.cancel_seek("已取消上一次跳转");
+            self.seek_cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled = self.seek_cancelled.clone();
+            self.seek_serial += 1;
+            let serial = self.seek_serial;
+            let generation = self.generation;
+            let tx = self.tx.clone();
+            self.pending_seek = Some((Instant::now() + Duration::from_secs(10), reply.clone()));
+            let null = self.player.null;
+            self.pool.execute(move || {
+                let result = input.prepare(&track, position, cancelled, null);
+                let _ = tx.send(Event::SeekReady(generation, serial, result));
+            });
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = reply.send(Err(error));
+        }
+    }
+    fn playback_failed(&mut self, mut error: Error) {
+        eprintln!(
+            "播放失败，{}: {}",
+            self.current().map(|t| t.title.as_str()).unwrap_or_default(),
+            error
+        );
+        self.failed_indices.insert(self.index);
+        let next = if error.code == "audio_device" || self.failed_indices.len() >= self.queue.len()
+        {
+            None
+        } else if self.settings.mode == "shuffle" {
+            (0..self.queue.len() * 2)
+                .map(|_| self.shuffle.next(self.queue.len(), self.index))
+                .find(|i| !self.failed_indices.contains(i))
+                .or_else(|| (0..self.queue.len()).find(|i| !self.failed_indices.contains(i)))
+        } else {
+            (1..self.queue.len())
+                .map(|offset| self.index + offset)
+                .take_while(|i| self.settings.mode != "list" || *i < self.queue.len())
+                .map(|i| i % self.queue.len())
+                .find(|i| !self.failed_indices.contains(i))
+        };
+        if let Some(index) = next {
+            match self.begin(index, self.settings.quality.clone()) {
+                Ok(()) => return,
+                Err(next_error) => error = next_error,
+            }
+        }
+        self.stop();
+        self.phase = "error".into();
+        if self.failed_indices.len() > 1 {
+            error.details.push(format!(
+                "已跳过 {} 首无法播放的歌曲",
+                self.failed_indices.len()
+            ));
+        }
+        self.error = Some(error);
+    }
+    fn tick(&mut self) {
+        if self
+            .pending_seek
+            .as_ref()
+            .is_some_and(|(deadline, _)| Instant::now() >= *deadline)
+        {
+            self.cancel_seek("等待跳转位置缓冲超时，请稍后重试");
+        }
+        if self.phase != "playing" || !self.player.finished() {
+            return;
+        }
+        if let Some(coord) = self.audio_input.as_ref().and_then(|i| i.stream.as_ref()) {
+            // Download failures arrive as events; an unfinished or invalid body
+            // must not masquerade as a natural end and reset the skip history.
+            if !coord.completed.load(Ordering::Acquire) || coord.failed.load(Ordering::Acquire) {
+                return;
+            }
+        }
+        if let Some(error) = self.player.end_error() {
+            self.playback_failed(error);
+            return;
+        }
+        if let Err(error) = self.advance(false, true) {
+            self.playback_failed(error);
+        }
     }
     fn enqueue_job(&mut self, request: &Value) -> Result<()> {
         let track = if request["track"].is_object() {
@@ -587,6 +743,19 @@ impl Service {
     }
     fn dispatch(&mut self, request: Value) -> Result<Value> {
         let op = request["op"].as_str().unwrap_or_default();
+        if [
+            "play",
+            "retry",
+            "next",
+            "prev",
+            "queue_add",
+            "queue_remove",
+            "queue_clear",
+        ]
+        .contains(&op)
+        {
+            self.failed_indices.clear();
+        }
         match op {
             "status" => {}
             "play" => {
@@ -647,28 +816,6 @@ impl Service {
             "stop" => self.stop(),
             "next" => self.advance(false, false)?,
             "prev" => self.advance(true, false)?,
-            "seek" | "seek_to" => {
-                if !["playing", "paused"].contains(&self.phase.as_str()) {
-                    return Err(Error::new("当前没有可跳转的音频"));
-                }
-                if let Some(id) = request["track_id"].as_str() {
-                    if self.current().map(|t| t.id.as_str()) != Some(id) {
-                        return Ok(serde_json::to_value(self.status())?);
-                    }
-                }
-                let value = request[if op == "seek" { "seconds" } else { "position" }]
-                    .as_f64()
-                    .filter(|v| v.is_finite())
-                    .ok_or_else(|| Error::new("无效的跳转位置"))?;
-                self.player.seek(
-                    value
-                        + if op == "seek" {
-                            self.player.position()
-                        } else {
-                            0.
-                        },
-                )?;
-            }
             "volume" | "mode" | "config" => {
                 let key = if op == "config" {
                     request["key"].as_str().unwrap_or_default()
@@ -828,64 +975,50 @@ impl Service {
     fn event(&mut self, event: Event) {
         match event {
             Event::Call(call) => {
-                let result = self.dispatch(call.value);
-                let _ = call.reply.send(result);
+                if matches!(call.value["op"].as_str(), Some("seek" | "seek_to")) {
+                    self.seek_request(call.value, call.reply);
+                } else {
+                    let result = self.dispatch(call.value);
+                    let _ = call.reply.send(result);
+                }
             }
             Event::StreamReady(generation, result) => {
                 if generation != self.generation {
-                    if let Ok((path, _, _, _)) = result {
-                        if path.starts_with(self.paths.home.join("cache-rust")) {
-                            let _ = fs::remove_file(path);
-                        }
+                    if let Ok((_, _, handle)) = result {
+                        handle.coord.mark_cancelled();
+                        let _ = fs::remove_file(handle.cache_path);
                     }
                     return;
                 }
                 match result {
-                    Ok((path, quality, ext, mut handle)) => {
-                        let track = match self.current().cloned() {
-                            Some(t) => t,
-                            None => return,
-                        };
-                        let load_res = if let Some(reader) = handle.reader.take() {
-                            self.player.load_reader(
-                                reader,
-                                &track,
-                                self.settings.volume,
-                                Some(&ext),
-                                true,
-                            )
-                        } else {
-                            self.player.load(&path, &track, self.settings.volume)
-                        };
-                        match load_res {
-                            Ok(()) => {
-                                if track.path.is_empty() {
-                                    self.cache = Some(path);
-                                }
-                                let _ = self.store.played(&track);
-                                self.quality = quality;
-                                self.phase = "playing".into();
-                                self.error = None;
-                                self.retry_attempt = 1;
-                            }
-                            Err(e) => {
-                                self.phase = "error".into();
-                                self.error = Some(e);
-                            }
-                        }
+                    Ok((quality, hint, handle)) => {
+                        self.cache = Some(handle.cache_path.clone());
+                        self.quality = quality;
+                        self.prepare_input(AudioInput {
+                            path: handle.cache_path,
+                            hint,
+                            stream: Some(handle.coord),
+                        });
                     }
-                    Err(error) => {
-                        self.phase = "error".into();
-                        self.error = Some(error);
-                    }
+                    Err(error) => self.playback_failed(error),
                 }
             }
-            Event::StreamComplete(generation, path, quality) => {
+            Event::StreamFinished(generation, result) => {
                 if generation != self.generation {
                     return;
                 }
-                self.cache = Some(path);
-                self.quality = quality;
+                if let Err(error) = result {
+                    if error.code == "network" && self.stream_retries == 0 {
+                        let quality = self.requested_quality.clone();
+                        if let Err(error) = self.begin(self.index, quality) {
+                            self.playback_failed(error);
+                        } else {
+                            self.stream_retries = 1;
+                        }
+                    } else if error.code != "cancelled" {
+                        self.playback_failed(error);
+                    }
+                }
             }
             Event::Ready(generation, result) => {
                 if generation != self.generation {
@@ -896,33 +1029,60 @@ impl Service {
                     }
                     return;
                 }
-                if self.phase == "playing" {
-                    if let Ok((path, quality)) = result {
-                        self.cache = Some(path);
+                match result {
+                    Ok((path, quality)) => {
+                        if self.current().is_some_and(|t| t.path.is_empty()) {
+                            self.cache = Some(path.clone());
+                        }
                         self.quality = quality;
+                        let hint = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        self.prepare_input(AudioInput {
+                            path,
+                            hint,
+                            stream: None,
+                        });
                     }
+                    Err(error) => self.playback_failed(error),
+                }
+            }
+            Event::Loaded(generation, result) => {
+                if generation != self.generation {
                     return;
                 }
-                let result = result.and_then(|(path, quality)| {
-                    let track = self
-                        .current()
-                        .cloned()
-                        .ok_or_else(|| Error::new("队列为空"))?;
-                    if track.path.is_empty() {
-                        self.cache = Some(path.clone());
-                    }
-                    self.player.load(&path, &track, self.settings.volume)?;
-                    self.store.played(&track)?;
-                    self.quality = quality;
-                    Ok(())
-                });
+                let result =
+                    result.and_then(|audio| self.player.load(audio, self.settings.volume, false));
                 match result {
-                    Ok(()) => self.phase = "playing".into(),
-                    Err(error) => {
-                        self.phase = "error".into();
-                        self.error = Some(error);
+                    Ok(()) => {
+                        if let Some(track) = self.current() {
+                            let _ = self.store.played(track);
+                        }
+                        self.phase = "playing".into();
+                        self.error = None;
                     }
+                    Err(error) => self.playback_failed(error),
                 }
+            }
+            Event::SeekReady(generation, serial, result) => {
+                if generation != self.generation || serial != self.seek_serial {
+                    return;
+                }
+                let Some((_, reply)) = self.pending_seek.take() else {
+                    return;
+                };
+                // Once applied, the source owns this token. Future seeks cancel
+                // pending preparation, not the currently playing source.
+                self.seek_cancelled = Arc::new(AtomicBool::new(false));
+                let result = result
+                    .and_then(|audio| {
+                        self.player
+                            .load(audio, self.settings.volume, self.phase == "paused")
+                    })
+                    .and_then(|()| Ok(serde_json::to_value(self.status())?));
+                let _ = reply.send(result);
             }
             Event::Lyrics(generation, serial, result) => {
                 if generation != self.generation || serial != self.lyric_serial {
@@ -1153,12 +1313,7 @@ pub fn run(paths: Paths) -> Result<()> {
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(30)) {
             service.event(event);
         }
-        if service.phase == "playing" && service.player.finished() {
-            if let Err(error) = service.advance(false, true) {
-                service.phase = "error".into();
-                service.error = Some(error);
-            }
-        }
+        service.tick();
     }
     service.stop();
     for control in service.job_controls.values() {
@@ -1170,4 +1325,278 @@ pub fn run(paths: Paths) -> Result<()> {
     let _ = acceptor.join();
     eprintln!("{} 后台已退出", now());
     Ok(())
+}
+
+#[cfg(test)]
+mod playback_tests {
+    use super::*;
+    use std::time::Instant;
+    struct Harness {
+        service: Service,
+        rx: Receiver<Event>,
+        dir: tempfile::TempDir,
+    }
+    impl Harness {
+        fn new(mode: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("data")).unwrap();
+            let (tx, rx) = mpsc::channel();
+            let mut service = Service::new(
+                Paths {
+                    home: dir.path().join("data"),
+                    runtime: dir.path().join("run"),
+                },
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            service.player.null = true;
+            service.settings.mode = mode.into();
+            Self { service, rx, dir }
+        }
+        fn track(&self, name: &str, good: bool) -> Track {
+            let path = self.dir.path().join(format!("{name}.wav"));
+            fs::write(
+                &path,
+                if good {
+                    crate::player::test_wav(30)
+                } else {
+                    b"not audio".to_vec()
+                },
+            )
+            .unwrap();
+            fs::write(path.with_extension("lrc"), "[00:00]test").unwrap();
+            Track::local(&path).unwrap()
+        }
+        fn pump(&mut self, phase: &str) {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while self.service.phase != phase {
+                assert!(
+                    Instant::now() < deadline,
+                    "wanted {phase}, got {}",
+                    self.service.phase
+                );
+                if let Ok(event) = self.rx.recv_timeout(Duration::from_millis(20)) {
+                    self.service.event(event);
+                }
+                self.service.tick();
+            }
+        }
+    }
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            self.service.stop();
+        }
+    }
+
+    #[test]
+    fn bad_tracks_are_skipped_in_every_mode_and_all_bad_queues_terminate() {
+        for mode in ["list", "repeat", "single", "shuffle"] {
+            let mut h = Harness::new(mode);
+            let bad = h.track("bad", false);
+            let bad2 = h.track("bad2", false);
+            let good = h.track("good", true);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[bad, bad2, good]}))
+                .unwrap();
+            h.pump("playing");
+            assert_eq!(h.service.current().unwrap().title, "good", "{mode}");
+            let bad = h.track("bad", false);
+            let bad2 = h.track("bad2", false);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[bad, bad2]}))
+                .unwrap();
+            h.pump("error");
+            assert_eq!(h.service.failed_indices.len(), 2, "{mode}");
+            assert!(h.service.error.is_some());
+        }
+    }
+    #[test]
+    fn a_device_failure_does_not_skip_the_whole_queue() {
+        let mut h = Harness::new("repeat");
+        h.service.queue = vec![h.track("one", true), h.track("two", true)];
+        h.service
+            .playback_failed(Error::coded("audio_device", "no device"));
+        assert_eq!(h.service.phase, "error");
+        assert_eq!(h.service.index, 0);
+    }
+    #[test]
+    fn midstream_network_failure_retries_once_then_skips() {
+        let mut h = Harness::new("single");
+        let one = h.track("one", true);
+        let two = h.track("two", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[one, two]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.event(Event::StreamFinished(
+            h.service.generation,
+            Err(Error::coded("network", "broken connection")),
+        ));
+        assert_eq!(h.service.stream_retries, 1);
+        h.pump("playing");
+        assert_eq!(h.service.index, 0);
+        h.service.event(Event::StreamFinished(
+            h.service.generation,
+            Err(Error::coded("network", "broken again")),
+        ));
+        h.pump("playing");
+        assert_eq!(h.service.index, 1);
+    }
+    #[test]
+    fn stalled_seek_leaves_controls_responsive_and_stop_cancels_it() {
+        let mut h = Harness::new("list");
+        let track = h.track("stream", true);
+        let wav = crate::player::test_wav(30);
+        fs::write(&track.path, &wav[..40000]).unwrap();
+        let coord = Arc::new(crate::stream::StreamCoord::new(wav.len() as u64));
+        coord.notify_progress(40000);
+        let input = AudioInput {
+            path: PathBuf::from(&track.path),
+            hint: "wav".into(),
+            stream: Some(coord),
+        };
+        let audio = input
+            .prepare(&track, 0., Arc::new(AtomicBool::new(false)), true)
+            .unwrap();
+        h.service.player.load(audio, 0, false).unwrap();
+        h.service.queue = vec![track];
+        h.service.audio_input = Some(input);
+        h.service.phase = "playing".into();
+        let (reply, seek_rx) = mpsc::channel();
+        h.service.event(Event::Call(Call {
+            value: json!({"op":"seek_to","position":20}),
+            reply,
+        }));
+        assert!(matches!(
+            seek_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let (reply, status_rx) = mpsc::channel();
+        h.service.event(Event::Call(Call {
+            value: json!({"op":"status"}),
+            reply,
+        }));
+        assert_eq!(
+            status_rx
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap()
+                .unwrap()["phase"],
+            "playing"
+        );
+        h.service.dispatch(json!({"op":"stop"})).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(result) = seek_rx.try_recv() {
+                assert!(result.is_err());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            if let Ok(event) = h.rx.recv_timeout(Duration::from_millis(20)) {
+                h.service.event(event);
+            }
+        }
+        assert_eq!(h.service.phase, "stopped");
+    }
+    #[test]
+    fn repeated_midstream_failures_stop_after_every_track_has_failed() {
+        let mut h = Harness::new("repeat");
+        let one = h.track("one", true);
+        let two = h.track("two", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[one, two]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.event(Event::StreamFinished(
+            h.service.generation,
+            Err(Error::coded("incomplete_audio", "truncated")),
+        ));
+        h.pump("playing");
+        assert_eq!(h.service.index, 1);
+        h.service.event(Event::StreamFinished(
+            h.service.generation,
+            Err(Error::coded("incomplete_audio", "truncated")),
+        ));
+        assert_eq!(h.service.phase, "error");
+        assert_eq!(h.service.failed_indices.len(), 2);
+    }
+    #[test]
+    fn seek_timeout_replies_promptly_and_ignores_a_late_result() {
+        let mut h = Harness::new("list");
+        let track = h.track("stream", true);
+        let wav = crate::player::test_wav(30);
+        fs::write(&track.path, &wav[..40000]).unwrap();
+        let coord = Arc::new(crate::stream::StreamCoord::new(wav.len() as u64));
+        coord.notify_progress(40000);
+        let input = AudioInput {
+            path: PathBuf::from(&track.path),
+            hint: "wav".into(),
+            stream: Some(coord),
+        };
+        h.service
+            .player
+            .load(
+                input
+                    .prepare(&track, 0., Arc::new(AtomicBool::new(false)), true)
+                    .unwrap(),
+                0,
+                false,
+            )
+            .unwrap();
+        h.service.queue = vec![track];
+        h.service.audio_input = Some(input);
+        h.service.phase = "playing".into();
+        let (reply, rx) = mpsc::channel();
+        h.service
+            .seek_request(json!({"op":"seek_to", "position":20}), reply);
+        let serial = h.service.seek_serial;
+        h.service.pending_seek.as_mut().unwrap().0 = Instant::now();
+        h.service.tick();
+        assert!(rx
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("超时"));
+        assert_eq!(h.service.phase, "playing");
+        let local = h.track("late", true);
+        let audio = AudioInput {
+            path: PathBuf::from(&local.path),
+            hint: "wav".into(),
+            stream: None,
+        }
+        .prepare(&local, 20., Arc::new(AtomicBool::new(false)), true)
+        .unwrap();
+        h.service
+            .event(Event::SeekReady(h.service.generation, serial, Ok(audio)));
+        assert!(h.service.player.position() < 1.);
+    }
+    #[test]
+    fn successive_paused_seeks_keep_pause_and_latest_position() {
+        let mut h = Harness::new("list");
+        let track = h.track("song", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        for position in [12., 3., 0.] {
+            let (reply, rx) = mpsc::channel();
+            h.service
+                .seek_request(json!({"op":"seek_to", "position": position}), reply);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(result) = rx.try_recv() {
+                    let status = result.unwrap();
+                    assert_eq!(status["phase"], "paused");
+                    assert!((status["position"].as_f64().unwrap() - position).abs() < 0.01);
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                if let Ok(event) = h.rx.recv_timeout(Duration::from_millis(20)) {
+                    h.service.event(event);
+                }
+            }
+        }
+    }
 }

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="yhan-sun/wocli-music"
-DEFAULT_TAG="v0.3.0"
+DEFAULT_TAG="v0.3.1"
 TMPDIR_CLEANUP=""
 
 cleanup() {
@@ -259,6 +259,11 @@ main() {
     local extract_dir="$tmpdir/wocli-music-${version_clean}-${PLATFORM}"
 
     mkdir -p "$INSTALL_DIR"
+    if [ -x "$INSTALL_DIR/wocli" ]; then
+        info "正在停止旧版本的托盘和后台服务..."
+        "$INSTALL_DIR/wocli" tray stop || true
+        "$INSTALL_DIR/wocli" daemon stop
+    fi
 
     if [ "$(uname -s)" = "Darwin" ]; then
         cp -f "$extract_dir/wocli" "$INSTALL_DIR/wocli"

@@ -72,7 +72,18 @@ jobs:
           apt-get source --download-only alsa-lib
       - name: Install Rust
         run: rustup toolchain install 1.93.1 --profile minimal && rustup default 1.93.1
+      - name: Test Windows playback and running-executable replacement
+        if: runner.os == 'Windows'
+        run: cargo test --locked --all-targets
       - run: cargo build --release --locked
+      - name: Verify Windows installer and immediate command availability
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test_install_windows.ps1 -BinaryPath ./target/release/wocli.exe
+      - name: Verify installer in Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test_install_windows.ps1 -BinaryPath ./target/release/wocli.exe
       - name: Package native player, notices and small dependency source archive
         shell: bash
         run: |

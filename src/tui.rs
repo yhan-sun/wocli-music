@@ -1690,22 +1690,39 @@ impl Drop for TerminalGuard {
         ratatui::restore();
     }
 }
+fn request_message(paths: &Paths, request: Request) -> Message {
+    match ipc::request(paths, request.value, request.start) {
+        Ok(Some(value)) => match serde_json::from_value(value) {
+            Ok(state) => Message::State(Box::new(state)),
+            Err(error) => Message::Error(error.to_string()),
+        },
+        Ok(None) => Message::Offline,
+        Err(error) => Message::Error(error.to_string()),
+    }
+}
 pub fn run(paths: Paths) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Request>();
     let (events, receiver): (Sender<Message>, Receiver<Message>) = mpsc::channel();
     let worker_paths = paths.clone();
     let worker_events = events.clone();
     thread::spawn(move || {
+        // A seek can wait for future download data. Keep status, stop and next
+        // requests flowing while it waits, with bounded concurrency for seeks.
+        let seeks = crate::pool::WorkerPool::new(2);
         for request in rx {
-            let message = match ipc::request(&worker_paths, request.value, request.start) {
-                Ok(Some(value)) => match serde_json::from_value(value) {
-                    Ok(state) => Message::State(Box::new(state)),
-                    Err(e) => Message::Error(e.to_string()),
-                },
-                Ok(None) => Message::Offline,
-                Err(e) => Message::Error(e.to_string()),
-            };
-            let _ = worker_events.send(message);
+            if matches!(request.value["op"].as_str(), Some("seek" | "seek_to")) {
+                let paths = worker_paths.clone();
+                let events = worker_events.clone();
+                seeks.execute(move || {
+                    // State is refreshed by the normal poll. A delayed seek
+                    // acknowledgement must not overwrite a newer stop/next response.
+                    if let Message::Error(error) = request_message(&paths, request) {
+                        let _ = events.send(Message::Error(error));
+                    }
+                });
+            } else {
+                let _ = worker_events.send(request_message(&worker_paths, request));
+            }
         }
     });
     let mut app = App::new(paths, tx, events)?;

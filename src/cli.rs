@@ -35,6 +35,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
   config [配置项 值]                 quality / volume / mode / direct / lyric_offset / lyrics_bar / tray
+  update [--check] [--force]         检查或安装最新稳定版
   doctor | daemon start|stop|status [--tray]  诊断及后台服务
 
 环境变量：
@@ -93,6 +94,7 @@ impl Args {
                 "-h",
                 "--next",
                 "--tray",
+                "--check",
             ]
             .contains(&value.as_str())
             {
@@ -274,6 +276,34 @@ pub fn run(raw: Vec<String>) -> Result<()> {
     }
     let paths = Paths::discover_opt(args.value("--home"))?;
     let command = args.pos.first().map(String::as_str).unwrap_or("tui");
+    if command == "update" {
+        let direct = args.flag("--direct") || paths.settings().is_ok_and(|s| s.direct);
+        let report =
+            crate::updater::run(&paths, args.flag("--check"), args.flag("--force"), direct)?;
+        if args.flag("--json") {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            match report.status.as_str() {
+                "updated" => println!(
+                    "已更新至 v{} · {}",
+                    report.latest_version,
+                    report.executable.display()
+                ),
+                "available" => println!(
+                    "发现新版本 v{}（当前 v{}），运行 wocli update 安装",
+                    report.latest_version, report.current_version
+                ),
+                _ => println!(
+                    "当前 v{} 已是最新稳定版（发行版 v{}）",
+                    report.current_version, report.latest_version
+                ),
+            }
+            if !report.warning.is_empty() {
+                eprintln!("{}", report.warning);
+            }
+        }
+        return Ok(());
+    }
     if command == "__daemon" {
         return service::run(paths);
     }

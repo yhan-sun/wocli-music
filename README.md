@@ -47,11 +47,20 @@ curl -fsSL https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.s
 
 #### Windows (PowerShell)
 
-在 PowerShell 中执行以下命令，脚本会自动下载 Windows 原生版本、校验 SHA256 签名，并将 `wocli.exe` 自动添加至用户 PATH 环境变量：
+在 PowerShell 中执行以下命令，脚本会自动下载 Windows 原生版本、校验 SHA256 签名，并配置用户及当前 PowerShell 的 PATH，安装后可直接运行 `wocli`：
 
 ```powershell
 irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | iex
 ```
+
+安装完成后，当前 PowerShell 无需重开。其他已经打开的终端需要完全退出并重新启动终端应用，才能继承更新后的 PATH。若旧安装仍提示找不到命令，可先在 PowerShell 执行：
+
+```powershell
+$env:Path += ";$env:LOCALAPPDATA\Programs\wocli-music"
+wocli --version
+```
+
+使用自定义安装目录时，将上面的目录替换为实际目录。
 
 - **自定义安装目录**：
   ```powershell
@@ -61,6 +70,20 @@ irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1 | ie
   ```powershell
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yhan-sun/wocli-music/main/install.ps1))) -Uninstall
   ```
+
+### 更新
+
+从 v0.3.1 起，可直接执行：
+
+```bash
+wocli update --check     # 只检查最新稳定版
+wocli update             # 下载、校验 SHA256 并更新当前安装
+wocli update --force     # 重新安装当前稳定版
+```
+
+支持 `--json` 和 `--direct`。更新保留曲库、收藏、队列与设置；正在运行的后台和托盘会停止并重新启动，播放需要重新开始。安装目录需要当前账户有写权限。通过 Linux 安装脚本创建的入口包装脚本会保留，更新实际程序及配套 ALSA 库。
+
+v0.3.0 及更早版本尚无 `update` 命令，首次升级请重新执行上面的安装命令。Windows 安装脚本还会修复当前 PowerShell 的 PATH。
 
 ### 手动下载安装
 
@@ -124,7 +147,7 @@ wocli
 
 歌曲失败时显示原因，可「重试」或「切换音质」。Ctrl+R 手动重试当前歌曲；网络错误自动重试一次，单首最多两次尝试。歌词与歌曲分别加载，切歌后会丢弃上一首的过期结果。
 
-在 v0.3.0 中，在线播放采用渐进式流式播放机制（Progressive Streaming）：解析音源后只需预缓冲 128KB 即可由 Symphonia 解码器起播，首播/切歌发声延迟低于 200 毫秒，剩余音频在后台边播边下。如遇网络异常支持自动回退与重试。下载模式则采用完整分块传输与校验。
+在线播放采用渐进式流式播放：解析音源并预缓冲最多 256KB 后起播，其余音频在后台下载。起播速度取决于网络和音频格式。流式网络中断会重试一次，无法播放的歌曲自动跳过，整队列失败后停止并显示错误。下载与播放均校验传输完整性。
 
 ### 保存歌曲
 

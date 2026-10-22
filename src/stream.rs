@@ -1,6 +1,6 @@
 use crate::model::{Error, Result};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -60,14 +60,19 @@ pub struct ProgressiveReader {
     file: File,
     pos: u64,
     coord: Arc<StreamCoord>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl ProgressiveReader {
     pub fn new(file: File, coord: Arc<StreamCoord>) -> Self {
+        Self::with_cancel(file, coord, Arc::new(AtomicBool::new(false)))
+    }
+    pub fn with_cancel(file: File, coord: Arc<StreamCoord>, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             file,
             pos: 0,
             coord,
+            cancelled,
         }
     }
 }
@@ -78,9 +83,11 @@ impl Read for ProgressiveReader {
             return Ok(0);
         }
         loop {
-            if self.coord.cancelled.load(Ordering::Relaxed) {
+            if self.coord.cancelled.load(Ordering::Relaxed)
+                || self.cancelled.load(Ordering::Relaxed)
+            {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
+                    std::io::ErrorKind::ConnectionAborted,
                     "stream cancelled",
                 ));
             }
@@ -98,15 +105,10 @@ impl Read for ProgressiveReader {
             }
 
             if self.coord.completed.load(Ordering::Acquire) {
-                return Ok(0); // Clean EOF
-            }
-
-            let total = self.coord.total.load(Ordering::Relaxed);
-            // Non-blocking EOF for metadata tail probes (e.g. ID3v1/APE tags probed at EOF before completion)
-            if total > 64 * 1024
-                && self.pos >= total.saturating_sub(16 * 1024)
-                && self.pos >= written
-            {
+                // Completion may have published another chunk after our first snapshot.
+                if self.pos < self.coord.written.load(Ordering::Acquire) {
+                    continue;
+                }
                 return Ok(0);
             }
 
@@ -124,14 +126,14 @@ impl Seek for ProgressiveReader {
         let new_pos = match from {
             SeekFrom::Start(offset) => offset,
             SeekFrom::Current(offset) => {
-                let cur = self.pos as i64 + offset;
-                if cur < 0 {
+                let cur = self.pos.checked_add_signed(offset);
+                if cur.is_none() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "negative seek position",
                     ));
                 }
-                cur as u64
+                cur.unwrap()
             }
             SeekFrom::End(offset) => {
                 let base = if total > 0 {
@@ -139,14 +141,14 @@ impl Seek for ProgressiveReader {
                 } else {
                     self.coord.written.load(Ordering::Relaxed)
                 };
-                let end = base as i64 + offset;
-                if end < 0 {
+                let end = base.checked_add_signed(offset);
+                if end.is_none() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "seek before stream start",
                     ));
                 }
-                end as u64
+                end.unwrap()
             }
         };
 
@@ -156,7 +158,6 @@ impl Seek for ProgressiveReader {
 }
 
 pub struct StreamHandle {
-    pub reader: Option<BufReader<ProgressiveReader>>,
     pub coord: Arc<StreamCoord>,
     pub cache_path: PathBuf,
 }
@@ -168,147 +169,167 @@ pub fn start_stream(
     cache_path: PathBuf,
     cancelled: Arc<AtomicBool>,
     on_buffer: impl Fn(u64, u64) + Send + 'static,
-    on_complete: impl Fn(u64) + Send + 'static,
+    on_complete: impl Fn(Result<u64>) + Send + 'static,
 ) -> Result<StreamHandle> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use md5::{Digest, Md5};
     if let Some(parent) = cache_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-
-    let coord = Arc::new(StreamCoord::new(total_size));
-    let coord_worker = coord.clone();
-    let cancelled_worker = cancelled.clone();
-
-    // Make initial GET request
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(Error::coded("cancelled", "已取消"));
+    }
+    // Keep failed/slow streaming attempts separate from the full-download fallback.
+    let cache_path = cache_path.with_extension(format!(
+        "{}.stream",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     let response = agent
         .get(url)
+        .timeout(Duration::from_secs(120))
         .set(
             "User-Agent",
             "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; .NET CLR 1.1.4322)",
         )
         .call()
         .map_err(|e| Error::coded("network", format!("网络连接失败: {e}")))?;
-
     let status = response.status();
     if status != 200 && status != 206 {
         return Err(Error::coded("network", format!("HTTP 请求失败 ({status})")));
     }
-
-    let actual_total = response
+    let content_length = response
         .header("Content-Length")
-        .and_then(|h| h.parse::<u64>().ok())
-        .unwrap_or(total_size);
-
-    if actual_total > 0 {
-        coord.total.store(actual_total, Ordering::Relaxed);
+        .and_then(|h| h.parse::<u64>().ok());
+    let range_total = if status == 206 {
+        let (start, end, total) =
+            crate::provider::kuwo::range(response.header("Content-Range").unwrap_or_default())
+                .ok_or_else(|| Error::coded("incomplete_audio", "服务器返回错误分块"))?;
+        if start != 0 || end.checked_add(1) != Some(total) {
+            return Err(Error::coded("incomplete_audio", "服务器仅返回部分音频"));
+        }
+        Some(total)
+    } else {
+        None
+    };
+    if range_total.is_some_and(|total| content_length.is_some_and(|len| len != total)) {
+        return Err(Error::coded("incomplete_audio", "服务器返回错误分块长度"));
     }
-
+    let actual_total = range_total.or(content_length).unwrap_or(total_size);
+    if total_size > 0 && actual_total > 0 && (actual_total as f64) < total_size as f64 * 0.8 {
+        return Err(Error::coded(
+            "incomplete_audio",
+            "服务器返回试听或不完整音频",
+        ));
+    }
+    let expected_md5 = response
+        .header("X-COS-META-MD5")
+        .or_else(|| response.header("Content-MD5"))
+        .map(str::to_string);
+    let coord = Arc::new(StreamCoord::new(actual_total));
+    let coord_worker = coord.clone();
     let cache_worker_path = cache_path.clone();
-
-    // Spawn download thread
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let ready_flag = Arc::new(AtomicBool::new(false));
-    let ready_flag_worker = ready_flag.clone();
-
     thread::spawn(move || {
-        let mut file = match OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&cache_worker_path)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                coord_worker.mark_failed();
-                let _ = ready_tx.send(Err(Error::new(format!("无法创建缓存文件: {e}"))));
-                return;
-            }
-        };
-
-        let mut reader = response.into_reader();
-        let mut buffer = [0u8; 32 * 1024];
-        let mut downloaded: u64 = 0;
-        let prebuffer_target = if actual_total > 0 {
-            PREBUFFER_SIZE.min(actual_total)
-        } else {
-            PREBUFFER_SIZE
-        };
-
-        loop {
-            if cancelled_worker.load(Ordering::Relaxed)
-                || coord_worker.cancelled.load(Ordering::Relaxed)
-            {
-                coord_worker.mark_cancelled();
-                let _ = std::fs::remove_file(&cache_worker_path);
-                return;
-            }
-
-            match reader.read(&mut buffer) {
-                Ok(0) => {
-                    let _ = file.flush();
-                    coord_worker.mark_completed(downloaded);
-                    if !ready_flag_worker.load(Ordering::Relaxed) {
-                        ready_flag_worker.store(true, Ordering::Relaxed);
-                        let _ = ready_tx.send(Ok(()));
-                    }
-                    on_buffer(downloaded, downloaded);
-                    on_complete(downloaded);
+        let mut ready = false;
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&cache_worker_path)?;
+            let mut reader = response.into_reader();
+            let mut buffer = [0u8; 32 * 1024];
+            let mut head = Vec::new();
+            let mut digest = Md5::new();
+            let mut downloaded = 0u64;
+            let prebuffer_target = if actual_total > 0 {
+                PREBUFFER_SIZE.min(actual_total)
+            } else {
+                PREBUFFER_SIZE
+            };
+            loop {
+                if cancelled.load(Ordering::Relaxed)
+                    || coord_worker.cancelled.load(Ordering::Relaxed)
+                {
+                    return Err(Error::coded("cancelled", "已取消"));
+                }
+                let n = reader
+                    .read(&mut buffer)
+                    .map_err(|e| Error::coded("network", format!("数据流读取中断: {e}")))?;
+                if n == 0 {
                     break;
                 }
-                Ok(n) => {
-                    if downloaded == 0
-                        && n >= 4
-                        && !crate::provider::kuwo::valid_audio(&buffer[..n])
-                    {
-                        coord_worker.mark_failed();
-                        if !ready_flag_worker.load(Ordering::Relaxed) {
-                            let _ = ready_tx
-                                .send(Err(Error::coded("invalid_audio", "返回内容不是有效音频")));
-                        }
-                        return;
-                    }
-                    if file.write_all(&buffer[..n]).is_err() {
-                        coord_worker.mark_failed();
-                        if !ready_flag_worker.load(Ordering::Relaxed) {
-                            let _ = ready_tx.send(Err(Error::new("写入缓存失败")));
-                        }
-                        return;
-                    }
-                    downloaded += n as u64;
-                    coord_worker.notify_progress(downloaded);
-                    on_buffer(downloaded, actual_total);
-
-                    // Once prebuffer threshold is met, notify the player to start immediately!
-                    if !ready_flag_worker.load(Ordering::Relaxed) && downloaded >= prebuffer_target
-                    {
-                        ready_flag_worker.store(true, Ordering::Relaxed);
-                        let _ = file.flush();
-                        let _ = ready_tx.send(Ok(()));
+                if head.len() < 4 {
+                    head.extend_from_slice(&buffer[..n.min(4 - head.len())]);
+                    if head.len() == 4 && !crate::provider::kuwo::valid_audio(&head) {
+                        return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
                     }
                 }
-                Err(e) => {
+                downloaded += n as u64;
+                if downloaded > 1024 * 1024 * 1024 {
+                    return Err(Error::coded("invalid_audio", "音频长度异常"));
+                }
+                file.write_all(&buffer[..n])?;
+                digest.update(&buffer[..n]);
+                coord_worker.notify_progress(downloaded);
+                on_buffer(downloaded, actual_total);
+                if !ready && downloaded >= prebuffer_target {
+                    ready = true;
+                    let _ = ready_tx.send(Ok(()));
+                }
+            }
+            if cancelled.load(Ordering::Relaxed) || coord_worker.cancelled.load(Ordering::Relaxed) {
+                return Err(Error::coded("cancelled", "已取消"));
+            }
+            if head.len() < 4 || !crate::provider::kuwo::valid_audio(&head) {
+                return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
+            }
+            if (actual_total > 0 && downloaded != actual_total)
+                || (total_size > 0 && (downloaded as f64) < total_size as f64 * 0.8)
+            {
+                return Err(Error::coded("incomplete_audio", "音频传输长度不完整"));
+            }
+            if let Some(expected) = expected_md5 {
+                let digest = digest.finalize();
+                if expected.trim_matches('"').to_lowercase() != format!("{digest:x}")
+                    && expected.trim_matches('"') != STANDARD.encode(digest)
+                {
+                    return Err(Error::coded("incomplete_audio", "音频 MD5 校验失败"));
+                }
+            }
+            file.flush()?;
+            coord_worker.total.store(downloaded, Ordering::Release);
+            coord_worker.mark_completed(downloaded);
+            on_buffer(downloaded, downloaded);
+            Ok(downloaded)
+        })();
+        match result {
+            Ok(n) => {
+                if !ready {
+                    let _ = ready_tx.send(Ok(()));
+                }
+                on_complete(Ok(n));
+            }
+            Err(error) => {
+                if error.code == "cancelled" {
+                    coord_worker.mark_cancelled();
+                } else {
                     coord_worker.mark_failed();
-                    if !ready_flag_worker.load(Ordering::Relaxed) {
-                        let _ = ready_tx
-                            .send(Err(Error::coded("network", format!("数据流读取中断: {e}"))));
-                    }
-                    return;
+                }
+                let _ = std::fs::remove_file(cache_worker_path);
+                if ready {
+                    on_complete(Err(error));
+                } else {
+                    let _ = ready_tx.send(Err(error));
                 }
             }
         }
     });
-
-    // Wait until pre-buffer threshold is achieved (typically ~100-250ms)
     match ready_rx.recv_timeout(Duration::from_secs(12)) {
-        Ok(Ok(())) => {
-            let read_file = File::open(&cache_path)?;
-            let progressive = ProgressiveReader::new(read_file, coord.clone());
-            Ok(StreamHandle {
-                reader: Some(BufReader::new(progressive)),
-                coord,
-                cache_path,
-            })
-        }
-        Ok(Err(e)) => Err(e),
+        Ok(Ok(())) => Ok(StreamHandle { coord, cache_path }),
+        Ok(Err(error)) => Err(error),
         Err(_) => {
             coord.mark_cancelled();
             Err(Error::coded("network", "预缓冲超时，网络连接缓慢"))
@@ -451,5 +472,262 @@ mod tests {
             samples_read += 1;
         }
         assert_eq!(samples_read, samples);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crate::player::test_wav;
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        time::Instant,
+    };
+
+    fn serve(handler: impl FnOnce(TcpStream) + Send + 'static) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = [0; 4096];
+            assert!(socket.read(&mut buf).unwrap() > 0);
+            handler(socket);
+        });
+        (url, worker)
+    }
+    fn agent() -> ureq::Agent {
+        ureq::AgentBuilder::new().try_proxy_from_env(false).build()
+    }
+
+    #[test]
+    fn sequential_tail_waits_for_real_eof_and_cancellation_is_not_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tail.wav");
+        let wav = test_wav(10);
+        let written = wav.len() - 8192;
+        fs_write(&path, &wav[..written]);
+        let coord = Arc::new(StreamCoord::new(wav.len() as u64));
+        coord.notify_progress(written as u64);
+        let worker_coord = coord.clone();
+        let worker_path = path.clone();
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let mut file = OpenOptions::new().append(true).open(worker_path).unwrap();
+            file.write_all(&wav[written..]).unwrap();
+            worker_coord.mark_completed(wav.len() as u64);
+        });
+        let decoder = rodio::Decoder::try_from(std::io::BufReader::new(ProgressiveReader::new(
+            File::open(&path).unwrap(),
+            coord.clone(),
+        )))
+        .unwrap();
+        assert_eq!(decoder.count(), 80000);
+        worker.join().unwrap();
+        coord.mark_cancelled();
+        let mut reader = ProgressiveReader::new(File::open(path).unwrap(), coord);
+        assert_eq!(
+            reader.read(&mut [0; 4]).unwrap_err().kind(),
+            std::io::ErrorKind::ConnectionAborted
+        );
+    }
+    fn fs_write(path: &std::path::Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn inherited_short_request_deadline_does_not_cut_off_streaming() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = test_wav(30);
+        let total = body.len();
+        let (url, server) = serve(move |mut s| {
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            s.write_all(&body[..300000]).unwrap();
+            thread::sleep(Duration::from_millis(150));
+            s.write_all(&body[300000..]).unwrap();
+        });
+        let (tx, rx) = mpsc::channel();
+        let agent = ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
+            .timeout(Duration::from_millis(80))
+            .build();
+        let handle = start_stream(
+            &agent,
+            &url,
+            total as u64,
+            dir.path().join("cache"),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+            move |r| {
+                let _ = tx.send(r);
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(),
+            total as u64
+        );
+        assert!(handle.coord.completed.load(Ordering::Acquire));
+        server.join().unwrap();
+    }
+    #[test]
+    fn previews_and_partial_http_responses_are_rejected() {
+        for partial in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let body = test_wav(2);
+            let (url, server) = serve(move |mut s| {
+                let status = if partial {
+                    "206 Partial Content"
+                } else {
+                    "200 OK"
+                };
+                let range = if partial {
+                    "Content-Range: bytes 0-32043/1000000\r\n"
+                } else {
+                    ""
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\n{range}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(&body);
+            });
+            let result = start_stream(
+                &agent(),
+                &url,
+                1_000_000,
+                dir.path().join("cache"),
+                Arc::new(AtomicBool::new(false)),
+                |_, _| {},
+                |_| {},
+            );
+            assert_eq!(result.err().unwrap().code, "incomplete_audio");
+            server.join().unwrap();
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+    }
+    #[test]
+    fn prebuffer_failure_does_not_block_full_download_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("cache");
+        let (url, server) = serve(|mut s| {
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nwrong")
+                .unwrap();
+        });
+        assert!(start_stream(
+            &agent(),
+            &url,
+            0,
+            target.clone(),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+            |_| {}
+        )
+        .is_err());
+        server.join().unwrap();
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let body = test_wav(2);
+        let total = body.len();
+        let (url, server) = serve(move |mut s| {
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            s.write_all(&body).unwrap();
+        });
+        let stream = crate::provider::Stream {
+            url,
+            size: total as u64,
+            quality: "320k".into(),
+            extension: "wav".into(),
+        };
+        assert_eq!(
+            crate::provider::KuwoProvider::new(true)
+                .download(&stream, &target, false, &AtomicBool::new(false), |_, _| {})
+                .unwrap(),
+            total as u64
+        );
+        server.join().unwrap();
+        assert_eq!(std::fs::metadata(target).unwrap().len(), total as u64);
+    }
+    #[test]
+    fn errors_after_prebuffer_are_reported_and_not_marked_complete() {
+        for checksum in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let body = test_wav(30);
+            let (url, server) = serve(move |mut s| {
+                let extra = if checksum {
+                    "Content-MD5: wrong\r\n"
+                } else {
+                    ""
+                };
+                let len = body.len() + if checksum { 0 } else { 1000 };
+                write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\n{extra}Content-Length: {len}\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                s.write_all(&body[..300000]).unwrap();
+                thread::sleep(Duration::from_millis(100));
+                if checksum {
+                    s.write_all(&body[300000..]).unwrap();
+                }
+            });
+            let (tx, rx) = mpsc::channel();
+            let handle = start_stream(
+                &agent(),
+                &url,
+                0,
+                dir.path().join("cache"),
+                Arc::new(AtomicBool::new(false)),
+                |_, _| {},
+                move |r| {
+                    let _ = tx.send(r);
+                },
+            )
+            .unwrap();
+            assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_err());
+            assert!(handle.coord.failed.load(Ordering::Acquire));
+            assert!(!handle.coord.completed.load(Ordering::Acquire));
+            server.join().unwrap();
+        }
+    }
+    #[test]
+    fn stopping_a_starved_decoder_releases_its_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cancel.wav");
+        let bytes = test_wav(30);
+        fs_write(&path, &bytes[..40000]);
+        let coord = Arc::new(StreamCoord::new(bytes.len() as u64));
+        coord.notify_progress(40000);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let reader =
+            ProgressiveReader::with_cancel(File::open(path).unwrap(), coord, cancelled.clone());
+        let (tx, rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let decoder = rodio::Decoder::try_from(std::io::BufReader::new(reader)).unwrap();
+            let _ = tx.send(decoder.count());
+        });
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let start = Instant::now();
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap() < 240000);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        worker.join().unwrap();
     }
 }
