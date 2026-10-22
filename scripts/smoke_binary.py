@@ -148,8 +148,12 @@ def main():
                 "clientInfo": {"name": "bundle-smoke", "version": "1"},
             }}
             initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            mcp_command = [*prefix, str(executable), "mcp", "serve", "--read-only"]
+            if args.docker:
+                # docker exec otherwise discards the client's JSON-RPC stdin.
+                mcp_command.insert(2, "--interactive")
             mcp = subprocess.run(
-                [*prefix, str(executable), "mcp", "serve", "--read-only"],
+                mcp_command,
                 cwd=root, env=None if args.docker else environment,
                 text=True, input=json.dumps(initialize) + "\n" + json.dumps(initialized) + "\n",
                 capture_output=True, timeout=15,
