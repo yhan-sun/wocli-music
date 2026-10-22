@@ -1560,10 +1560,14 @@ impl App {
         };
         let titlewidth = area.width.saturating_sub(controls + 2);
         if titlewidth > 0 {
+            let title_rect = Rect::new(area.x, y, titlewidth, 1);
             frame.render_widget(
                 Paragraph::new(title).style(Style::default().fg(ACCENT)),
-                Rect::new(area.x, y, titlewidth, 1),
+                title_rect,
             );
+            if self.state.track.is_some() {
+                self.hit(title_rect, Action::Lyrics);
+            }
         }
         let mut x = area.right().saturating_sub(controls);
         for (label, width, action, primary) in [
@@ -2138,6 +2142,35 @@ mod interaction_tests {
         let command = rx.try_recv().unwrap();
         assert_eq!(command.value["track_id"], "old");
         assert_eq!(command.value["position"], 100.);
+    }
+    #[test]
+    fn clicking_transport_title_toggles_lyrics() {
+        let (_root, mut app, _rx) = setup();
+        app.state.track = Some(Track {
+            id: "one-last-kiss".into(),
+            title: "One Last Kiss".into(),
+            artist: "宇多田ヒカル".into(),
+            ..Default::default()
+        });
+        assert!(!app.full_lyrics);
+        draw_terminal(&mut app, 120, 30);
+        let hit = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::Lyrics) && h.rect.y >= 25)
+            .cloned()
+            .unwrap();
+        click(&mut app, hit.rect);
+        assert!(app.full_lyrics);
+        draw_terminal(&mut app, 120, 30);
+        let hit2 = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::Lyrics) && h.rect.y >= 25)
+            .cloned()
+            .unwrap();
+        click(&mut app, hit2.rect);
+        assert!(!app.full_lyrics);
     }
     #[test]
     fn text_input_accepts_space_and_q_without_quitting() {
