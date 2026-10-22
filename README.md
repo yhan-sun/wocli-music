@@ -94,7 +94,7 @@ curl -fsSL https://wocli.yhan.fun/install.sh | bash
   ```
 - **指定安装版本**：
   ```bash
-  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.5
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.6
   ```
 - **卸载**：
   ```bash
@@ -147,18 +147,18 @@ v0.3.0 及更早版本尚无 `update` 命令，首次升级请重新执行上面
 
 你也可以从 [Cloudflare 下载入口](https://wocli.yhan.fun/) 或 [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
 
-| 设备与架构 | v0.3.5 发行文件 | 解包安装方式 |
+| 设备与架构 | v0.3.6 发行文件 | 解包安装方式 |
 | --- | --- | --- |
-| Apple Silicon Mac (macOS 15+) | `wocli-music-0.3.5-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
-| Intel Mac (macOS 15+) | `wocli-music-0.3.5-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
-| Linux x86_64 (glibc 2.35+) | `wocli-music-0.3.5-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
-| Windows 10/11 x86_64；ARM64 需支持 x64 仿真 | `wocli-music-0.3.5-windows-x86_64.zip` | 解压后将 `wocli.exe` 放置于任何 PATH 目录 |
+| Apple Silicon Mac (macOS 15+) | `wocli-music-0.3.6-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Intel Mac (macOS 15+) | `wocli-music-0.3.6-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Linux x86_64 (glibc 2.35+) | `wocli-music-0.3.6-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
+| Windows 10/11 x86_64；ARM64 需支持 x64 仿真 | `wocli-music-0.3.6-windows-x86_64.zip` | 解压后将 `wocli.exe` 放置于任何 PATH 目录 |
 
 以 Apple Silicon Mac 为例：
 
 ```bash
-tar -xzf wocli-music-0.3.5-macos-arm64.tar.gz
-cd wocli-music-0.3.5-macos-arm64
+tar -xzf wocli-music-0.3.6-macos-arm64.tar.gz
+cd wocli-music-0.3.6-macos-arm64
 ./wocli
 ```
 
@@ -249,11 +249,14 @@ wocli
 ## MCP：让 AI 客户端控制播放器
 
 ```bash
+wocli mcp prompt             # 输出接入提示词，复制给 AI 帮你连接
 wocli mcp config             # 生成包含程序绝对路径的客户端 JSON 配置
 wocli mcp serve              # 本地 stdio MCP 服务，由客户端启动
 wocli mcp serve --read-only  # 仅搜索和查询
 wocli mcp tools              # 查看工具目录和参数 Schema
 ```
+
+直接运行 `wocli mcp serve` 会显示“启动成功，正在等待 AI 客户端连接”，并提示“复制下面的提示词给 AI”。提示词包含本机程序和曲库路径，让 AI 协助配置并验证连接；也可以用 `wocli mcp prompt` 单独输出提示词后退出。需要支持本地 stdio MCP 的 AI 客户端，由客户端启动自己的服务进程；当前终端可按 `Ctrl+C` 退出，普通网页聊天无法直接连接本机。
 
 支持搜索、播放控制、队列、收藏/歌单、歌词、下载任务和已有音源管理；与 CLI/TUI 共享后台和曲库，关闭 MCP 后音乐继续播放。默认提供 17 个工具，只读模式开放 8 个查询工具。接入方式、资源和协议版本见 [MCP 文档](docs/mcp.md)。
 
@@ -404,7 +407,7 @@ wocli doctor
   "runtime_dir": "/tmp/wocli-rust-501-bde92153d833",
   "service_running": false,
   "socket": "/tmp/wocli-rust-501-bde92153d833/control.sock",
-  "version": "0.3.5"
+  "version": "0.3.6"
 }
 ```
 

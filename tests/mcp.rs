@@ -3,7 +3,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
     time::{Duration, Instant},
@@ -98,7 +98,7 @@ fn wav() -> Vec<u8> {
 
 struct Client {
     child: Child,
-    input: Option<ChildStdin>,
+    input: Option<Box<dyn Write>>,
     output: Receiver<Value>,
     next: u64,
     modern: bool,
@@ -106,6 +106,9 @@ struct Client {
 }
 impl Client {
     fn new(app: &App, read_only: bool) -> Self {
+        Self::with_stdin(app, read_only, Stdio::piped())
+    }
+    fn with_stdin(app: &App, read_only: bool, stdin: Stdio) -> Self {
         let log = app
             .root
             .path()
@@ -116,12 +119,12 @@ impl Client {
             cmd.arg("--read-only");
         }
         let mut child = cmd
-            .stdin(Stdio::piped())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(fs::File::create(&log).unwrap())
             .spawn()
             .unwrap();
-        let input = child.stdin.take().unwrap();
+        let input = child.stdin.take().map(|s| Box::new(s) as Box<dyn Write>);
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -136,7 +139,7 @@ impl Client {
         });
         Self {
             child,
-            input: Some(input),
+            input,
             output: rx,
             next: 1,
             modern: false,
@@ -447,9 +450,122 @@ fn eof_before_handshake_and_invalid_cli_exit_cleanly() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
     let output = app.command().args(["mcp", "http"]).output().unwrap();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn connection_prompt_contains_local_config_and_respects_options() {
+    let app = App::new();
+    let home = app.root.path().join("自选 曲库");
+    for read_only in [false, true] {
+        let mut args = vec![
+            "mcp",
+            "prompt",
+            "--direct",
+            "--home",
+            home.to_str().unwrap(),
+        ];
+        if read_only {
+            args.push("--read-only");
+        }
+        let output = app.command().args(&args).output().unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let plain = String::from_utf8(output.stdout).unwrap();
+        let value = app.cli(&args);
+        assert_eq!(plain.trim_end(), value["prompt"].as_str().unwrap());
+        let config_text = plain
+            .split("```json\n")
+            .nth(1)
+            .unwrap()
+            .split("\n```")
+            .next()
+            .unwrap();
+        let embedded: Value = serde_json::from_str(config_text).unwrap();
+        args[1] = "config";
+        assert_eq!(embedded, app.cli(&args));
+        assert_eq!(embedded, value["config"]);
+        assert_eq!(
+            embedded["mcpServers"]["wocli-music"]["args"][3],
+            fs::canonicalize(&home).unwrap().to_str().unwrap()
+        );
+        assert!(plain.contains("get_playback_status"));
+        assert!(plain.contains("不要自动播放或下载"));
+        assert!(plain.contains("不要声称已经连接"));
+        assert_eq!(plain.contains("这是只读连接"), read_only);
+    }
+    assert_eq!(app.cli(&["doctor"])["service_running"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_shows_copyable_guide_keeps_rpc_clean_and_handles_ctrl_c() {
+    use std::os::fd::FromRawFd;
+    let app = App::new();
+    for initialize in [false, true] {
+        let (mut master, mut slave) = (-1, -1);
+        // A real PTY makes stdin.is_terminal() true, including on CI without a console.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let master = unsafe { fs::File::from_raw_fd(master) };
+        let slave = unsafe { fs::File::from_raw_fd(slave) };
+        let mut c = Client::with_stdin(&app, true, Stdio::from(slave));
+        c.input = Some(Box::new(master));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = fs::read_to_string(&c.log).unwrap();
+            if text.contains("下次可用 wocli mcp prompt") {
+                assert!(text.contains("MCP 服务启动成功"));
+                assert!(text.contains("复制下面的提示词给 AI"));
+                assert!(text.contains("当前尚未连接 AI"));
+                assert!(text.contains("这是只读连接"));
+                assert!(text.contains("\"--read-only\""));
+                break;
+            }
+            assert!(Instant::now() < deadline, "no startup guide: {text}");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(
+            c.output.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        if initialize {
+            c.start("2025-11-25");
+            assert_eq!(
+                c.rpc("tools/list", json!({}))["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                8
+            );
+        }
+        assert_eq!(
+            unsafe { libc::kill(c.child.id() as libc::pid_t, libc::SIGINT) },
+            0
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = c.child.try_wait().unwrap() {
+                assert!(status.success(), "{}", fs::read_to_string(&c.log).unwrap());
+                break;
+            }
+            assert!(Instant::now() < deadline, "Ctrl+C did not stop MCP");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 struct AudioServer {

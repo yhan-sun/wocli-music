@@ -16,6 +16,7 @@ use rmcp::{
 };
 use serde_json::{json, Value};
 use std::{
+    io::IsTerminal,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -193,7 +194,28 @@ pub fn config(paths: &Paths, read_only: bool, direct: bool) -> Result<Value> {
 pub fn tools(read_only: bool) -> Result<Value> {
     Ok(json!({"tools":catalog::tools(read_only)}))
 }
+pub fn prompt(paths: &Paths, read_only: bool, direct: bool) -> Result<String> {
+    let config = serde_json::to_string_pretty(&config(paths, read_only, direct)?)?;
+    let mode = if read_only {
+        "这是只读连接，只能搜索和查询，不提供播放、下载或修改工具。"
+    } else {
+        "连接成功后，可按我的要求搜索、播放、控制队列、收藏和下载。搜索得到多个候选时先让我确认歌曲；播放或下载提交后，继续查询状态确认结果。"
+    };
+    Ok(format!(
+        "请帮我连接本机 wocli-music 音乐播放器的 MCP 服务。\n\n\
+         请检查你所在的 AI 客户端是否支持本地 stdio MCP。如果支持且你有配置权限，请将下面的服务配置合并到现有 MCP 配置中，保留其他服务；按客户端要求重新加载并连接 wocli-music。不同客户端的配置位置和格式可能不同，请先核对。\n\n\
+         ```json\n{config}\n```\n\n\
+         请由客户端使用上述 command 和 args 启动独立的 stdio 子进程，不要尝试连接我终端里正在等待的那个进程，也不要改成 HTTP 地址。\n\n\
+         连接后先列出工具，再调用 get_playback_status，报告实际连接结果和当前播放状态，不要自动播放或下载。{mode}\n\n\
+         如果你只是普通网页聊天、无法访问本机或无权修改 MCP 配置，请明确说明，并指导我在当前客户端的哪个设置中添加上述配置；不要声称已经连接。"
+    ))
+}
 pub fn run(paths: Paths, read_only: bool, direct: bool) -> Result<()> {
+    // Human guidance must never enter the JSON-RPC stream or a piped client's logs.
+    let guide = std::io::stdin()
+        .is_terminal()
+        .then(|| prompt(&paths, read_only, direct))
+        .transpose()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         // Eight tool workers plus blocking stdin/stdout on macOS and Windows.
@@ -204,12 +226,26 @@ pub fn run(paths: Paths, read_only: bool, direct: bool) -> Result<()> {
         let server=MusicServer{backend:Backend{paths,direct,read_only},slots:Arc::new(tokio::sync::Semaphore::new(8))};
         let (reader,writer)=stdio_pipes();
         let transport=AsyncRwTransport::<RoleServer,_,_>::new(reader,writer).with_max_line_length(64*1024);
-        let running=match server.serve(transport).await {
+        if let Some(guide) = &guide {
+            eprintln!("MCP 服务启动成功（stdio），正在等待 AI 客户端连接。\n\
+                复制下面的提示词给 AI，让 AI 帮你配置并连接：\n\n\
+                ─── 提示词开始 ───\n{guide}\n─── 提示词结束 ───\n\n\
+                当前尚未连接 AI。可按 Ctrl+C 退出，由 AI 客户端自行启动服务。\n\
+                下次可用 wocli mcp prompt 单独输出提示词，无需保持本窗口运行。\n");
+        }
+        let initialized=tokio::select! {
+            result=server.serve(transport)=>result,
+            result=tokio::signal::ctrl_c()=>{result?;return Ok(());},
+        };
+        let running=match initialized {
             Ok(running)=>running,
             Err(rmcp::service::ServerInitializeError::ConnectionClosed(_)
                 | rmcp::service::ServerInitializeError::ExpectedInitializeRequest(None))=>return Ok(()),
             Err(error)=>return Err(Error::new(format!("MCP 连接初始化失败：{error}"))),
         };
+        if guide.is_some() {
+            eprintln!("AI 客户端已连接，MCP 服务正在运行。按 Ctrl+C 退出。");
+        }
         let token=running.cancellation_token();
         tokio::select!{
             result=running.waiting()=>{result.map_err(|e|Error::new(format!("MCP 服务退出异常：{e}")))?;},

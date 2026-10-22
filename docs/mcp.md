@@ -26,6 +26,12 @@ wocli mcp serve
 # 仅开放查询工具
 wocli mcp serve --read-only
 
+# 输出接入提示词后退出，复制给 AI 帮你配置并验证连接
+wocli mcp prompt
+wocli mcp prompt --read-only
+# 自动化使用：输出包含 prompt 和 config 的 JSON
+wocli mcp prompt --json
+
 # 输出客户端接入配置
 wocli mcp config
 wocli mcp config --read-only --home /absolute/path/to/data
@@ -35,7 +41,11 @@ wocli mcp tools
 wocli help mcp
 ```
 
-`serve` 由 MCP 客户端启动。直接在终端运行时，它会等待协议消息，没有交互式输入界面。stdout 只包含 MCP 报文，诊断信息使用 stderr。
+直接在终端运行 `serve` 会显示“启动成功，正在等待 AI 客户端连接”和“复制下面的提示词给 AI”，后面附上完整提示词及本机配置。这表示服务就绪，尚未完成 AI 客户端连接；等待协议消息是正常行为。可按 `Ctrl+C` 退出等待，也可用 `wocli mcp prompt` 单独获取提示词后退出。
+
+复制提示词给支持本地 stdio MCP 的 AI 客户端。提示词要求 AI 核对客户端配置格式、保留已有服务、加入本机配置、重新加载连接，然后列出工具并调用 `get_playback_status` 验证，不会要求自动播放或下载。无配置权限时，AI 应指导你完成设置；普通网页聊天无法直接访问本机服务。
+
+`serve` 实际由 MCP 客户端作为独立子进程启动，不连接终端中手动运行的那个进程。终端启动提示只写入 stderr；客户端使用管道启动时保持安静，stdout 始终只包含 MCP 报文。
 
 在使用 `mcpServers` 格式的客户端配置中加入 `wocli mcp config` 的输出。例如：
 
@@ -52,7 +62,7 @@ wocli help mcp
 
 建议使用程序绝对路径，尤其是 Windows 或图形界面客户端的 PATH 与终端不同的情况。以本机 mcp config 的实际输出为准，无需手动猜测 Windows 安装位置。此命令不修改客户端配置文件。
 
-`--home` / `WOCLI_HOME` 可选定不同曲库；`--direct` 忽略环境代理。`mcp config` 会将当前程序的绝对路径、数据目录及只读/直连选项写入输出，避免客户端连接到其他曲库。
+`--home` / `WOCLI_HOME` 可选定不同曲库；`--direct` 忽略环境代理。`mcp config` 和 `mcp prompt` 会将当前程序的绝对路径、数据目录及只读/直连选项写入输出，避免客户端连接到其他曲库。
 
 如果当前安装包还没有 `mcp` 命令，可从此工作目录构建：
 

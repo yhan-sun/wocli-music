@@ -73,12 +73,12 @@ Checked against official documentation on **2026-10-22**. This compares document
 
 ### Supported Release Packages
 
-| Platform | v0.3.5 archive | Installation note |
+| Platform | v0.3.6 archive | Installation note |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | `wocli-music-0.3.5-macos-arm64.tar.gz` | Copy `wocli` to a directory on PATH. |
-| macOS 15+, Intel | `wocli-music-0.3.5-macos-x86_64.tar.gz` | Copy `wocli` to a directory on PATH. |
-| Linux x86_64, glibc 2.35+ | `wocli-music-0.3.5-linux-x86_64.tar.gz` | Keep bundled `lib/` beside `wocli`; uses the system audio configuration. |
-| Windows 10/11 x86_64 | `wocli-music-0.3.5-windows-x86_64.zip` | Add the extracted directory to PATH. ARM64 Windows requires x64 emulation support. |
+| macOS 15+, Apple Silicon | `wocli-music-0.3.6-macos-arm64.tar.gz` | Copy `wocli` to a directory on PATH. |
+| macOS 15+, Intel | `wocli-music-0.3.6-macos-x86_64.tar.gz` | Copy `wocli` to a directory on PATH. |
+| Linux x86_64, glibc 2.35+ | `wocli-music-0.3.6-linux-x86_64.tar.gz` | Keep bundled `lib/` beside `wocli`; uses the system audio configuration. |
+| Windows 10/11 x86_64 | `wocli-music-0.3.6-windows-x86_64.zip` | Add the extracted directory to PATH. ARM64 Windows requires x64 emulation support. |
 
 Get archives from the [Cloudflare download page](https://wocli.yhan.fun/) or [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest). The installer verifies SHA256. Matching `*-sources` archives contain dependency sources and are optional for running the player.
 
@@ -90,7 +90,7 @@ macOS / Linux:
 # Use a directory writable by your account
 curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --dir /usr/local/bin
 # Choose a stable version
-curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.5
+curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.6
 # Uninstall; library data is retained
 curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --uninstall
 ```
@@ -130,11 +130,14 @@ The installation directory must be writable. Updates preserve library data, favo
 ## Local MCP Server
 
 ```bash
+wocli mcp prompt                # Print a setup prompt to copy to your AI client
 wocli mcp config                # Generate client JSON with the executable's absolute path
 wocli mcp serve                 # Local stdio server, launched by the client
 wocli mcp serve --read-only     # Expose only query tools
 wocli mcp tools                 # Inspect tool names and JSON Schemas
 ```
+
+Running `wocli mcp serve` in a terminal shows a startup confirmation and a prompt to copy to your AI. The prompt includes this machine's executable and library paths, asks the AI to configure a local stdio MCP connection, and verifies it with a status query. `wocli mcp prompt` prints the prompt and exits. The AI client launches its own service process; press `Ctrl+C` to close the manual terminal session. A regular web chat cannot directly connect to a local stdio service.
 
 Clients supporting local stdio MCP can search, control playback, manage queues and playlists, access lyrics, submit downloads, and manage existing source preferences. All 17 tools share the CLI/TUI daemon and library; read-only mode exposes 8 query tools.
 

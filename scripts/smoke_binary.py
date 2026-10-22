@@ -142,6 +142,10 @@ def main():
             assert len(readonly_tools) == 8 and all(t["annotations"]["readOnlyHint"] for t in readonly_tools)
             mcp_config = json.loads(cli("mcp", "config"))["mcpServers"]["wocli-music"]
             assert mcp_config["args"][:2] == ["mcp", "serve"]
+            guide = json.loads(cli("mcp", "prompt", "--json"))
+            assert guide["config"]["mcpServers"]["wocli-music"] == mcp_config
+            assert cli("mcp", "prompt") == guide["prompt"]
+            assert "get_playback_status" in guide["prompt"]
             # Exercise the packaged stdio transport without a client runtime or network.
             initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-11-25", "capabilities": {},
@@ -159,6 +163,7 @@ def main():
                 capture_output=True, timeout=15,
             )
             assert mcp.returncode == 0, mcp.stderr
+            assert not mcp.stderr.strip(), mcp.stderr
             replies = [json.loads(line) for line in mcp.stdout.splitlines()]
             assert any(reply.get("id") == 1 and reply.get("result", {}).get("protocolVersion") == "2025-11-25" for reply in replies), replies
             doctor = json.loads(cli("doctor", "--json"))

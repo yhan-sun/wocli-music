@@ -37,7 +37,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   retry [--quality best]             重试当前歌曲及备用音源
   source list|add|show|enable|disable|prefer|remove|test  音源管理
   help [命令] | thelp [命令]         分项帮助（keys 查看快捷键）
-  mcp [serve|config|tools] [--read-only]  本地 MCP 服务及客户端配置
+  mcp [serve|prompt|config|tools]         MCP 服务、AI 接入提示词及配置
   config [配置项 值]                 quality / volume / mode / direct / lyric_offset / lyrics_bar / tray
   update [--check] [--force]         检查或安装最新稳定版
   doctor | daemon start|stop|status [--tray]  诊断及后台服务
@@ -378,7 +378,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
     if command == "mcp" {
         if args.pos.len() > 2 {
             return Err(Error::new(
-                "用法：wocli mcp [serve|config|tools] [--read-only]",
+                "用法：wocli mcp [serve|prompt|config|tools] [--read-only]",
             ));
         }
         let value = match args.pos.get(1).map(String::as_str).unwrap_or("serve") {
@@ -387,6 +387,22 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             }
             "config" => {
                 crate::mcp::config(&paths, args.flag("--read-only"), args.flag("--direct"))?
+            }
+            "prompt" => {
+                let prompt =
+                    crate::mcp::prompt(&paths, args.flag("--read-only"), args.flag("--direct"))?;
+                if args.flag("--json") {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "prompt": prompt,
+                            "config": crate::mcp::config(&paths, args.flag("--read-only"), args.flag("--direct"))?,
+                        }))?
+                    );
+                } else {
+                    println!("{prompt}");
+                }
+                return Ok(());
             }
             "tools" => crate::mcp::tools(args.flag("--read-only"))?,
             _ => return Err(Error::new("未知 MCP 操作，运行 wocli help mcp")),
