@@ -49,14 +49,18 @@ if ($BinaryPath) {
         $bundle = Join-Path $temp $name
         New-Item -ItemType Directory -Path $bundle -Force | Out-Null
         Copy-Item $binary (Join-Path $bundle 'wocli.exe')
-        $script:fixtureZip = Join-Path $temp "$name.zip"
-        $script:fixtureSums = Join-Path $temp 'SHA256SUMS'
-        Compress-Archive -Path $bundle -DestinationPath $script:fixtureZip
-        "$((Get-FileHash $script:fixtureZip -Algorithm SHA256).Hash.ToLower())  $name.zip" | Set-Content $script:fixtureSums
+        $global:WocliInstallerFixtureZip = Join-Path $temp "$name.zip"
+        $global:WocliInstallerFixtureSums = Join-Path $temp 'SHA256SUMS'
+        Compress-Archive -Path $bundle -DestinationPath $global:WocliInstallerFixtureZip
+        "$((Get-FileHash $global:WocliInstallerFixtureZip -Algorithm SHA256).Hash.ToLower())  $name.zip" | Set-Content $global:WocliInstallerFixtureSums
         function global:curl.exe {
-            param($Flags, $Url, $OutputFlag, $OutputPath)
-            if ($Url.EndsWith('/SHA256SUMS')) { Copy-Item $script:fixtureSums $OutputPath }
-            else { Copy-Item $script:fixtureZip $OutputPath }
+            # Match native curl argv literally; PowerShell parameter binding must
+            # not reinterpret -o as a named parameter abbreviation.
+            if ($args.Count -ne 4 -or $args[0] -ne '-fL' -or $args[2] -ne '-o') { throw 'Unexpected fixture curl arguments' }
+            $url = [string]$args[1]
+            $outputPath = [string]$args[3]
+            if ($url.EndsWith('/SHA256SUMS')) { Copy-Item $global:WocliInstallerFixtureSums $outputPath }
+            else { Copy-Item $global:WocliInstallerFixtureZip $outputPath }
             $global:LASTEXITCODE = 0
         }
         $destination = Join-Path $temp 'installed player'
@@ -72,6 +76,7 @@ if ($BinaryPath) {
         Write-Host 'Offline Windows install/reinstall command discovery tests passed.'
     } finally {
         Remove-Item Function:\curl.exe -ErrorAction SilentlyContinue
+        Remove-Variable WocliInstallerFixtureZip, WocliInstallerFixtureSums -Scope Global -ErrorAction SilentlyContinue
         [Environment]::SetEnvironmentVariable('Path', $savedUserPath, 'User')
         $env:Path = $savedProcessPath
         $env:WOCLI_HOME = $savedHome

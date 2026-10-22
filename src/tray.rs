@@ -83,6 +83,7 @@ pub fn start(paths: &Paths) -> Result<()> {
     if status(paths)? {
         return Ok(());
     }
+    #[cfg(unix)]
     let exe = std::env::current_exe()?;
     #[cfg(unix)]
     {
