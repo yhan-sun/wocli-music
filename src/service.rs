@@ -40,6 +40,7 @@ pub struct Job {
     pub directory: String,
     pub lyrics: bool,
     pub overwrite: bool,
+    pub direct: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -599,12 +600,26 @@ impl Service {
                     .to_string_lossy()
                     .into()
             });
+        if directory.trim().is_empty() {
+            return Err(Error::coded("download_directory", "下载目录不能为空"));
+        }
+        let directory = crate::cli::expand_path(directory.trim());
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            std::env::current_dir()?.join(directory)
+        };
+        let directory = directory.to_string_lossy().into_owned();
         let save_lyrics = request["lyrics"].as_bool().unwrap_or(true);
+        let direct = self.settings.direct
+            || self.direct_override
+            || request["direct"].as_bool().unwrap_or(false);
         if self.jobs.iter().any(|j| {
             j.track.id == track.id
                 && j.requested_quality == quality
                 && j.directory == directory
                 && j.lyrics == save_lyrics
+                && j.direct == direct
                 && ["queued", "resolving", "downloading", "lyrics", "cancelling"]
                     .contains(&j.phase.as_str())
         }) {
@@ -631,6 +646,7 @@ impl Service {
             requested_quality: quality,
             directory,
             lyrics: save_lyrics,
+            direct,
             overwrite: request["force"].as_bool().unwrap_or(false),
             ..Default::default()
         });
@@ -666,9 +682,10 @@ impl Service {
         let cancelled = control.cancelled.clone();
         self.job_active = Some((id.clone(), serial));
         let tx = self.tx.clone();
-        let provider = Provider::new(self.settings.direct || self.direct_override);
+        let provider = Provider::new(job.direct);
         self.pool.execute(move || {
             let result = (|| {
+                prepare_download_directory(&job.directory)?;
                 let stream = provider.stream(&job.track, &job.requested_quality, &cancelled)?;
                 let basename = format!(
                     "{} - {} [{}-{}]",
@@ -1181,6 +1198,19 @@ impl Service {
         }
     }
 }
+fn prepare_download_directory(directory: &str) -> Result<()> {
+    (|| -> std::io::Result<()> {
+        fs::create_dir_all(directory)?;
+        let _probe = tempfile::NamedTempFile::new_in(directory)?;
+        Ok(())
+    })()
+    .map_err(|error| {
+        Error::coded(
+            "download_directory",
+            format!("下载目录不可写 {directory}: {error}"),
+        )
+    })
+}
 fn handle(mut stream: Stream, tx: Sender<Event>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let result = (|| -> Result<Value> {
@@ -1570,6 +1600,49 @@ mod playback_tests {
         h.service
             .event(Event::SeekReady(h.service.generation, serial, Ok(audio)));
         assert!(h.service.player.position() < 1.);
+    }
+    #[test]
+    fn download_rejects_an_unwritable_directory_before_resolving_sources() {
+        let mut h = Harness::new("list");
+        let directory = h.dir.path().join("not-a-directory");
+        fs::write(&directory, b"file").unwrap();
+        h.service.dispatch(json!({"op":"download", "track":Track { id: "kuwo:123".into(), ..Default::default() }, "directory":directory, "direct":true})).unwrap();
+        assert!(h.service.jobs[0].direct);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while h.service.jobs[0].phase != "error" {
+            assert!(Instant::now() < deadline);
+            if let Ok(event) = h.rx.recv_timeout(Duration::from_millis(20)) {
+                h.service.event(event);
+            }
+        }
+        assert!(h.service.jobs[0].error.contains("下载目录不可写"));
+        assert!(h.service.job_active.is_none());
+    }
+    #[test]
+    fn download_paths_and_direct_mode_are_attached_to_the_queued_job() {
+        let mut h = Harness::new("list");
+        h.service.job_active = Some(("busy".into(), 1));
+        let track = Track {
+            id: "kuwo:123".into(),
+            ..Default::default()
+        };
+        assert!(h
+            .service
+            .dispatch(json!({"op":"download", "track":track, "directory":""}))
+            .is_err());
+        h.service
+            .dispatch(
+                json!({"op":"download", "track":track, "directory":"downloads", "direct":true}),
+            )
+            .unwrap();
+        assert!(PathBuf::from(&h.service.jobs[0].directory).is_absolute());
+        assert!(h.service.jobs[0].direct);
+        h.service
+            .dispatch(
+                json!({"op":"download", "track":track, "directory":"downloads", "direct":true}),
+            )
+            .unwrap();
+        assert_eq!(h.service.jobs.len(), 1);
     }
     #[test]
     fn successive_paused_seeks_keep_pause_and_latest_position() {

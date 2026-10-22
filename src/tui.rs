@@ -57,6 +57,7 @@ enum Action {
     Song(Track),
     Download(Track),
     DownloadGo,
+    DownloadCurrent,
     DownloadField(u8),
     NewFolder(Option<Track>),
     Rename(String),
@@ -110,10 +111,12 @@ enum Message {
     Offline,
     Error(String),
     Search(u64, std::result::Result<(usize, Vec<Track>), String>),
+    Download(u64, std::result::Result<Box<Status>, String>),
 }
 struct Request {
     value: Value,
     start: bool,
+    download_serial: Option<u64>,
 }
 struct App {
     paths: Paths,
@@ -137,6 +140,9 @@ struct App {
     searching: bool,
     search_error: String,
     popup: Option<Popup>,
+    download_serial: u64,
+    download_pending: bool,
+    download_error: String,
     full_lyrics: bool,
     hits: Vec<Hit>,
     timeline: Rect,
@@ -178,6 +184,9 @@ impl App {
             searching: false,
             search_error: String::new(),
             popup: None,
+            download_serial: 0,
+            download_pending: false,
+            download_error: String::new(),
             full_lyrics: false,
             hits: vec![],
             timeline: Rect::default(),
@@ -222,7 +231,11 @@ impl App {
         self.toast = Some((value.into(), Instant::now()));
     }
     fn send(&self, value: Value) {
-        let _ = self.tx.send(Request { value, start: true });
+        let _ = self.tx.send(Request {
+            value,
+            start: true,
+            download_serial: None,
+        });
     }
     fn current(&self) -> Option<Track> {
         if self.full_lyrics {
@@ -343,7 +356,12 @@ impl App {
                 }
             }
             Action::Control(value) => {
-                self.popup = None;
+                if !matches!(
+                    value["op"].as_str(),
+                    Some("download_retry" | "download_cancel")
+                ) {
+                    self.popup = None;
+                }
                 self.send(value);
             }
             Action::Toggle => {
@@ -501,7 +519,22 @@ impl App {
                     items,
                 );
             }
+            Action::DownloadCurrent => {
+                if let Some(track) = self.current().or_else(|| self.state.track.clone()) {
+                    self.act(Action::Download(track))?;
+                } else {
+                    self.notice("请先在曲库或搜索结果中选择歌曲，再按 d 下载");
+                }
+            }
             Action::Download(track) => {
+                if !track.path.is_empty() {
+                    self.popup = None;
+                    self.notice(format!("该歌曲已在本地：{}", track.path));
+                    return Ok(());
+                }
+                self.download_serial += 1;
+                self.download_pending = false;
+                self.download_error.clear();
                 let directory = std::env::var("WOCLI_DOWNLOAD_DIR")
                     .ok()
                     .or_else(|| {
@@ -541,6 +574,9 @@ impl App {
                 }
             }
             Action::DownloadGo => {
+                if self.download_pending {
+                    return Ok(());
+                }
                 if let Some(Popup::Download {
                     track,
                     directory,
@@ -550,13 +586,22 @@ impl App {
                 }) = self.popup.clone()
                 {
                     if directory.trim().is_empty() {
-                        self.notice("下载目录不能为空");
+                        self.download_error = "下载目录不能为空，请填写保存位置".into();
                         return Ok(());
                     }
-                    let path = crate::cli::expand_path(&directory);
+                    let path = crate::cli::expand_path(directory.trim());
+                    let path = if path.is_absolute() {
+                        path
+                    } else {
+                        std::env::current_dir()?.join(path)
+                    };
                     self.store.save("rust.ui.download_directory", &directory)?;
-                    self.send(json!({"op":"download","track":track,"directory":path,"quality":QUALITIES[quality],"lyrics":lyrics}));
-                    self.popup = Some(Popup::Jobs(0));
+                    self.download_pending = true;
+                    self.download_error.clear();
+                    if self.tx.send(Request { value: json!({"op":"download","track":track,"directory":path,"quality":QUALITIES[quality],"lyrics":lyrics}), start: true, download_serial: Some(self.download_serial) }).is_err() {
+                        self.download_pending = false;
+                        self.download_error = "下载服务连接已关闭，请重新打开播放器".into();
+                    }
                 }
             }
             Action::Volume(delta) => self.send(
@@ -665,6 +710,7 @@ impl App {
                     _ => {}
                 },
                 Popup::Jobs(index) => match key.code {
+                    KeyCode::Char('d') => self.act(Action::DownloadCurrent)?,
                     KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => {
                         *index = (*index + 1).min(self.state.downloads.len().saturating_sub(1))
@@ -863,6 +909,38 @@ impl App {
                 self.state.track = None;
             }
             Message::Error(error) => self.notice(error),
+            Message::Download(serial, result) => {
+                let active = serial == self.download_serial;
+                if active {
+                    self.download_pending = false;
+                }
+                match result {
+                    Ok(state) => {
+                        let track_id = match &self.popup {
+                            Some(Popup::Download { track, .. }) => Some(track.id.clone()),
+                            _ => None,
+                        };
+                        self.state = *state;
+                        self.reload()?;
+                        if active && track_id.is_some() {
+                            let index = self
+                                .state
+                                .downloads
+                                .iter()
+                                .rposition(|job| Some(&job.track.id) == track_id.as_ref())
+                                .unwrap_or(0);
+                            self.popup = Some(Popup::Jobs(index));
+                        }
+                    }
+                    Err(error) if active => {
+                        self.download_error = error.clone();
+                        if !matches!(self.popup, Some(Popup::Download { .. })) {
+                            self.notice(error);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Message::Search(serial, result) if serial == self.serial => {
                 self.searching = false;
                 match result {
@@ -960,6 +1038,12 @@ impl App {
         self.timeline = Rect::default();
         frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
         if area.width < 30 || area.height < 16 {
+            frame.render_widget(
+                Paragraph::new("请将终端调整为至少 30 列 × 16 行")
+                    .wrap(Wrap { trim: true })
+                    .style(Style::default().fg(ACCENT)),
+                area,
+            );
             return;
         }
         let inner = area.inner(Margin::new(2, 1));
@@ -978,7 +1062,7 @@ impl App {
         let mut right = header.right();
         for (label, action) in [
             (" ? ", Action::Help),
-            (" 下载 ", Action::Jobs),
+            (" 下载任务 ", Action::Jobs),
             (" 歌词 ", Action::Lyrics),
             (" 搜索 / ", Action::Search),
         ] {
@@ -1026,17 +1110,27 @@ impl App {
             }
         }
         self.draw_transport(frame, rows[3]);
-        if let Some((value, at)) = &self.toast {
-            if at.elapsed() < Duration::from_secs(5) {
-                frame.render_widget(
-                    Paragraph::new(value.as_str()).style(Style::default().fg(ACCENT)),
-                    rows[2],
-                );
-            }
-        }
         if let Some(popup) = self.popup.clone() {
             self.hits.clear();
             self.draw_popup(frame, popup);
+        }
+        if let Some((value, at)) = &self.toast {
+            if at.elapsed() < Duration::from_secs(5) {
+                let area = if self.popup.is_some() {
+                    Rect::new(
+                        area.x + 1,
+                        area.bottom().saturating_sub(1),
+                        area.width.saturating_sub(2),
+                        1,
+                    )
+                } else {
+                    rows[2]
+                };
+                frame.render_widget(
+                    Paragraph::new(value.as_str()).style(Style::default().fg(ACCENT).bg(BG)),
+                    area,
+                );
+            }
         }
     }
     fn draw_nav(&mut self, frame: &mut Frame, area: Rect) {
@@ -1589,7 +1683,7 @@ impl App {
         let (title, height) = match &popup {
             Popup::Menu(m) => (m.title.as_str(), m.items.len() as u16 + 6),
             Popup::Input { title, .. } => (title.as_str(), 7),
-            Popup::Download { .. } => ("下载歌曲", 13),
+            Popup::Download { .. } => ("下载歌曲", 15),
             Popup::Jobs(_) => ("下载任务", 18),
             Popup::Help => ("快捷键", 22),
         };
@@ -1639,19 +1733,27 @@ impl App {
                 frame.render_widget(Paragraph::new(format!("{directory}{}",if focus==0{"▏"}else{""})).style(Style::default().fg(FG).bg(if focus==0{SELECTED}else{BG})),Rect::new(body.x,body.y+3,body.width,1));self.hit(Rect::new(body.x,body.y+3,body.width,1),Action::DownloadField(0));
                 self.button(frame,Rect::new(body.x,body.y+5,20.min(body.width),1),&format!("音质  {} ▾",QUALITIES[quality]),Action::DownloadField(1),focus==1);
                 self.button(frame,Rect::new(body.x,body.y+7,20.min(body.width),1),if lyrics{"[✓] 保存 LRC 歌词"}else{"[ ] 保存 LRC 歌词"},Action::DownloadField(2),focus==2);
-                self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),12,1),"开始下载",Action::DownloadGo,true);
+                if !self.download_error.is_empty() {
+                    let error = Rect::new(body.x, body.y + 9, body.width, body.bottom().saturating_sub(body.y + 10).min(2));
+                    frame.render_widget(Paragraph::new(self.download_error.clone()).wrap(Wrap { trim: true }).style(Style::default().fg(BAD)), error);
+                }
+                self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),12.min(body.width),1),if self.download_pending { "提交中…" } else { "开始下载" },Action::DownloadGo,true);
             }
             Popup::Jobs(index)=>{
                 let jobs=self.state.downloads.clone();
+                if jobs.is_empty() {
+                    frame.render_widget(Paragraph::new("暂无下载任务\n\n选中歌曲后，点击“新建 d”或按 d 下载。\n本地歌曲无需重复下载。").wrap(Wrap { trim: true }).style(Style::default().fg(DIM)), Rect::new(body.x, body.y, body.width, body.height.saturating_sub(4)));
+                }
+                self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),8.min(body.width),1),"新建 d",Action::DownloadCurrent,true);
                 let list=Rect::new(body.x,body.y,body.width,body.height.saturating_sub(4));
                 let items:Vec<ListItem>=jobs.iter().map(|j|ListItem::new(format!("{}  {}{}",job_phase(&j.phase),j.track.title,if j.total>0{format!("  {}%",j.received*100/j.total)}else{String::new()}))).collect();
-                let mut state=ListState::default().with_selected(Some(index));frame.render_stateful_widget(List::new(items).highlight_style(Style::default().fg(ACCENT).bg(SELECTED)),list,&mut state);
+                let mut state=ListState::default().with_selected(Some(index));if !jobs.is_empty() { frame.render_stateful_widget(List::new(items).highlight_style(Style::default().fg(ACCENT).bg(SELECTED)),list,&mut state); }
                 for i in state.offset()..jobs.len().min(state.offset()+list.height as usize){self.hit(Rect::new(list.x,list.y+(i-state.offset()) as u16,list.width,1),Action::JobSelect(i));}
                 if let Some(job)=jobs.get(index){
                     let detail=if !job.error.is_empty(){&job.error}else if !job.warning.is_empty(){&job.warning}else{&job.path};
                     frame.render_widget(Paragraph::new(detail.clone()).style(Style::default().fg(if job.phase=="error"{BAD}else{DIM})),Rect::new(body.x,body.bottom().saturating_sub(3),body.width,1));
-                    if ["error","cancelled"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),10,1),"重试 r",Action::Control(json!({"op":"download_retry","id":job.id})),true);}
-                    else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),10,1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
+                    if ["error","cancelled"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"重试 r",Action::Control(json!({"op":"download_retry","id":job.id})),true);}
+                    else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
             Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ]  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ −  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
@@ -1691,13 +1793,22 @@ impl Drop for TerminalGuard {
     }
 }
 fn request_message(paths: &Paths, request: Request) -> Message {
-    match ipc::request(paths, request.value, request.start) {
+    let message = match ipc::request(paths, request.value, request.start) {
         Ok(Some(value)) => match serde_json::from_value(value) {
             Ok(state) => Message::State(Box::new(state)),
             Err(error) => Message::Error(error.to_string()),
         },
         Ok(None) => Message::Offline,
         Err(error) => Message::Error(error.to_string()),
+    };
+    if let Some(serial) = request.download_serial {
+        match message {
+            Message::State(state) => Message::Download(serial, Ok(state)),
+            Message::Error(error) => Message::Download(serial, Err(error)),
+            _ => Message::Download(serial, Err("下载服务未运行".into())),
+        }
+    } else {
+        message
     }
 }
 pub fn run(paths: Paths) -> Result<()> {
@@ -1740,6 +1851,7 @@ pub fn run(paths: Paths) -> Result<()> {
             let _ = app.tx.send(Request {
                 value: json!({"op":"status"}),
                 start: false,
+                download_serial: None,
             });
             polled = Instant::now();
         }
@@ -2042,6 +2154,196 @@ mod interaction_tests {
             .unwrap()
             .iter()
             .any(|(name, _)| name == "旅途"));
+    }
+    fn draw_terminal(
+        app: &mut App,
+        w: u16,
+        h: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        terminal
+    }
+    fn click(app: &mut App, rect: Rect) {
+        app.mouse(
+            MouseEventKind::Down(event::MouseButton::Left),
+            rect.x + rect.width / 2,
+            rect.y,
+        )
+        .unwrap();
+    }
+    fn screen(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .flat_map(|c| c.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+    #[test]
+    fn download_buttons_submit_once_show_errors_and_open_the_acknowledged_job() {
+        for (w, h) in [(120, 40), (80, 26), (30, 16)] {
+            let (root, mut app, rx) = setup();
+            let track = Track {
+                id: "kuwo:123".into(),
+                title: "Test song".into(),
+                ..Track::default()
+            };
+            app.store.favorite(&track).unwrap();
+            app.reload().unwrap();
+            app.act(Action::Jobs).unwrap();
+            let terminal = draw_terminal(&mut app, w, h);
+            assert!(screen(&terminal).contains("暂无下载任务"));
+            let create = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::DownloadCurrent))
+                .unwrap()
+                .rect;
+            click(&mut app, create);
+            assert!(matches!(app.popup, Some(Popup::Download { .. })));
+            if let Some(Popup::Download { directory, .. }) = &mut app.popup {
+                *directory = root
+                    .path()
+                    .join("saved music")
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            draw_terminal(&mut app, w, h);
+            let quality = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::DownloadField(1)))
+                .unwrap()
+                .rect;
+            let original_quality = match &app.popup {
+                Some(Popup::Download { quality, .. }) => *quality,
+                _ => unreachable!(),
+            };
+            let selected_quality = (original_quality + 1) % QUALITIES.len();
+            click(&mut app, quality);
+            assert!(
+                matches!(app.popup, Some(Popup::Download { quality, .. }) if quality == selected_quality)
+            );
+            let lyrics = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::DownloadField(2)))
+                .unwrap()
+                .rect;
+            click(&mut app, lyrics);
+            let submit = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::DownloadGo))
+                .unwrap()
+                .rect;
+            assert!(submit.bottom() <= h && submit.right() <= w);
+            click(&mut app, submit);
+            click(&mut app, submit);
+            let request = rx.try_recv().unwrap();
+            assert!(rx.try_recv().is_err());
+            assert_eq!(request.value["op"], "download");
+            assert_eq!(request.value["track"]["id"], track.id);
+            assert_eq!(request.value["quality"], QUALITIES[selected_quality]);
+            assert_eq!(request.value["lyrics"], false);
+            assert!(
+                std::path::Path::new(request.value["directory"].as_str().unwrap()).is_absolute()
+            );
+            assert!(app.download_pending);
+            assert!(matches!(app.popup, Some(Popup::Download { .. })));
+            let serial = request.download_serial.unwrap();
+            app.message(Message::Download(serial, Err("下载目录不可写".into())))
+                .unwrap();
+            assert!(!app.download_pending);
+            assert!(matches!(app.popup, Some(Popup::Download { .. })));
+            let terminal = draw_terminal(&mut app, w, h);
+            assert!(screen(&terminal).contains("下载目录不可写"));
+            click(&mut app, submit);
+            let retry = rx.try_recv().unwrap();
+            let state = Status {
+                downloads: vec![crate::service::Job {
+                    id: "d1".into(),
+                    track,
+                    phase: "queued".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            app.message(Message::Download(
+                retry.download_serial.unwrap(),
+                Ok(Box::new(state)),
+            ))
+            .unwrap();
+            assert!(matches!(app.popup, Some(Popup::Jobs(0))));
+        }
+    }
+    #[test]
+    fn download_keyboard_validation_and_job_controls_remain_visible() {
+        let (_root, mut app, rx) = setup();
+        app.act(Action::Download(Track {
+            id: "kuwo:1".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        if let Some(Popup::Download { directory, .. }) = &mut app.popup {
+            directory.clear();
+        }
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+        assert!(!app.download_error.is_empty());
+        let terminal = draw_terminal(&mut app, 80, 26);
+        assert!(screen(&terminal).contains("下载目录不能为空"));
+        app.state.downloads = vec![crate::service::Job {
+            id: "d1".into(),
+            phase: "error".into(),
+            ..Default::default()
+        }];
+        app.act(Action::Jobs).unwrap();
+        draw_terminal(&mut app, 80, 26);
+        let retry = app
+            .hits
+            .iter()
+            .find(|hit| matches!(&hit.action, Action::Control(v) if v["op"] == "download_retry"))
+            .unwrap()
+            .rect;
+        click(&mut app, retry);
+        assert_eq!(rx.try_recv().unwrap().value["op"], "download_retry");
+        assert!(matches!(app.popup, Some(Popup::Jobs(_))));
+        app.notice("请先选择歌曲");
+        let terminal = draw_terminal(&mut app, 80, 26);
+        assert!(screen(&terminal).contains("请先选择歌曲"));
+        app.act(Action::Download(Track {
+            path: "C:/music/song.mp3".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(app.popup.is_none());
+        assert!(app.toast.as_ref().unwrap().0.contains("已在本地"));
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn late_download_acknowledgement_does_not_reopen_a_closed_dialog() {
+        let (_root, mut app, rx) = setup();
+        app.act(Action::Download(Track {
+            id: "kuwo:1".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        app.act(Action::DownloadGo).unwrap();
+        let request = rx.try_recv().unwrap();
+        app.act(Action::Close).unwrap();
+        app.message(Message::Download(
+            request.download_serial.unwrap(),
+            Ok(Box::new(Status::default())),
+        ))
+        .unwrap();
+        assert!(app.popup.is_none());
+        assert!(!app.download_pending);
     }
     #[test]
     fn vim_navigation_and_media_shortcuts() {

@@ -234,6 +234,8 @@ wocli lyrics --id 61631119 --refresh --output song.lrc
 wocli download --id 61631119 --quality 320k --lyrics --output ~/Music/wocli
 ```
 
+在终端界面选中歌曲后按 `d`，或打开右上角“下载任务”并点击“新建 d”。点击“开始下载”或按 Enter 提交，失败原因会显示在下载弹窗中；任务列表支持鼠标重试/取消及 `r` / `c` 快捷键。本地文件会提示已有保存位置。
+
 `--json` 用于脚本输出；非交互搜索播放请提供 `--pick` 或 `--id`，避免误选歌曲。`--no-wait` 让 `play` 在后台开始加载后立即返回。`download --force` 允许在下载成功并校验后覆盖目标。完整命令见 `wocli --help`。
 
 ```bash

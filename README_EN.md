@@ -67,6 +67,8 @@ For a custom installation, use its actual directory instead.
 
 ---
 
+To download in the TUI, select a song and press `d`, or open the download tasks panel and choose the new-download button. Submission errors stay visible in the form. Retry/cancel buttons keep the task list open; keyboard shortcuts are `r` and `c`. Local files show their existing location instead of creating a redundant download.
+
 ## Updating
 
 Starting with v0.3.1:

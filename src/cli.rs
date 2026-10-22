@@ -677,7 +677,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             };
             let value = request(
                 &paths,
-                json!({"op":"download","track":track,"directory":directory,"quality":args.value("--quality").unwrap_or(&settings.quality),"lyrics":args.flag("--lyrics"),"force":args.flag("--force")}),
+                json!({"op":"download","track":track,"directory":directory,"quality":args.value("--quality").unwrap_or(&settings.quality),"lyrics":args.flag("--lyrics"),"force":args.flag("--force"),"direct":args.flag("--direct") || settings.direct}),
             )?;
             let state: Status = serde_json::from_value(value)?;
             let id = state
