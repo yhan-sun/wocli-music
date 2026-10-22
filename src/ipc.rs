@@ -6,13 +6,15 @@ use serde_json::{json, Value};
 use std::{
     fs::OpenOptions,
     io::{BufRead, BufReader, Read, Write},
-    process::{Command, Stdio},
     thread,
     time::Duration,
 };
 
 #[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::{
+    os::unix::net::UnixStream,
+    process::{Command, Stdio},
+};
 
 #[cfg(windows)]
 use std::net::TcpStream;
@@ -211,52 +213,141 @@ pub fn start(paths: &Paths) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let exe = std::env::current_exe()?;
-        let cmd_line = format!(
-            "\"{}\" __daemon --home \"{}\"",
-            exe.to_string_lossy(),
-            paths.home.to_string_lossy()
-        );
-        let ps_cmd = format!(
-            "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{}'}}",
-            cmd_line.replace('\'', "''")
-        );
-        let spawned = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps_cmd,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !spawned {
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/c", "start", "/b", ""])
-                .arg(&exe)
-                .arg("__daemon")
-                .arg("--home")
-                .arg(&paths.home)
-                .env("WOCLI_HOME", &paths.home)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let _ = cmd.spawn();
-        }
+        use std::os::windows::io::AsRawHandle;
+        let process = spawn_detached(paths, &["__daemon"])?;
         for _ in 0..600 {
             if connect(paths).is_ok() {
                 return Ok(());
+            }
+            let mut code = 0u32;
+            let exited = unsafe {
+                windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                    process.as_raw_handle() as isize,
+                    &mut code,
+                ) != 0
+                    && code != 259
+            };
+            if exited {
+                return Err(Error::new(format!("后台进程启动失败（退出码 {code}）")));
             }
             thread::sleep(Duration::from_millis(50));
         }
     }
     Err(Error::new("后台服务启动超时"))
+}
+
+/// Native detached startup preserves WOCLI_* settings and never inherits the
+/// CLI's pipe handles. A shell/WMI launcher can leak handles or lose this environment.
+#[cfg(windows)]
+pub fn spawn_detached(
+    paths: &Paths,
+    arguments: &[&str],
+) -> Result<std::os::windows::io::OwnedHandle> {
+    use std::{
+        os::windows::{ffi::OsStrExt, io::FromRawHandle},
+        ptr,
+    };
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+            PROCESS_INFORMATION, STARTUPINFOW,
+        },
+    };
+    let executable = std::env::current_exe()?;
+    let mut application: Vec<u16> = executable.as_os_str().encode_wide().collect();
+    application.push(0);
+    let mut command = quote_windows_argument(executable.as_os_str());
+    for argument in arguments {
+        command.push(b' ' as u16);
+        command.extend(quote_windows_argument(std::ffi::OsStr::new(argument)));
+    }
+    command.push(b' ' as u16);
+    command.extend(quote_windows_argument(std::ffi::OsStr::new("--home")));
+    command.push(b' ' as u16);
+    command.extend(quote_windows_argument(paths.home.as_os_str()));
+    command.push(0);
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // Break away from a parent job when allowed; restricted hosts such as CI
+    // still get a detached child in the same job, with no inherited handles.
+    for flags in [
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+    ] {
+        let mut command_line = command.clone();
+        let created = unsafe {
+            CreateProcessW(
+                application.as_ptr(),
+                command_line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                flags,
+                ptr::null(),
+                ptr::null(),
+                &startup,
+                &mut process,
+            )
+        };
+        if created != 0 {
+            unsafe {
+                CloseHandle(process.hThread);
+            }
+            return Ok(unsafe {
+                std::os::windows::io::OwnedHandle::from_raw_handle(
+                    process.hProcess as *mut std::ffi::c_void,
+                )
+            });
+        }
+    }
+    Err(Error::new(format!(
+        "无法启动后台进程: {}",
+        std::io::Error::last_os_error()
+    )))
+}
+#[cfg(windows)]
+fn quote_windows_argument(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut result = vec![b'"' as u16];
+    let mut slashes = 0;
+    for character in value.encode_wide() {
+        if character == b'\\' as u16 {
+            slashes += 1;
+            continue;
+        }
+        let escaped = if character == b'"' as u16 {
+            slashes * 2 + 1
+        } else {
+            slashes
+        };
+        result.extend(std::iter::repeat_n(b'\\' as u16, escaped));
+        slashes = 0;
+        result.push(character);
+    }
+    result.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
+    result.push(b'"' as u16);
+    result
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    #[test]
+    fn command_arguments_preserve_spaces_quotes_unicode_and_trailing_slashes() {
+        for (argument, expected) in [
+            ("C:\\Music Folder\\", "\"C:\\Music Folder\\\\\""),
+            ("a\"b", "\"a\\\"b\""),
+            ("音乐", "\"音乐\""),
+        ] {
+            assert_eq!(
+                String::from_utf16(&quote_windows_argument(std::ffi::OsStr::new(argument)))
+                    .unwrap(),
+                expected
+            );
+        }
+    }
 }
 
 pub fn control(paths: &Paths, op: &str) -> Result<Value> {

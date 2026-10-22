@@ -74,6 +74,7 @@ jobs:
         run: rustup toolchain install 1.93.1 --profile minimal && rustup default 1.93.1
       - name: Test Windows playback and running-executable replacement
         if: runner.os == 'Windows'
+        timeout-minutes: 6
         run: cargo test --locked --all-targets
       - run: cargo build --release --locked
       - name: Verify Windows installer and immediate command availability

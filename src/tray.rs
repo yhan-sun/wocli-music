@@ -121,44 +121,7 @@ pub fn start(paths: &Paths) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let cmd_line = format!(
-            "\"{}\" tray run --home \"{}\"",
-            exe.to_string_lossy(),
-            paths.home.to_string_lossy()
-        );
-        let ps_cmd = format!(
-            "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{}'}}",
-            cmd_line.replace('\'', "''")
-        );
-        let spawned = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps_cmd,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !spawned {
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/c", "start", "/b", ""])
-                .arg(&exe)
-                .arg("tray")
-                .arg("run")
-                .arg("--home")
-                .arg(&paths.home)
-                .env("WOCLI_HOME", &paths.home)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            let _ = cmd.spawn();
-        }
+        let _process = crate::ipc::spawn_detached(paths, &["tray", "run"])?;
     }
     for _ in 0..60 {
         if status(paths)? {
