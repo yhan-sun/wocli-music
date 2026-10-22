@@ -1,4 +1,4 @@
-# wocli-music official Windows installer
+﻿# wocli-music official Windows installer
 # https://github.com/yhan-sun/wocli-music
 
 [CmdletBinding()]
