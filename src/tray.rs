@@ -66,6 +66,20 @@ pub fn stop(paths: &Paths) -> Result<()> {
                 }
                 #[cfg(windows)]
                 {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            FindWindowW, PostMessageW, WM_CLOSE,
+                        };
+                        let class_name: Vec<u16> = "wocli_tray_class"
+                            .encode_utf16()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
+                        if hwnd != 0 {
+                            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                        }
+                    }
                     let _ = Command::new("taskkill")
                         .args(["/F", "/PID", &pid.to_string()])
                         .output();
@@ -690,13 +704,14 @@ mod macos {
 mod windows {
     use super::*;
     use std::cell::RefCell;
-    use std::ptr::{null, null_mut};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::ptr::null;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-        InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_NOPREFIX,
-        DT_SINGLELINE, DT_VCENTER, FW_BOLD, PAINTSTRUCT, TRANSPARENT,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect,
+        SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX,
+        DT_SINGLELINE, DT_VCENTER, FW_BOLD, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -704,15 +719,15 @@ mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, PeekMessageW,
-        PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenuEx,
-        TranslateMessage, CS_HREDRAW, CS_VREDRAW, HMENU, IDI_APPLICATION, LWA_COLORKEY,
-        MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN,
-        TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_PAINT,
-        WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW,
+        PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow,
+        SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW,
+        TrackPopupMenuEx, TranslateMessage, CS_HREDRAW, CS_VREDRAW, IDI_APPLICATION, LWA_COLORKEY,
+        MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA,
+        SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+        TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_LBUTTONUP,
+        WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -751,6 +766,47 @@ mod windows {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    fn taskbar_created_msg() -> u32 {
+        static MSG_ID: AtomicU32 = AtomicU32::new(0);
+        let id = MSG_ID.load(Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+        let registered = unsafe { RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr()) };
+        MSG_ID.store(registered, Ordering::Relaxed);
+        registered
+    }
+
+    unsafe fn reposition_lyrics_bar(hwnd: HWND) {
+        let mut work_area: RECT = std::mem::zeroed();
+        let has_work_area =
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work_area as *mut _ as *mut _, 0) != 0;
+        let (screen_w, work_bottom) = if has_work_area {
+            (
+                (work_area.right - work_area.left).max(800),
+                work_area.bottom,
+            )
+        } else {
+            let sw = GetSystemMetrics(SM_CXSCREEN).max(800);
+            let sh = GetSystemMetrics(SM_CYSCREEN);
+            (sw, sh - 48)
+        };
+        let bar_w = 920.min(screen_w - 40);
+        let bar_h = 46;
+        let bar_x = (screen_w - bar_w) / 2;
+        let bar_y = (work_bottom - bar_h - 8).max(0);
+
+        SetWindowPos(
+            hwnd,
+            -1isize as HWND,
+            bar_x,
+            bar_y,
+            bar_w,
+            bar_h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
     unsafe extern "system" fn tray_wnd_proc(
         hwnd: HWND,
         msg: u32,
@@ -786,6 +842,16 @@ mod windows {
                 SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
                 0
             }
+            WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow().as_ref() {
+                        if state.lyrics_hwnd != 0 {
+                            reposition_lyrics_bar(state.lyrics_hwnd);
+                        }
+                    }
+                });
+                0
+            }
             WM_DESTROY => {
                 STATE.with(|st| {
                     if let Some(mut state) = st.borrow_mut().take() {
@@ -798,7 +864,18 @@ mod windows {
                 PostQuitMessage(0);
                 0
             }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            _ => {
+                if msg == taskbar_created_msg() {
+                    STATE.with(|st| {
+                        if let Some(state) = st.borrow_mut().as_mut() {
+                            Shell_NotifyIconW(NIM_ADD, &mut state.nid);
+                        }
+                    });
+                    0
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
         }
     }
 
@@ -809,76 +886,113 @@ mod windows {
         lparam: LPARAM,
     ) -> LRESULT {
         match msg {
+            WM_ERASEBKGND => 1,
             WM_PAINT => {
                 let mut ps: PAINTSTRUCT = std::mem::zeroed();
                 let hdc = BeginPaint(hwnd, &mut ps);
 
                 let mut rect: RECT = std::mem::zeroed();
-                windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
+                GetClientRect(hwnd, &mut rect);
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
 
-                // 填充透明色 (0x000A0A0A)
-                let brush = CreateSolidBrush(0x000A0A0A);
-                FillRect(hdc, &rect, brush);
-                DeleteObject(brush);
+                if w > 0 && h > 0 {
+                    let mem_dc = CreateCompatibleDC(hdc);
+                    let mem_bmp = CreateCompatibleBitmap(hdc, w, h);
+                    let old_bmp = SelectObject(mem_dc, mem_bmp);
 
-                SetBkMode(hdc, TRANSPARENT as i32);
+                    // 填充透明基色 (0x000A0A0A)
+                    let brush = CreateSolidBrush(0x000A0A0A);
+                    FillRect(mem_dc, &rect, brush);
+                    DeleteObject(brush);
 
-                let font_name = to_wide("Microsoft YaHei");
-                let font = CreateFontW(
-                    26,
-                    0,
-                    0,
-                    0,
-                    FW_BOLD as i32,
-                    0,
-                    0,
-                    0,
-                    1, // DEFAULT_CHARSET
-                    0,
-                    0,
-                    5, // CLEARTYPE_QUALITY
-                    0,
-                    font_name.as_ptr(),
-                );
-                let old_font = SelectObject(hdc, font);
+                    SetBkMode(mem_dc, TRANSPARENT as i32);
 
-                let text = STATE.with(|st| {
-                    st.borrow()
-                        .as_ref()
-                        .map(|s| s.current_text.clone())
-                        .unwrap_or_default()
-                });
-                let wide_text = to_wide(&text);
-
-                // 绘制黑色阴影
-                SetTextColor(hdc, 0x00000000);
-                for (dx, dy) in [(1, 1), (-1, -1), (1, -1), (-1, 1), (2, 2)] {
-                    let mut shadow_rect = rect;
-                    shadow_rect.left += dx;
-                    shadow_rect.right += dx;
-                    shadow_rect.top += dy;
-                    shadow_rect.bottom += dy;
-                    DrawTextW(
-                        hdc,
-                        wide_text.as_ptr(),
-                        wide_text.len() as i32 - 1,
-                        &mut shadow_rect,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                    let font_name = to_wide("Microsoft YaHei");
+                    let font = CreateFontW(
+                        28,
+                        0,
+                        0,
+                        0,
+                        FW_BOLD as i32,
+                        0,
+                        0,
+                        0,
+                        1, // DEFAULT_CHARSET
+                        0,
+                        0,
+                        5, // CLEARTYPE_QUALITY
+                        0,
+                        font_name.as_ptr(),
                     );
+                    let old_font = SelectObject(mem_dc, font);
+
+                    let (text, is_paused) = STATE.with(|st| {
+                        let borrowed = st.borrow();
+                        let s = borrowed.as_ref();
+                        let txt = s.map(|x| x.current_text.clone()).unwrap_or_default();
+                        let paused = s.map(|x| x.phase.as_str() == "paused").unwrap_or(false);
+                        (txt, paused)
+                    });
+                    let wide_text = to_wide(&text);
+
+                    if wide_text.len() > 1 {
+                        let text_len = wide_text.len() as i32 - 1;
+
+                        // 绘制深黑 8 邻域阴影，确保在任何桌面壁纸下清晰易读
+                        SetTextColor(mem_dc, 0x00000000);
+                        for (dx, dy) in [
+                            (-1, -1),
+                            (0, -1),
+                            (1, -1),
+                            (-1, 0),
+                            (1, 0),
+                            (-1, 1),
+                            (0, 1),
+                            (1, 1),
+                            (0, 2),
+                            (1, 2),
+                            (-1, 2),
+                        ] {
+                            let mut shadow_rect = rect;
+                            shadow_rect.left += dx;
+                            shadow_rect.right += dx;
+                            shadow_rect.top += dy;
+                            shadow_rect.bottom += dy;
+                            DrawTextW(
+                                mem_dc,
+                                wide_text.as_ptr(),
+                                text_len,
+                                &mut shadow_rect,
+                                DT_CENTER
+                                    | DT_VCENTER
+                                    | DT_SINGLELINE
+                                    | DT_NOPREFIX
+                                    | DT_END_ELLIPSIS,
+                            );
+                        }
+
+                        // 绘制正文字体：播放时金黄色 (0x0000D7FF)，暂停时银白色 (0x00E0E0E0)
+                        let text_color = if is_paused { 0x00E0E0E0 } else { 0x0000D7FF };
+                        SetTextColor(mem_dc, text_color);
+                        DrawTextW(
+                            mem_dc,
+                            wide_text.as_ptr(),
+                            text_len,
+                            &mut rect,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+                        );
+                    }
+
+                    // 双缓冲原子复制到前台屏幕，杜绝闪烁
+                    BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+
+                    SelectObject(mem_dc, old_font);
+                    DeleteObject(font);
+                    SelectObject(mem_dc, old_bmp);
+                    DeleteObject(mem_bmp);
+                    DeleteDC(mem_dc);
                 }
-
-                // 绘制高亮金色正文字体 (RGB: 255, 215, 0 -> BGR: 0x0000D7FF)
-                SetTextColor(hdc, 0x0000D7FF);
-                DrawTextW(
-                    hdc,
-                    wide_text.as_ptr(),
-                    wide_text.len() as i32 - 1,
-                    &mut rect,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                );
-
-                SelectObject(hdc, old_font);
-                DeleteObject(font);
 
                 EndPaint(hwnd, &ps);
                 0
@@ -907,7 +1021,11 @@ mod windows {
                     format!("{} · {}", state.current_title, state.current_artist)
                 })
             } else if state.phase == "paused" {
-                format!("已暂停: {} · {}", state.current_title, state.current_artist)
+                if let Some(lyr) = active_lyr {
+                    format!("已暂停: {}", lyr)
+                } else {
+                    format!("已暂停: {} · {}", state.current_title, state.current_artist)
+                }
             } else {
                 "wocli-music".to_string()
             };
@@ -915,11 +1033,11 @@ mod windows {
             if display_text != state.current_text {
                 state.current_text = display_text;
                 if state.lyrics_hwnd != 0 {
-                    InvalidateRect(state.lyrics_hwnd, null(), 1);
+                    InvalidateRect(state.lyrics_hwnd, null(), 0);
                 }
             }
 
-            // 更新托盘 Tooltip
+            // 更新托盘 Tooltip（严格保证尾部 \0 结尾）
             let tip = format!(
                 "wocli: {} · {}\n{}  {} / {}\n{}",
                 state.current_title,
@@ -935,11 +1053,11 @@ mod windows {
                 state.current_text
             );
             let wide_tip = to_wide(&tip);
-            let max_len = state.nid.szTip.len().min(wide_tip.len());
-            for i in 0..state.nid.szTip.len() {
-                state.nid.szTip[i] = 0;
-            }
-            state.nid.szTip[..max_len].copy_from_slice(&wide_tip[..max_len]);
+            let buf_len = state.nid.szTip.len();
+            let copy_len = (buf_len - 1).min(wide_tip.len());
+            state.nid.szTip.fill(0);
+            state.nid.szTip[..copy_len].copy_from_slice(&wide_tip[..copy_len]);
+            state.nid.szTip[buf_len - 1] = 0;
             Shell_NotifyIconW(NIM_MODIFY, &mut state.nid);
 
             // 控制任务栏歌词条显隐
@@ -1077,8 +1195,18 @@ mod windows {
                     CMD_TUI => {
                         let exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
-                        let cmd_str = format!("cmd /c start wt \"{}\"", exe.to_string_lossy());
-                        let _ = Command::new("cmd").args(["/c", &cmd_str]).spawn();
+                        let exe_str = exe.to_string_lossy();
+                        // 优先尝试使用 Windows Terminal 打开
+                        let ok = Command::new("wt")
+                            .args(["-d", ".", &*exe_str])
+                            .spawn()
+                            .is_ok();
+                        // 未安装或启动失败时，无缝回退至标准 cmd 窗口
+                        if !ok {
+                            let _ = Command::new("cmd")
+                                .args(["/c", "start", "", &*exe_str])
+                                .spawn();
+                        }
                     }
                     CMD_QUIT => {
                         let _ = super::stop(&state.paths);
@@ -1140,12 +1268,24 @@ mod windows {
             lwc.lpszClassName = lyrics_class_name.as_ptr();
             RegisterClassW(&lwc);
 
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-            let bar_w = 820;
-            let bar_h = 42;
+            let mut work_area: RECT = std::mem::zeroed();
+            let has_work_area =
+                SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work_area as *mut _ as *mut _, 0)
+                    != 0;
+            let (screen_w, work_bottom) = if has_work_area {
+                (
+                    (work_area.right - work_area.left).max(800),
+                    work_area.bottom,
+                )
+            } else {
+                let sw = GetSystemMetrics(SM_CXSCREEN).max(800);
+                let sh = GetSystemMetrics(SM_CYSCREEN);
+                (sw, sh - 48)
+            };
+            let bar_w = 920.min(screen_w - 40);
+            let bar_h = 46;
             let bar_x = (screen_w - bar_w) / 2;
-            let bar_y = screen_h - bar_h - 48; // 位于任务栏上方居中
+            let bar_y = (work_bottom - bar_h - 8).max(0);
 
             let lyrics_hwnd = CreateWindowExW(
                 WS_EX_TOPMOST
@@ -1184,7 +1324,8 @@ mod windows {
                 });
             });
 
-            SetTimer(hwnd, TIMER_ID, 100, None);
+            // 200ms 刷新周期，平滑更新歌词并大幅降低 IPC 轮询负载
+            SetTimer(hwnd, TIMER_ID, 200, None);
 
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) > 0 {
