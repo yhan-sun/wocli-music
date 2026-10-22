@@ -299,7 +299,6 @@ mod macos {
 
             let target_obj: id = msg_send![target_class(), alloc];
             let target_obj: id = msg_send![target_obj, init];
-            let _: () = msg_send![target_obj, retain];
 
             // 1. 顶部菜单栏 StatusItem
             let status_bar = NSStatusBar::systemStatusBar(nil);
