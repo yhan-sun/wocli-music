@@ -4,9 +4,9 @@
 
   # wocli-music
 
-  **Seamless music for your terminal, shell scripts, and AI workflows**
+  **Rediscover pure listening. Seamless music for your terminal and workflow.**
   <br />
-  *Blazing-fast, zero-bloat, native terminal music player with TUI, CLI & AI Model Context Protocol (MCP) integration.*
+  *Blazing-fast, zero-bloat, native music player for your terminal, scripts, and AI workflows.*
 
   <p align="center">
     <a href="https://github.com/yhan-sun/wocli-music/releases/latest"><img src="https://img.shields.io/github/v/release/yhan-sun/wocli-music?color=7aa874&label=release&logo=github&style=flat-square" alt="Release" /></a>
@@ -21,8 +21,9 @@
 
   <p align="center">
     <a href="#quick-start">Quick Start</a> •
-    <a href="#why-wocli-music-feature-comparison">Comparison</a> •
-    <a href="#key-features">Key Features</a> •
+    <a href="#why-did-we-build-this">Why Build It</a> •
+    <a href="#side-by-side-experience-comparison">Comparison</a> •
+    <a href="#core-user-experience">Experience</a> •
     <a href="#keybindings-cheat-sheet">Keybindings</a> •
     <a href="#ai-agent-integration-mcp">AI MCP</a> •
     <a href="#cli-reference">CLI</a> •
@@ -34,25 +35,29 @@
 
 ---
 
-## Why wocli-music?
+## Why Did We Build This?
 
-`wocli-music` is crafted specifically for developers, terminal enthusiasts, and workflow automators. Unlike bulky Electron or Web-based clients, it is written in 100% native Rust, ships as a single standalone executable, and unifies an interactive Terminal UI (TUI), a scriptable CLI, and native AI Model Context Protocol (MCP) integration.
+All we wanted was to listen to a song in peace. But modern music apps have lost their way.
 
-### Highlights at a Glance
+You have probably experienced these frustrating moments:
+- You just want to play a song, but you have to download a 300MB installer and sit through a 5-second splash screen advertisement every single time you launch it.
+- You find the song you want, only to be immediately blocked by popups: "Scan QR code to log in", "Subscribe to VIP to unlock full track".
+- The interface is cluttered with live streams, short videos, algorithmic feeds, and marketing banners—silently hogging hundreds of megabytes or even gigabytes of RAM in the background.
+- At your desk or study space, switching tracks requires fumbling across windows; when a colleague or manager walks by, massive album art glares from the center of your screen before you can even hit pause.
 
-- **Ultralight and Minimal Footprint**: Archive size is only **~3.0–4.2 MB**; runs out of the box with zero runtime dependencies (no Python, Node.js, mpv, or FFmpeg needed). Uses only **~15–30 MB RAM** during playback.
-- **Instant Playback with Zero Login**: No account registration, no verification codes, no VIP paywalls. Search millions of public tracks and manage your local lossless audio library (FLAC, MP3, AAC, WAV) in one place.
-- **Authentic Boss Mode (Stealth Camouflage)**: Press <kbd>Shift</kbd>+<kbd>B</kbd> or a global hotkey to instantly mute audio and switch the entire screen into an authentic development compilation/test simulation (`cargo test` suite with blinking prompt). Press again to resume seamlessly.
-- **Native Desktop Companion**:
-  - **macOS**: Native menu bar scrolling lyrics + system Control Center / Now Playing media integration.
-  - **Windows**: Exclusive taskbar-embedded interactive lyrics bar (with play/pause/skip buttons) + system tray.
-  - **Linux**: Pure and minimal; easily bind `wocli boss` or playback controls to any window manager (GNOME, KDE, i3, Sway).
-- **Native AI MCP Integration**: Directly exposes 17 music management and playback tools to AI agents like Claude Desktop, Cursor, and OpenCode via standard stdio.
-- **Shared Unified State**: TUI browsing, shell automation, and AI playlist orchestration share the exact same background daemon and SQLite database. Closing the terminal never interrupts playback.
+Listening to music should be lightweight, pure, and non-intrusive.
+
+`wocli-music` was created to restore that freedom:
+
+- **100% Login-Free, Zero Annoyances**: No phone numbers, no QR codes, no VIP paywalls, and zero ads. Type a song name and it plays immediately.
+- **Invisibly Small, Blazing Fast**: The entire executable is only ~3MB. It starts and plays in milliseconds. Running in the background consumes only ~20MB of RAM—effortless on any laptop or cloud server.
+- **Work Camouflage & Instant Stealth (Boss Mode)**: Purpose-built for the workplace. When someone approaches, hit a quick hotkey: audio mutes instantly, and the full screen turns into an authentic compilation and unit-test terminal. Hit it again when the coast is clear to resume right where you left off.
+- **Native Desktop Companion, Zero Screen Clutter**: Pick your music in the terminal, close the window, and music continues playing silently in the background. Glance at rolling lyrics in your macOS menu bar or interact with the taskbar lyrics strip on Windows without switching windows.
+- **Let AI Be Your Personal DJ**: When coding or writing in Claude or Cursor, simply ask: *"Play some chill lo-fi beats for deep focus"*. Your AI assistant searches, plays, adjusts volume, or manages playlists directly via MCP.
 
 ---
 
-## Why wocli-music? (Feature Comparison)
+## Side-by-Side Experience Comparison
 
 Whether you are hacking in a remote terminal or looking for a distraction-free, memory-efficient desktop companion, see how `wocli-music` compares:
 
@@ -127,7 +132,7 @@ wocli mcp prompt                # Output copy-paste AI connection prompt
 
 ---
 
-## Key Features
+## Core User Experience
 
 ### 1. Interactive Terminal UI (TUI)
 - **Keyboard & Mouse**: Full Vim-style navigation (`j` / `k` move, `g` / `G` top/bottom, `/` search), alongside full mouse support for seeking, clicking buttons, and double-clicking to play.
