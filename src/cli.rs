@@ -32,7 +32,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
-  boss [on|off|toggle]               老板模式（一键暂停/静音并隐蔽托盘与歌词）
+  boss [on|off|toggle]               老板模式（暂停并隐藏歌词、歌曲信息）
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
   retry [--quality best]             重试当前歌曲及备用音源
@@ -599,9 +599,9 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             if !args.flag("--json") {
                 let is_boss = value["boss"].as_bool().unwrap_or(false);
                 if is_boss {
-                    println!("老板模式已开启：已隐蔽所有托盘与桌面指示器，音频已静音/暂停。");
+                    println!("老板模式已开启：音频已暂停，歌词和歌曲信息已隐藏（托盘需运行）。");
                 } else {
-                    println!("老板模式已退出：已恢复播放与托盘显示。");
+                    println!("老板模式已退出：界面已恢复；仅此前播放/加载中的歌曲会继续。");
                 }
             }
             value
@@ -631,7 +631,8 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 }
                 "status" => {
                     let running = crate::tray::status(&paths)?;
-                    let res = json!({"tray_running": running});
+                    let shortcuts = crate::tray::hotkeys(&paths);
+                    let res = json!({"tray_running": running,"global_shortcuts":shortcuts});
                     if !args.flag("--json") {
                         println!(
                             "{}",
@@ -641,6 +642,24 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                                 "托盘未运行"
                             }
                         );
+                        if let Some(keys) = res["global_shortcuts"]["keys"]
+                            .as_array()
+                            .filter(|keys| !keys.is_empty())
+                        {
+                            for key in keys {
+                                println!(
+                                    "{}：{}",
+                                    key["shortcut"].as_str().unwrap_or_default(),
+                                    if key["registered"] == true {
+                                        "已注册"
+                                    } else {
+                                        "注册失败，请检查其他应用的按键占用"
+                                    }
+                                );
+                            }
+                        } else if let Some(note) = res["global_shortcuts"]["note"].as_str() {
+                            println!("{note}");
+                        }
                     }
                     res
                 }

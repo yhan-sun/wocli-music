@@ -73,12 +73,12 @@ Checked against official documentation on **2026-10-22**. This compares document
 
 ### Supported Release Packages
 
-| Platform | v0.3.6 archive | Installation note |
+| Platform | v0.3.7 archive | Installation note |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | `wocli-music-0.3.6-macos-arm64.tar.gz` | Copy `wocli` to a directory on PATH. |
-| macOS 15+, Intel | `wocli-music-0.3.6-macos-x86_64.tar.gz` | Copy `wocli` to a directory on PATH. |
-| Linux x86_64, glibc 2.35+ | `wocli-music-0.3.6-linux-x86_64.tar.gz` | Keep bundled `lib/` beside `wocli`; uses the system audio configuration. |
-| Windows 10/11 x86_64 | `wocli-music-0.3.6-windows-x86_64.zip` | Add the extracted directory to PATH. ARM64 Windows requires x64 emulation support. |
+| macOS 15+, Apple Silicon | `wocli-music-0.3.7-macos-arm64.tar.gz` | Copy `wocli` to a directory on PATH. |
+| macOS 15+, Intel | `wocli-music-0.3.7-macos-x86_64.tar.gz` | Copy `wocli` to a directory on PATH. |
+| Linux x86_64, glibc 2.35+ | `wocli-music-0.3.7-linux-x86_64.tar.gz` | Keep bundled `lib/` beside `wocli`; uses the system audio configuration. |
+| Windows 10/11 x86_64 | `wocli-music-0.3.7-windows-x86_64.zip` | Add the extracted directory to PATH. ARM64 Windows requires x64 emulation support. |
 
 Get archives from the [Cloudflare download page](https://wocli.yhan.fun/) or [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest). The installer verifies SHA256. Matching `*-sources` archives contain dependency sources and are optional for running the player.
 
@@ -90,7 +90,7 @@ macOS / Linux:
 # Use a directory writable by your account
 curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --dir /usr/local/bin
 # Choose a stable version
-curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.6
+curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.7
 # Uninstall; library data is retained
 curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --uninstall
 ```
@@ -227,20 +227,23 @@ macOS provides a menu-bar item with lyrics and playback controls. Windows provid
 | `c` / `f` | Add to playlist / toggle favorite |
 | `d` / `D` | Download selection / view download tasks |
 | `a` / `x` | Add to queue / open track menu |
-| `Shift+B` / `Ctrl+B` | **Boss Mode**: Work camouflage simulation (cargo test), instant mute/pause; press `B` / `Ctrl+B` / `Esc` to restore |
+| `Shift+B` / `Ctrl+B` / `F12` | **Boss Mode**: Work camouflage simulation (cargo test), instant mute/pause; press `B` / `Ctrl+B` / `Esc` to restore |
 | `Tab` / `b` | Switch focus / choose library |
 | `?` / `Esc` | Shortcut help / close current view or popup |
 | `q` | Close TUI; playback continues |
 
-> **Global System Shortcuts & Media Keys**:
-> - When the tray is running in the background, macOS natively integrates with `MPRemoteCommandCenter` and Control Center (Now Playing), and Windows natively registers global media hotkeys; physical hardware media keys (Play/Pause, Previous, Next, Volume) work globally.
-> - Inside the terminal TUI, keyboard hardware media keys directly control playback, track switching, and volume anywhere in the interface.
-> - System shortcut tools (macOS Shortcuts, Raycast, Alfred, Windows shortcuts, Linux hotkeys) can seamlessly trigger `wocli toggle`, `wocli prev`, `wocli next`, automatically waking and playing when idle or stopped.
-> - **Cross-Platform Boss Mode (Stealth & Camouflage)**:
->   - **Windows**: Tray natively registers global hotkeys **Ctrl+Shift+B** and **Ctrl+Alt+B** to pause audio and immediately hide the taskbar lyrics and notification icon details.
->   - **macOS**: Tray menu item "老板模式 (Shift+B)" clears menu bar lyrics, dismisses the floating lyrics overlay, and clears Control Center / Now Playing widgets.
->   - **Linux & CLI**: `wocli boss [on|off|toggle]` provides instant scriptable stealth for system shortcut bindings (GNOME, KDE, i3, Sway).
->   - **Terminal TUI**: Pressing **Shift+B** or **Ctrl+B** switches to a realistic build/test simulation (`cargo test` suite and active prompt), fully masking player activity; press **B**, **Ctrl+B**, or **Esc** to restore and resume.
+Boss mode is available in **v0.3.7 and later**, not in the v0.3.6 release archives.
+
+| Context | Shortcut | Requirement |
+| --- | --- | --- |
+| Focused player terminal | `Shift+B` / `Ctrl+B` / `F12` | Shift+B remains text in input fields; use Ctrl+B/F12. tmux may intercept Ctrl+B; some Mac keyboards require Fn+F12. |
+| macOS global boss key | `Ctrl+Shift+B` | Run `wocli tray start` first. |
+| Windows global boss keys | `Ctrl+Shift+B` / `Ctrl+Alt+B` | Run `wocli tray start` first. |
+| Linux global key | Bind `wocli boss` in your desktop settings | Configure the binding yourself. |
+
+Boss mode pauses audio, replaces the TUI with simulated build logs, and hides lyrics and song details. A neutral wocli tray entry remains available. Press `b`, the same terminal shortcut, or `Esc` to restore; the global key also toggles back. Only previously playing/loading audio resumes. Explicit pause/stop cancels automatic resume.
+
+Use `wocli tray status` to inspect shortcut registration and detect conflicts. Terminal shortcuts require focus and must reach the application. Media key routing depends on the OS, terminal, and current media application; system shortcut tools can also invoke `wocli toggle`, `wocli prev`, and `wocli next`.
 
 ![Compact TUI at 80×26](docs/screenshots/compact.png)
 

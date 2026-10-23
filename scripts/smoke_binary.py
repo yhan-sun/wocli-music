@@ -208,6 +208,38 @@ def main():
                         ready, _, _ = select.select([master], [], [], 0.1)
                         if ready:
                             transcript.extend(os.read(master, 65536))
+                    def pump_screen(seconds=0.15):
+                        until = time.monotonic() + seconds
+                        while time.monotonic() < until:
+                            ready, _, _ = select.select([master], [], [], 0.05)
+                            if ready:
+                                transcript.extend(os.read(master, 65536))
+                    # Exercise actual terminal byte decoding and daemon acknowledgements.
+                    # Shift+B, Ctrl+B, then F12; Esc restores after each.
+                    for key in [b"B", b"\x02", b"\x1b[24~"]:
+                        os.write(master, key)
+                        until = time.monotonic() + 4
+                        while True:
+                            pump_screen()
+                            state = json.loads(cli("status", "--json"))
+                            if state["boss"]:
+                                break
+                            assert time.monotonic() < until, (key, state)
+                        assert state["phase"] == "paused"
+                        # More than two status polls must not undo camouflage.
+                        pump_screen(0.8)
+                        assert json.loads(cli("status", "--json"))["boss"]
+                        os.write(master, b"\x1b")
+                        until = time.monotonic() + 4
+                        while True:
+                            pump_screen()
+                            state = json.loads(cli("status", "--json"))
+                            if not state["boss"]:
+                                break
+                            assert time.monotonic() < until, state
+                        assert state["phase"] == "paused"
+                    assert b"workspace-engine" in transcript
+                    deadline = time.monotonic()
                     os.write(master, b"q")
                     while process.poll() is None and time.monotonic() < deadline + 10:
                         ready, _, _ = select.select([master], [], [], 0.1)

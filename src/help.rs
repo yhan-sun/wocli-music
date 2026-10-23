@@ -33,7 +33,7 @@ pub const COMMANDS: &[&str] = &[
     "daemon",
     "help",
 ];
-pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\n键盘多媒体按键（播放/暂停、上一首、下一首、音量调节）原生可用\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nShift+B / Ctrl+B 老板键（仿真开发测试伪装，即刻静音暂停，B/Ctrl+B/Esc 恢复）\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
+pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\n键盘多媒体按键（播放/暂停、上一首、下一首、音量调节）原生可用\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nShift+B / Ctrl+B / F12 老板键（仿真开发测试伪装，即刻静音暂停，B/Ctrl+B/Esc 恢复）\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
 
 pub fn text(topic: Option<&str>) -> Result<String> {
     let topic = topic.unwrap_or("");
@@ -53,8 +53,8 @@ pub fn text(topic: Option<&str>) -> Result<String> {
         "like"=>"用法：wocli like [--id ID]\n喜欢或取消喜欢指定歌曲；不传 ID 则操作当前歌曲。",
         "lyrics"=>"用法：wocli lyrics [--id ID --refresh --output song.lrc --force]\n不传 ID 则读取当前歌曲歌词。--refresh 忽略歌词缓存，--force 覆盖输出文件。",
         "lyrics-bar"=>"用法：wocli lyrics-bar [on|off|toggle|status]\n开启、关闭、切换或查看任务栏/状态栏实时歌词。",
-        "boss"=>"用法：wocli boss [on|off|toggle]\n老板模式（老板键）：立即暂停/静音，完全隐蔽系统托盘图标、菜单栏标题与任务栏歌词指示器。\n再次执行恢复播放与显示。\n在终端界面（TUI）中按 Shift+B 或 Ctrl+B 触发工作伪装模式（仿真开发编译与测试终端），按 B、Ctrl+B 或 Esc 恢复。\nWindows 全局快捷键：Ctrl+Shift+B 或 Ctrl+Alt+B 原生全局防查。\nLinux 系统可在桌面快捷键设置中将全局按键绑定至命令 `wocli boss`。",
-        "tray"=>"用法：wocli tray start|stop|status\n控制系统托盘小图标；start 会启动后台。",
+        "boss"=>"用法：wocli boss [on|off|toggle]\n老板模式（老板键）：立即暂停/静音，隐藏歌词与歌曲信息，保留中性的 wocli 托盘入口。\n再次执行恢复界面，仅此前播放或加载中的歌曲会继续。\n在终端界面（TUI）中按 Shift+B、Ctrl+B 或 F12 触发工作伪装模式（仿真开发编译与测试终端），按 b、Shift+B、Ctrl+B、F12 或 Esc 恢复。\n全局键需先运行 wocli tray start；macOS：Ctrl+Shift+B；Windows：Ctrl+Shift+B 或 Ctrl+Alt+B。\nwocli tray status 查看注册结果，失败时检查其他应用的按键占用。\nShift+B 仅用于终端焦点下的非输入状态；tmux 可能占用 Ctrl+B，可改用 F12（部分 Mac 键盘需 Fn+F12）。\nLinux 系统可在桌面快捷键设置中将全局按键绑定至命令 `wocli boss`。",
+        "tray"=>"用法：wocli tray start|stop|status\nstart 启动托盘；点击播放或老板模式时按需启动音频后台。\nstatus 显示托盘及全局老板键注册结果；冲突时检查其他应用的快捷键设置。",
         "daemon"=>"用法：wocli daemon start [--tray]\n      wocli daemon status\n      wocli daemon stop\nstop 同时关闭托盘和播放后台。",
         "config"=>"用法：wocli config [配置项 [值]]\n配置项：quality、volume、mode、direct、lyric_offset、lyrics_bar、tray。\n示例：wocli config quality 320k；wocli config direct true\nlyric_offset 使用毫秒，范围 -60000 至 60000；布尔值为 true/false。\n音源请使用 wocli source 管理。",
         "update"=>"用法：wocli update [--check --force --direct --json]\n--check 仅检查；--force 重装当前稳定版；默认校验并安装最新稳定版。\n保留曲库和设置；更新前下载并校验完整，重启先前运行的后台/托盘。",

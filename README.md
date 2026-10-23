@@ -94,7 +94,7 @@ curl -fsSL https://wocli.yhan.fun/install.sh | bash
   ```
 - **指定安装版本**：
   ```bash
-  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.6
+  curl -fsSL https://wocli.yhan.fun/install.sh | bash -s -- --version v0.3.7
   ```
 - **卸载**：
   ```bash
@@ -147,18 +147,18 @@ v0.3.0 及更早版本尚无 `update` 命令，首次升级请重新执行上面
 
 你也可以从 [Cloudflare 下载入口](https://wocli.yhan.fun/) 或 [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载对应平台的打包文件：
 
-| 设备与架构 | v0.3.6 发行文件 | 解包安装方式 |
+| 设备与架构 | v0.3.7 发行文件 | 解包安装方式 |
 | --- | --- | --- |
-| Apple Silicon Mac (macOS 15+) | `wocli-music-0.3.6-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
-| Intel Mac (macOS 15+) | `wocli-music-0.3.6-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
-| Linux x86_64 (glibc 2.35+) | `wocli-music-0.3.6-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
-| Windows 10/11 x86_64；ARM64 需支持 x64 仿真 | `wocli-music-0.3.6-windows-x86_64.zip` | 解压后将 `wocli.exe` 放置于任何 PATH 目录 |
+| Apple Silicon Mac (macOS 15+) | `wocli-music-0.3.7-macos-arm64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Intel Mac (macOS 15+) | `wocli-music-0.3.7-macos-x86_64.tar.gz` | 解压后将 `wocli` 复制到 `~/.local/bin/` |
+| Linux x86_64 (glibc 2.35+) | `wocli-music-0.3.7-linux-x86_64.tar.gz` | 解压后保留 `lib/` 在 `wocli` 同级目录下 |
+| Windows 10/11 x86_64；ARM64 需支持 x64 仿真 | `wocli-music-0.3.7-windows-x86_64.zip` | 解压后将 `wocli.exe` 放置于任何 PATH 目录 |
 
 以 Apple Silicon Mac 为例：
 
 ```bash
-tar -xzf wocli-music-0.3.6-macos-arm64.tar.gz
-cd wocli-music-0.3.6-macos-arm64
+tar -xzf wocli-music-0.3.7-macos-arm64.tar.gz
+cd wocli-music-0.3.7-macos-arm64
 ./wocli
 ```
 
@@ -240,22 +240,32 @@ wocli
 | `D` | 打开下载任务 |
 | `a` | 将歌曲添加到播放队列末尾 |
 | `x` | 打开歌曲快捷操作菜单 |
-| `Shift+B` / `Ctrl+B` | **老板模式**：一键切换工作伪装终端（仿真开发编译与测试），音频暂停，按 `B` / `Ctrl+B` / `Esc` 恢复 |
+| `Shift+B` / `Ctrl+B` / `F12` | **老板模式**：一键切换工作伪装终端（仿真开发编译与测试），音频暂停，按 `B` / `Ctrl+B` / `Esc` 恢复 |
 | `Tab` | 侧栏曲库与主列表焦点切换 |
 | `b` | 唤出曲库切换菜单 |
 | `?` | 弹出快捷键帮助弹窗 |
 | `Esc` | 退出歌词全屏 / 取消搜索 / 关闭弹窗 |
 | `q` | 退出 TUI 界面（后台继续播放） |
 
-> **系统全局快捷键与媒体按键支持**：
-> - 托盘后台运行时，macOS 原生接入 `MPRemoteCommandCenter` 及系统播控中心（Now Playing），Windows 原生注册全局多媒体快捷键；键盘物理媒体按键（播放/暂停、上一首、下一首、音量）全局可用。
-> - 在终端 TUI 界面中，无论身处列表、歌词全屏或弹窗，键盘硬件媒体按键均可直接控制播放、切歌和音量。
-> - 系统快捷键工具（如 macOS 快捷指令/Raycast/Alfred、Windows 快捷键或 Linux 桌面热键）可无缝调用 `wocli toggle`、`wocli prev`、`wocli next`，空闲/停止时自动唤醒并起播。
-> - **全局老板键（Boss Key）与防查模式**：
->   - **Windows**：托盘后台原生支持全局系统快捷键 **Ctrl+Shift+B** 或 **Ctrl+Alt+B**，一键暂停音频并完全隐蔽任务栏歌词条与通知区提示。
->   - **macOS**：托盘支持点击「老板模式 (Shift+B)」，即刻清除菜单栏歌词、收起悬浮歌词条并清空系统 Control Center / Now Playing 播控状态。
->   - **Linux**：可通过桌面快捷键设置将任意全局快捷键绑定至命令 `wocli boss`，一键全隐蔽并暂停。
->   - **终端 TUI**：界面中按 **Shift+B** 或 **Ctrl+B** 进入高度逼真的真实开发与测试运行仿真界面（仿真 `cargo test` 及终端提示符），按 **B**、**Ctrl+B** 或 **Esc** 即可瞬间恢复并继续播放。
+**老板模式从 v0.3.7 起正式发布**，v0.3.6 安装包不包含此功能。终端与全局键的作用范围不同：
+
+| 场景 | 触发方式 | 使用条件 |
+| --- | --- | --- |
+| 播放器终端有焦点 | `Shift+B` / `Ctrl+B` / `F12` | 输入框中 `Shift+B` 用于输入，改用 Ctrl+B/F12；tmux 可能占用 Ctrl+B，部分 Mac 键盘需 Fn+F12 |
+| macOS 全局老板键 | `Ctrl+Shift+B` | 先启动 `wocli tray start` |
+| Windows 全局老板键 | `Ctrl+Shift+B` / `Ctrl+Alt+B` | 先启动 `wocli tray start` |
+| Linux 桌面全局键 | 自行绑定 `wocli boss` | 在 GNOME/KDE/i3/Sway 等桌面快捷键设置配置 |
+
+进入后暂停音频并将 TUI 切为编译测试仿真界面；隐藏歌词、清除歌曲信息，保留中性的 `wocli` 托盘入口。按 `b`、同一终端快捷键或 `Esc` 恢复；全局键再次触发也可恢复。仅进入前正在播放或加载的歌曲会继续，原本暂停/停止的歌曲不会自动播放；模式中显式暂停或停止会取消自动续播。
+
+```bash
+wocli update                 # 先确认升级至 v0.3.7 或更新版
+wocli tray start             # 需要全局键时启动托盘
+wocli tray status            # 查看快捷键是否注册成功；冲突时检查其他应用
+wocli boss                   # 不依赖托盘的命令行切换入口
+```
+
+终端快捷键只在终端有焦点且按键未被终端/复用器拦截时生效。系统媒体控制由 macOS Now Playing 或 Windows 托盘处理，TUI 处理终端转发的媒体键；实际路由取决于系统、终端和当前媒体应用。也可使用系统快捷键工具绑定 `wocli toggle`、`wocli prev`、`wocli next`。
 
 ## MCP：让 AI 客户端控制播放器
 
@@ -317,7 +327,7 @@ wocli lyrics-bar on        # 开启任务栏 / 状态栏实时歌词
 wocli lyrics-bar off       # 关闭任务栏实时歌词
 wocli lyrics-bar toggle    # 快速切换开启/关闭
 
-wocli boss                 # 一键切换老板模式（暂停音频并隐藏所有托盘/任务栏/桌面视觉指示器）
+wocli boss                 # 切换老板模式（暂停音频并隐藏歌词和歌曲信息）
 wocli boss on              # 开启老板模式
 wocli boss off             # 退出老板模式并恢复播放
 ```
@@ -422,7 +432,7 @@ wocli doctor
   "runtime_dir": "/tmp/wocli-rust-501-bde92153d833",
   "service_running": false,
   "socket": "/tmp/wocli-rust-501-bde92153d833/control.sock",
-  "version": "0.3.6"
+  "version": "0.3.7"
 }
 ```
 

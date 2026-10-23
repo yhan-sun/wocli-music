@@ -1,6 +1,9 @@
 #![allow(unexpected_cfgs)]
 #![allow(unused_imports)]
 
+#[cfg(target_os = "macos")]
+mod macos_hotkey;
+
 #[cfg(any(target_os = "macos", windows))]
 use crate::ipc;
 use crate::lyrics;
@@ -14,6 +17,34 @@ use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::Command;
+
+pub fn hotkeys(paths: &Paths) -> serde_json::Value {
+    let pid = fs::read_to_string(pid_path(paths)).unwrap_or_default();
+    let running = status(paths).unwrap_or(false);
+    if running {
+        if let Ok(data) = fs::read(paths.runtime.join("hotkeys.json")) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
+                if value["pid"].as_u64().map(|p| p.to_string()).as_deref() == Some(pid.trim()) {
+                    return value;
+                }
+            }
+        }
+    }
+    serde_json::json!({"keys":[], "note":if running { "托盘正在初始化或仍是旧版，未提供快捷键注册结果；稍后重试，或运行 wocli tray stop 后再 wocli tray start" } else { "全局快捷键需要托盘运行；macOS/Windows 使用 wocli tray start，Linux 需在桌面设置绑定 wocli boss" }})
+}
+#[cfg(any(target_os = "macos", windows))]
+fn record_hotkeys(paths: &Paths, keys: Vec<serde_json::Value>) {
+    for key in &keys {
+        if key["registered"] != true {
+            eprintln!(
+                "全局快捷键 {} 注册失败（{}），请检查按键占用；仍可使用托盘菜单或 wocli boss",
+                key["shortcut"], key["error_code"]
+            );
+        }
+    }
+    let value = serde_json::json!({"pid":std::process::id(),"keys":keys});
+    let _ = fs::write(paths.runtime.join("hotkeys.json"), value.to_string());
+}
 
 pub fn active_lyric(lyrics_text: &str, position: f64, offset: i64) -> Option<String> {
     if lyrics_text.trim().is_empty() {
@@ -139,12 +170,20 @@ pub fn start(paths: &Paths) -> Result<()> {
         let _process = crate::ipc::spawn_detached(paths, &["tray", "run"])?;
     }
     for _ in 0..60 {
-        if status(paths)? {
+        if status(paths)?
+            && (!cfg!(any(target_os = "macos", windows))
+                || hotkeys(paths)["keys"]
+                    .as_array()
+                    .is_some_and(|keys| !keys.is_empty()))
+        {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(())
+    Err(Error::new(format!(
+        "托盘未就绪，请检查 {}",
+        paths.runtime.join("tray.log").display()
+    )))
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -224,6 +263,12 @@ mod macos {
         ];
         if empty_event != nil {
             let _: () = msg_send![app, postEvent: empty_event atStart: YES];
+        }
+    }
+
+    pub(super) fn boss_shortcut_pressed() {
+        unsafe {
+            trigger_action(TAG_BOSS);
         }
     }
 
@@ -389,6 +434,19 @@ mod macos {
             let target_obj: id = msg_send![target_class(), alloc];
             let target_obj: id = msg_send![target_obj, init];
             setup_remote_commands(target_obj);
+            let boss_hotkey = super::macos_hotkey::BossHotkey::register();
+            let boss_shortcut_ready = boss_hotkey.is_ok();
+            super::record_hotkeys(
+                &paths,
+                vec![
+                    json!({"shortcut":"Ctrl+Shift+B","registered":boss_shortcut_ready,"error_code":boss_hotkey.as_ref().err().copied()}),
+                ],
+            );
+            let boss_menu_label = if boss_shortcut_ready {
+                "老板模式 (Ctrl+Shift+B)"
+            } else {
+                "老板模式 (快捷键不可用，点击切换)"
+            };
 
             // 1. 顶部菜单栏 StatusItem
             let status_bar = NSStatusBar::systemStatusBar(nil);
@@ -440,7 +498,7 @@ mod macos {
             let item_lyrics_bar = create_item("任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
             let _: () = msg_send![menu, addItem: item_lyrics_bar];
 
-            let item_boss = create_item("老板模式 (Shift+B)", TAG_BOSS, target_obj);
+            let item_boss = create_item(boss_menu_label, TAG_BOSS, target_obj);
             let _: () = msg_send![menu, addItem: item_boss];
 
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
@@ -629,6 +687,7 @@ mod macos {
 
                 // 2. 轮询后台状态并刷新菜单、状态栏与悬浮歌词
                 if let Ok(Some(st)) = ipc::request(&paths, json!({"op":"status"}), false) {
+                    let is_boss = st["boss"].as_bool().unwrap_or(false);
                     let phase = st["phase"].as_str().unwrap_or("stopped");
                     let track = &st["track"];
                     let title = track["title"].as_str().unwrap_or("未知歌曲");
@@ -652,19 +711,31 @@ mod macos {
                         _ => "已停止",
                     };
 
-                    let new_info = format!("{title} · {artist}");
+                    let new_info = if is_boss {
+                        "wocli".into()
+                    } else {
+                        format!("{title} · {artist}")
+                    };
                     if new_info != last_menu_info {
                         set_item_title(item_info, &new_info);
                         last_menu_info = new_info;
                     }
 
-                    let new_status = format!("{phase_label}  {} / {}", clock(pos), clock(dur));
+                    let new_status = if is_boss {
+                        "老板模式".into()
+                    } else {
+                        format!("{phase_label}  {} / {}", clock(pos), clock(dur))
+                    };
                     if new_status != last_menu_status {
                         set_item_title(item_status, &new_status);
                         last_menu_status = new_status;
                     }
 
-                    let new_lyric = active_lyr.as_deref().unwrap_or("暂无歌词");
+                    let new_lyric = if is_boss {
+                        ""
+                    } else {
+                        active_lyr.as_deref().unwrap_or("暂无歌词")
+                    };
                     if new_lyric != last_menu_lyric {
                         set_item_title(item_lyric, new_lyric);
                         last_menu_lyric = new_lyric.to_string();
@@ -705,11 +776,10 @@ mod macos {
                         last_menu_lyrics_bar = new_lb;
                     }
 
-                    let is_boss = st["boss"].as_bool().unwrap_or(false);
                     let new_boss = if is_boss {
                         "老板模式: 开启 (点击退出)"
                     } else {
-                        "老板模式 (Shift+B)"
+                        boss_menu_label
                     };
                     if new_boss != last_menu_boss {
                         set_item_title(item_boss, new_boss);
@@ -846,7 +916,9 @@ mod windows {
     use std::cell::RefCell;
     use std::ptr::null;
     use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
@@ -921,6 +993,7 @@ mod windows {
         current_volume: u8,
         lyrics_bar_enabled: bool,
         boss: bool,
+        boss_shortcut_label: String,
         phase: String,
     }
 
@@ -1635,7 +1708,11 @@ mod windows {
 
         STATE.with(|st| {
             if let Some(state) = st.borrow().as_ref() {
-                let header = format!("{} · {}", state.current_title, state.current_artist);
+                let header = if state.boss {
+                    "wocli".into()
+                } else {
+                    format!("{} · {}", state.current_title, state.current_artist)
+                };
                 AppendMenuW(
                     hmenu,
                     MF_STRING | MF_DISABLED,
@@ -1683,7 +1760,7 @@ mod windows {
                 let boss_str = if state.boss {
                     "老板模式: 开启 (点击退出)"
                 } else {
-                    "老板模式 (Ctrl+Shift+B)"
+                    &state.boss_shortcut_label
                 };
                 AppendMenuW(hmenu, MF_STRING, CMD_BOSS, to_wide(boss_str).as_ptr());
 
@@ -1809,18 +1886,32 @@ mod windows {
             RegisterHotKey(hwnd, HOTKEY_PREV, 0, VK_MEDIA_PREV_TRACK);
             RegisterHotKey(hwnd, HOTKEY_NEXT, 0, VK_MEDIA_NEXT_TRACK);
             RegisterHotKey(hwnd, HOTKEY_STOP, 0, VK_MEDIA_STOP);
-            RegisterHotKey(
-                hwnd,
-                HOTKEY_BOSS,
-                MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
-                VK_KEY_B,
-            );
-            RegisterHotKey(
-                hwnd,
-                HOTKEY_BOSS_ALT,
-                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                VK_KEY_B,
-            );
+            let mut shortcuts = vec![];
+            for (id, modifiers, shortcut) in [
+                (
+                    HOTKEY_BOSS,
+                    MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                    "Ctrl+Shift+B",
+                ),
+                (
+                    HOTKEY_BOSS_ALT,
+                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                    "Ctrl+Alt+B",
+                ),
+            ] {
+                let registered = RegisterHotKey(hwnd, id, modifiers, VK_KEY_B) != 0;
+                let error_code = if registered { 0 } else { GetLastError() };
+                shortcuts.push(
+                    json!({"shortcut":shortcut,"registered":registered,"error_code":error_code}),
+                );
+            }
+            let boss_shortcut_label = shortcuts
+                .iter()
+                .find(|v| v["registered"] == true)
+                .and_then(|v| v["shortcut"].as_str())
+                .map(|s| format!("老板模式 ({s})"))
+                .unwrap_or_else(|| "老板模式 (快捷键不可用，点击切换)".into());
+            super::record_hotkeys(&paths, shortcuts);
 
             // 创建系统托盘图标（动态生成金色音符图标）
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -1921,6 +2012,7 @@ mod windows {
                     current_volume: 60,
                     lyrics_bar_enabled: true,
                     boss: false,
+                    boss_shortcut_label,
                     phase: "stopped".into(),
                 });
             });

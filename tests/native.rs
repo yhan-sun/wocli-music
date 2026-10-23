@@ -261,3 +261,31 @@ fn native_service_skips_broken_audio_and_stops_when_every_track_fails() {
     thread::sleep(Duration::from_millis(100));
     assert_eq!(app.cli(&["status"])["phase"], "error");
 }
+
+#[test]
+fn boss_cli_repeated_on_restores_only_previous_playback_and_reports_tray_requirement() {
+    let app = App::new();
+    let song = app.song("老板键.wav", 30);
+    app.cli(&["play", song.to_str().unwrap()]);
+    for _ in 0..2 {
+        let state = app.cli(&["boss", "on"]);
+        assert_eq!(state["boss"], true);
+        assert_eq!(state["phase"], "paused");
+    }
+    app.cli(&["resume"]);
+    assert_eq!(app.cli(&["status"])["phase"], "paused");
+    let state = app.cli(&["boss", "off"]);
+    assert_eq!(state["boss"], false);
+    assert_eq!(state["phase"], "playing");
+    app.cli(&["pause"]);
+    app.cli(&["boss"]);
+    app.cli(&["boss"]);
+    assert_eq!(app.cli(&["status"])["phase"], "paused");
+    let tray = app.cli(&["tray", "status"]);
+    assert_eq!(tray["tray_running"], false);
+    assert_eq!(tray["global_shortcuts"]["keys"], json!([]));
+    assert!(tray["global_shortcuts"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("wocli tray start"));
+}

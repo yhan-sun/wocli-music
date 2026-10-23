@@ -111,6 +111,7 @@ struct Hit {
 }
 enum Message {
     State(Box<Status>),
+    Boss(u64, std::result::Result<Box<Status>, String>),
     Offline,
     Error(String),
     Search(u64, std::result::Result<(usize, Vec<Track>), String>),
@@ -120,6 +121,7 @@ struct Request {
     value: Value,
     start: bool,
     download_serial: Option<u64>,
+    boss_serial: Option<u64>,
 }
 struct App {
     paths: Paths,
@@ -153,6 +155,9 @@ struct App {
     last_click: Option<(usize, Instant)>,
     toast: Option<(String, Instant)>,
     boss_mode: bool,
+    boss_serial: u64,
+    boss_pending: bool,
+    boss_entered: Instant,
     tx: Sender<Request>,
     events: Sender<Message>,
 }
@@ -198,6 +203,9 @@ impl App {
             last_click: None,
             toast: None,
             boss_mode: false,
+            boss_serial: 0,
+            boss_pending: false,
+            boss_entered: Instant::now(),
             tx,
             events,
         };
@@ -240,6 +248,7 @@ impl App {
             value,
             start: true,
             download_serial: None,
+            boss_serial: None,
         });
     }
     fn current(&self) -> Option<Track> {
@@ -603,7 +612,7 @@ impl App {
                     self.store.save("rust.ui.download_directory", &directory)?;
                     self.download_pending = true;
                     self.download_error.clear();
-                    if self.tx.send(Request { value: json!({"op":"download","track":track,"directory":path,"quality":QUALITIES[quality],"lyrics":lyrics}), start: true, download_serial: Some(self.download_serial) }).is_err() {
+                    if self.tx.send(Request { value: json!({"op":"download","track":track,"directory":path,"quality":QUALITIES[quality],"lyrics":lyrics}), start: true, download_serial: Some(self.download_serial), boss_serial: None }).is_err() {
                         self.download_pending = false;
                         self.download_error = "下载服务连接已关闭，请重新打开播放器".into();
                     }
@@ -617,8 +626,28 @@ impl App {
             Action::JobSelect(index) => self.popup = Some(Popup::Jobs(index)),
             Action::Boss => {
                 let target = !self.boss_mode;
+                self.boss_serial += 1;
+                self.boss_pending = true;
                 self.boss_mode = target;
-                self.send(json!({"op":"boss","active":target}));
+                if target {
+                    self.boss_entered = Instant::now();
+                }
+                self.seek = None;
+                self.last_click = None;
+                if self
+                    .tx
+                    .send(Request {
+                        value: json!({"op":"boss","active":target}),
+                        start: true,
+                        download_serial: None,
+                        boss_serial: Some(self.boss_serial),
+                    })
+                    .is_err()
+                {
+                    self.boss_pending = false;
+                    self.boss_mode = self.state.boss;
+                    self.notice("老板模式切换失败：后台连接已关闭");
+                }
             }
             Action::Seek => {}
         }
@@ -651,13 +680,23 @@ impl App {
         Ok(())
     }
     fn key(&mut self, key: KeyEvent) -> Result<bool> {
+        let boss_key = key.code == KeyCode::F(12)
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('b' | 'B')))
+            || key.code == KeyCode::Char('B');
+        if key.kind == event::KeyEventKind::Repeat && (boss_key || self.boss_mode) {
+            return Ok(false);
+        }
         if self.boss_mode {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('q' | 'c'))
             {
                 return Ok(true);
             }
-            if key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char('b' | 'B')) {
+            if key.code == KeyCode::Esc
+                || key.code == KeyCode::F(12)
+                || matches!(key.code, KeyCode::Char('b' | 'B'))
+            {
                 self.act(Action::Boss)?;
             }
             return Ok(false);
@@ -667,8 +706,9 @@ impl App {
         {
             return Ok(true);
         }
-        if (key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('b' | 'B')))
+        if key.code == KeyCode::F(12)
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('b' | 'B')))
             || (!self.editing
                 && !matches!(
                     self.popup,
@@ -962,9 +1002,27 @@ impl App {
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
             Message::State(state) => {
-                self.boss_mode = state.boss;
+                if !self.boss_pending {
+                    self.boss_mode = state.boss;
+                }
                 self.state = *state;
                 self.reload()?;
+            }
+            Message::Boss(serial, result) => {
+                if serial == self.boss_serial {
+                    self.boss_pending = false;
+                    match result {
+                        Ok(state) => {
+                            self.boss_mode = state.boss;
+                            self.state = *state;
+                            self.reload()?;
+                        }
+                        Err(error) => {
+                            self.boss_mode = self.state.boss;
+                            self.notice(format!("老板模式切换失败：{error}"));
+                        }
+                    }
+                }
             }
             Message::Offline => {
                 self.state.phase = "stopped".into();
@@ -1225,13 +1283,13 @@ impl App {
             });
 
         let initial_cmd = if is_windows {
-            format!("PS C:\\Users\\{user}\\projects\\music-service> cargo test --workspace")
+            format!("PS C:\\Users\\{user}\\projects\\workspace-engine> cargo test --workspace")
         } else {
             format!("{user}@{host}:~/workspace/engine $ cargo test --workspace")
         };
 
         let next_prompt = if is_windows {
-            format!("PS C:\\Users\\{user}\\projects\\music-service> ")
+            format!("PS C:\\Users\\{user}\\projects\\workspace-engine> ")
         } else {
             format!("{user}@{host}:~/workspace/engine $ ")
         };
@@ -1268,9 +1326,9 @@ impl App {
             Line::from(vec![
                 Span::styled("   Compiling ", Style::default().fg(green).bold()),
                 Span::raw(if is_windows {
-                    "music-service v0.4.2 (C:\\Users\\workspace\\music-service)"
+                    "workspace-engine v0.4.2 (C:\\Users\\workspace\\workspace-engine)"
                 } else {
-                    "music-service v0.4.2 (/workspace/engine)"
+                    "workspace-engine v0.4.2 (/workspace/engine)"
                 }),
             ]),
             Line::from(vec![
@@ -1286,7 +1344,7 @@ impl App {
                 "     Running unittests src/lib.rs (target/debug/deps/service-b49e21)"
             })]),
             Line::from(String::new()),
-            Line::from("running 18 tests"),
+            Line::from("running 9 tests"),
             Line::from(vec![
                 Span::raw("test config::tests::loads_runtime_env ... "),
                 Span::styled("ok", Style::default().fg(green)),
@@ -1328,19 +1386,29 @@ impl App {
                 Span::styled("test result: ", Style::default().bold()),
                 Span::styled("ok", Style::default().fg(green).bold()),
                 Span::raw(
-                    ". 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s",
+                    ". 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s",
                 ),
             ]),
             Line::from(String::new()),
             Line::from(vec![
                 Span::styled(next_prompt, Style::default().fg(cyan).bold()),
-                Span::styled("█", Style::default().fg(fg)),
+                Span::styled(if self.boss_entered.elapsed().as_millis() % 1000 < 500 { "█" } else { " " }, Style::default().fg(fg)),
             ]),
         ];
 
         let total_lines = lines.len() as u16;
         let scroll_y = total_lines.saturating_sub(area.height);
         frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+        if self.toast.as_ref().is_some_and(|(text, at)| {
+            text.starts_with("老板模式切换失败") && at.elapsed() < Duration::from_secs(5)
+        }) && area.height > 0
+        {
+            frame.render_widget(
+                Paragraph::new("状态切换失败，请再次按 Esc 或 F12 重试")
+                    .style(Style::default().fg(Color::Red).bg(bg)),
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            );
+        }
     }
     fn draw_nav(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(
@@ -1974,7 +2042,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nShift+B / Ctrl+B  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2019,7 +2087,18 @@ fn request_message(paths: &Paths, request: Request) -> Message {
         Ok(None) => Message::Offline,
         Err(error) => Message::Error(error.to_string()),
     };
-    if let Some(serial) = request.download_serial {
+    if let Some(serial) = request.boss_serial {
+        match message {
+            Message::State(state) => Message::Boss(serial, Ok(state)),
+            Message::Error(error) => Message::Boss(
+                serial,
+                Err(format!(
+                    "{error}；若后台是旧版，请先运行 wocli daemon stop 再重开播放器"
+                )),
+            ),
+            _ => Message::Boss(serial, Err("后台未运行".into())),
+        }
+    } else if let Some(serial) = request.download_serial {
         match message {
             Message::State(state) => Message::Download(serial, Ok(state)),
             Message::Error(error) => Message::Download(serial, Err(error)),
@@ -2070,6 +2149,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 value: json!({"op":"status"}),
                 start: false,
                 download_serial: None,
+                boss_serial: None,
             });
             polled = Instant::now();
         }
@@ -2085,7 +2165,7 @@ pub fn run(paths: Paths) -> Result<()> {
                     app.key(key).map(|v| quit = v)
                 }
                 Event::Mouse(mouse) => app.mouse(mouse.kind, mouse.column, mouse.row),
-                Event::Paste(text) => {
+                Event::Paste(text) if !app.boss_mode => {
                     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
                     match &mut app.popup {
                         Some(Popup::Input { value, .. }) => value.push_str(&clean),
@@ -2709,5 +2789,66 @@ mod interaction_tests {
         let cmd = rx.try_recv().unwrap();
         assert_eq!(cmd.value["op"], "boss");
         assert_eq!(cmd.value["active"], false);
+    }
+
+    #[test]
+    fn boss_pending_ignores_stale_polls_and_acknowledgements() {
+        let (_root, mut app, rx) = setup();
+        app.key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
+            .unwrap();
+        let enter = rx.try_recv().unwrap().boss_serial.unwrap();
+        app.message(Message::State(Box::default())).unwrap();
+        assert!(
+            app.boss_mode,
+            "an earlier status response must not expose the player"
+        );
+        app.key(KeyEvent::new_with_kind(
+            KeyCode::F(12),
+            KeyModifiers::NONE,
+            event::KeyEventKind::Repeat,
+        ))
+        .unwrap();
+        assert!(rx.try_recv().is_err());
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        let exit = rx.try_recv().unwrap().boss_serial.unwrap();
+        app.message(Message::Boss(
+            enter,
+            Ok(Box::new(Status {
+                boss: true,
+                ..Status::default()
+            })),
+        ))
+        .unwrap();
+        assert!(
+            !app.boss_mode,
+            "late enter acknowledgement must not undo exit"
+        );
+        app.message(Message::Boss(exit, Ok(Box::default())))
+            .unwrap();
+        assert!(!app.boss_pending);
+        app.key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
+            .unwrap();
+        let failed = rx.try_recv().unwrap().boss_serial.unwrap();
+        app.message(Message::Boss(failed, Err("测试连接失败".into())))
+            .unwrap();
+        assert!(!app.boss_mode);
+        assert!(app.toast.as_ref().unwrap().0.contains("测试连接失败"));
+    }
+    #[test]
+    fn boss_keeps_typing_b_but_f12_always_works_and_mouse_is_ignored() {
+        let (_root, mut app, rx) = setup();
+        app.editing = true;
+        app.key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert_eq!(app.query, "B");
+        assert!(!app.boss_mode);
+        app.key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
+            .unwrap();
+        rx.try_recv().unwrap();
+        app.mouse(MouseEventKind::Down(event::MouseButton::Left), 10, 10)
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+        assert!(app.boss_mode);
     }
 }

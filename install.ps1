@@ -12,7 +12,7 @@ param (
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Repo = "yhan-sun/wocli-music"
-$DefaultTag = "v0.3.6"
+$DefaultTag = "v0.3.7"
 $DownloadBase = if ($env:WOCLI_DOWNLOAD_BASE) { $env:WOCLI_DOWNLOAD_BASE.TrimEnd('/') } else { "https://wocli.yhan.fun" }
 if ($DownloadBase -eq 'github') {
     $DownloadBase = "https://github.com/$Repo"

@@ -961,6 +961,14 @@ impl Service {
                 }
             }
             "pause" | "resume" | "toggle" => {
+                if self.boss {
+                    // Media keys must not restart sound while the screen is concealed.
+                    // An explicit pause/stop also cancels automatic resume on exit.
+                    if op == "pause" {
+                        self.boss_previous_phase = None;
+                    }
+                    return Ok(serde_json::to_value(self.status())?);
+                }
                 if self.phase == "loading" && (op == "toggle" || op == "pause") {
                     self.stop();
                 } else if ["playing", "paused"].contains(&self.phase.as_str()) {
@@ -994,7 +1002,10 @@ impl Service {
                     return Err(Error::new("当前没有可暂停或继续的音频"));
                 }
             }
-            "stop" => self.stop(),
+            "stop" => {
+                self.boss_previous_phase = None;
+                self.stop();
+            }
             "next" => {
                 self.boss = false;
                 self.boss_previous_phase = None;
@@ -1118,6 +1129,7 @@ impl Service {
                 self.persist()?;
             }
             "queue_clear" => {
+                self.boss_previous_phase = None;
                 self.stop();
                 self.queue.clear();
                 self.index = 0;
@@ -1154,11 +1166,17 @@ impl Service {
                 self.kick_download();
             }
             "boss" => {
+                if request.get("active").is_some_and(|v| !v.is_boolean()) {
+                    return Err(Error::new("老板模式 active 应为 true 或 false"));
+                }
                 let target = if let Some(v) = request["active"].as_bool() {
                     v
                 } else {
                     !self.boss
                 };
+                if target == self.boss {
+                    return Ok(serde_json::to_value(self.status())?);
+                }
                 self.boss = target;
                 if self.boss {
                     if self.phase == "playing" {
@@ -1176,9 +1194,13 @@ impl Service {
                         if self.phase == "paused" {
                             self.player.pause(false);
                             self.phase = "playing".into();
+                        }
+                    } else if prev == "loading" {
+                        if self.phase == "paused" {
+                            self.player.pause(false);
+                            self.phase = "playing".into();
                         } else if self.phase == "stopped" && !self.queue.is_empty() {
-                            let idx = self.index.min(self.queue.len().saturating_sub(1));
-                            self.begin(idx, self.settings.quality.clone())?;
+                            self.begin(self.index, self.requested_quality.clone())?;
                         }
                     }
                 }
@@ -1274,14 +1296,14 @@ impl Service {
                 if generation != self.generation {
                     return;
                 }
-                let result =
-                    result.and_then(|audio| self.player.load(audio, self.settings.volume, false));
+                let result = result
+                    .and_then(|audio| self.player.load(audio, self.settings.volume, self.boss));
                 match result {
                     Ok(()) => {
                         if let Some(track) = self.current() {
                             let _ = self.store.played(track);
                         }
-                        self.phase = "playing".into();
+                        self.phase = if self.boss { "paused" } else { "playing" }.into();
                         self.error = None;
                     }
                     Err(error) => self.playback_failed(error),
@@ -1934,6 +1956,84 @@ mod playback_tests {
         // Exit boss mode: unpauses and resumes playing
         let st = h.service.dispatch(json!({"op":"boss"})).unwrap();
         assert_eq!(st["boss"], false);
+        assert_eq!(h.service.phase, "playing");
+    }
+
+    #[test]
+    fn boss_on_is_idempotent_and_media_keys_cannot_restart_audio() {
+        let mut h = Harness::new("list");
+        h.service.queue = vec![h.track("one", true)];
+        h.service.dispatch(json!({"op":"play"})).unwrap();
+        h.pump("playing");
+        for _ in 0..2 {
+            h.service
+                .dispatch(json!({"op":"boss","active":true}))
+                .unwrap();
+        }
+        for op in ["resume", "toggle"] {
+            let state = h.service.dispatch(json!({"op":op})).unwrap();
+            assert_eq!(state["boss"], true);
+            assert_eq!(state["phase"], "paused");
+        }
+        h.service
+            .dispatch(json!({"op":"boss","active":false}))
+            .unwrap();
+        assert_eq!(h.service.phase, "playing");
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        h.service.dispatch(json!({"op":"boss"})).unwrap();
+        h.service.dispatch(json!({"op":"boss"})).unwrap();
+        assert_eq!(h.service.phase, "paused");
+    }
+    #[test]
+    fn boss_restores_loading_but_respects_explicit_stop_and_pause() {
+        let mut h = Harness::new("list");
+        h.service.queue = vec![h.track("one", true)];
+        h.service.dispatch(json!({"op":"play"})).unwrap();
+        assert_eq!(h.service.phase, "loading");
+        h.service
+            .dispatch(json!({"op":"boss","active":true}))
+            .unwrap();
+        assert_eq!(h.service.phase, "stopped");
+        h.service
+            .dispatch(json!({"op":"boss","active":true}))
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"boss","active":false}))
+            .unwrap();
+        h.pump("playing");
+        for op in ["stop", "pause", "queue_clear"] {
+            h.service.dispatch(json!({"op":"play"})).unwrap();
+            h.pump("playing");
+            h.service
+                .dispatch(json!({"op":"boss","active":true}))
+                .unwrap();
+            h.service.dispatch(json!({"op":op})).unwrap();
+            h.service
+                .dispatch(json!({"op":"boss","active":false}))
+                .unwrap();
+            assert_ne!(h.service.phase, "playing", "{op}");
+        }
+        assert!(h
+            .service
+            .dispatch(json!({"op":"boss","active":"false"}))
+            .is_err());
+        assert!(!h.service.boss);
+    }
+    #[test]
+    fn retry_cannot_start_sound_while_boss_is_active() {
+        let mut h = Harness::new("list");
+        h.service.queue = vec![h.track("one", true)];
+        h.service.dispatch(json!({"op":"play"})).unwrap();
+        h.pump("playing");
+        h.service
+            .dispatch(json!({"op":"boss","active":true}))
+            .unwrap();
+        h.service.dispatch(json!({"op":"retry"})).unwrap();
+        h.pump("paused");
+        assert!(h.service.boss);
+        h.service
+            .dispatch(json!({"op":"boss","active":false}))
+            .unwrap();
         assert_eq!(h.service.phase, "playing");
     }
 }
