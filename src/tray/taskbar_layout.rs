@@ -41,6 +41,10 @@ pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> 
         .map(|r| ((r.left - margin).max(left), (r.right + margin).min(right)))
         .filter(|(l, r)| l < r)
         .collect::<Vec<_>>();
+    // Seeing only notification-area controls does not establish that the app-button area is empty.
+    if intervals.is_empty() {
+        return None;
+    }
     intervals.sort_unstable();
     let mut merged: Vec<(i32, i32)> = vec![];
     for (l, r) in intervals {
@@ -124,6 +128,8 @@ mod tests {
         let bar = rect(0, 1032, 1920, 1080);
         let tray = rect(1500, 1032, 1920, 1080);
         assert!(modern_slot(bar, tray, &[rect(0, 1032, 1490, 1080)], 96).is_none());
+        assert!(modern_slot(bar, tray, &[tray], 96).is_none());
+        assert!(modern_slot(bar, tray, &[], 96).is_none());
         assert!(modern_slot(rect(0, 1078, 1920, 1080), tray, &[], 96).is_none());
         assert!(modern_slot(rect(0, 0, 48, 1080), rect(0, 900, 48, 1080), &[], 96).is_none());
     }

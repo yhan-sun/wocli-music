@@ -59,6 +59,9 @@ unsafe fn client_rect(parent: HWND, screen: Rect) -> Option<Rect> {
     })
 }
 unsafe fn move_window(hwnd: HWND, bounds: Rect) -> bool {
+    if window_rect(hwnd).and_then(|r| client_rect(GetParent(hwnd), r)) == Some(bounds) {
+        return true;
+    }
     SetWindowPos(
         hwnd,
         0,
