@@ -116,7 +116,7 @@ wocli playlist export "通勤" --format json --output ./通勤.wocli.json
 
 ### 3. 原生桌面伴侣
 - **macOS**：顶部菜单栏逐句滚动歌词，无缝联动系统 Control Center 与硬件媒体键。
-- **Windows**：独家任务栏嵌入式歌词条，带播放/暂停/切歌按键，支持鼠标随意拖拽。
+- **Windows**：歌词以真实子窗口嵌入任务栏，后台检测按钮位置并避让；窄空间优先显示歌词，空间不足时隐藏。宽度足够时带播放/暂停/切歌按钮。`wocli tray status` 查看挂接及显隐原因；[实现与兼容范围](docs/windows-taskbar-lyrics.md)。
 - 运行 `wocli lyrics-bar on` 开启，`wocli lyrics-bar off` 关闭。
 
 ### 4. 原生 AI MCP 智能体驱动
@@ -159,6 +159,7 @@ wocli stop                     # 停止播放
 - [播放器详细技术对比](docs/comparison.md)
 - [AI MCP 协议接入指南](docs/mcp.md)
 - [歌单导入导出、格式与恢复](docs/playlist-import.md)
+- [Windows 任务栏嵌入歌词与诊断](docs/windows-taskbar-lyrics.md)
 - 更多指令与配置帮助：运行 `wocli help` 或 `wocli doctor` 进行环境诊断
 
 ---

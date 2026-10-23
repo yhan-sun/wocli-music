@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.3.9 — 2026-10-23
+
+- Windows 歌词从桌面置顶悬浮窗口改为真实任务栏子窗口；参考 TaskbarLyrics 的挂接、后台控件检测与空白区避让方法。
+- 经典任务栏预留空间并安全恢复，现代任务栏检测 Explorer 按钮边界；窄空间收起控制按钮，空间不足或读取失败时隐藏，不回退为桌面浮窗。
+- 增加查询节流、快照代次/矩形/时效检查、DPI、Explorer 重建、老板模式隐藏，以及 Windows 透明子窗口兼容性声明。
+- tray status 新增 lyrics_surface 诊断；增加几何与 Windows 原生隔离窗口测试、文档和 MIT 许可说明。
+
 ## 0.3.8 — 2026-10-23
 
 - 新增歌单文件导入导出：CSV/TSV/TXT、wocli JSON v1、LX 单歌单 v2（gzip .lxmc/JSON）、MusicFree 多歌单备份、M3U/M3U8/PLS、JSPF。

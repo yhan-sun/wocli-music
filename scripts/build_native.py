@@ -70,6 +70,11 @@ def main():
         notices.append(f'{label}: {license_name}; {package.get("repository") or "https://crates.io/crates/" + package["name"]}')
         if "MPL" in license_name or "LGPL" in license_name:
             shutil.copytree(source, sources / label, ignore=shutil.ignore_patterns(".cargo-ok", ".cargo_vcs_info.json"))
+    if is_windows:
+        reference_license = bundle / "licenses/TaskbarLyrics/LICENSE"
+        reference_license.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "docs/licenses/TaskbarLyrics-MIT.txt", reference_license)
+        notices.append("TaskbarLyrics taskbar-hosting/occupied-space design reference: MIT; https://github.com/ANYNC/TaskbarLyrics (71262b42aaf0879d2a805b424107a95fbfd50e5a)")
     if args.platform.startswith("linux"):
         library = Path("/usr/lib/x86_64-linux-gnu/libasound.so.2").resolve()
         (bundle / "lib").mkdir()

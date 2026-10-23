@@ -640,7 +640,10 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 "status" => {
                     let running = crate::tray::status(&paths)?;
                     let shortcuts = crate::tray::hotkeys(&paths);
-                    let res = json!({"tray_running": running,"global_shortcuts":shortcuts});
+                    let mut res = json!({"tray_running": running,"global_shortcuts":shortcuts});
+                    if cfg!(windows) {
+                        res["lyrics_surface"] = crate::tray::lyrics_surface(&paths);
+                    }
                     if !args.flag("--json") {
                         println!(
                             "{}",
@@ -667,6 +670,9 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                             }
                         } else if let Some(note) = res["global_shortcuts"]["note"].as_str() {
                             println!("{note}");
+                        }
+                        if let Some(note) = res["lyrics_surface"]["note"].as_str() {
+                            println!("任务栏歌词：{note}");
                         }
                     }
                     res

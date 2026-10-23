@@ -54,7 +54,7 @@ pub fn text(topic: Option<&str>) -> Result<String> {
         "lyrics"=>"用法：wocli lyrics [--id ID --refresh --output song.lrc --force]\n不传 ID 则读取当前歌曲歌词。--refresh 忽略歌词缓存，--force 覆盖输出文件。",
         "lyrics-bar"=>"用法：wocli lyrics-bar [on|off|toggle|status]\n开启、关闭、切换或查看任务栏/状态栏实时歌词。",
         "boss"=>"用法：wocli boss [on|off|toggle]\n老板模式（老板键）：立即暂停/静音，隐藏歌词与歌曲信息，保留中性的 wocli 托盘入口。\n再次执行恢复界面，仅此前播放或加载中的歌曲会继续。\n在终端界面（TUI）中按 Shift+B、Ctrl+B 或 F12 触发工作伪装模式（带行号的 Rust 工程代码、诊断与编译终端；使用固定虚构身份，不读取真实用户名、主机名或个人路径），按 b、Shift+B、Ctrl+B、F12 或 Esc 恢复。\n全局键需先运行 wocli tray start；macOS：Ctrl+Shift+B；Windows：Ctrl+Shift+B 或 Ctrl+Alt+B。\nwocli tray status 查看注册结果，失败时检查其他应用的按键占用。\nShift+B 仅用于终端焦点下的非输入状态；tmux 可能占用 Ctrl+B，可改用 F12（部分 Mac 键盘需 Fn+F12）。\nLinux 系统可在桌面快捷键设置中将全局按键绑定至命令 `wocli boss`。",
-        "tray"=>"用法：wocli tray start|stop|status\nstart 启动托盘；点击播放或老板模式时按需启动音频后台。\nstatus 显示托盘及全局老板键注册结果；冲突时检查其他应用的快捷键设置。",
+        "tray"=>"用法：wocli tray start|stop|status\nstart 启动托盘；点击播放或老板模式时按需启动音频后台。\nstatus 显示托盘及全局老板键注册结果；Windows 另显示任务栏子窗口挂接、显隐和失败原因（--json 的 lyrics_surface）。\nWindows 歌词嵌入主任务栏横向空白区，空间不足/读取失败时隐藏，不回退为桌面浮窗。升级后 tray stop 再 tray start。",
         "daemon"=>"用法：wocli daemon start [--tray]\n      wocli daemon status\n      wocli daemon stop\nstop 同时关闭托盘和播放后台。",
         "config"=>"用法：wocli config [配置项 [值]]\n配置项：quality、volume、mode、direct、lyric_offset、lyrics_bar、tray。\n示例：wocli config quality 320k；wocli config direct true\nlyric_offset 使用毫秒，范围 -60000 至 60000；布尔值为 true/false。\n音源请使用 wocli source 管理。",
         "update"=>"用法：wocli update [--check --force --direct --json]\n--check 仅检查；--force 重装当前稳定版；默认校验并安装最新稳定版。\n保留曲库和设置；更新前下载并校验完整，重启先前运行的后台/托盘。",
