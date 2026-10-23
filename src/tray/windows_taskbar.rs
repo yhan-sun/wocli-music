@@ -21,8 +21,9 @@ use windows_sys::Win32::{
             CreateWindowExW, DestroyWindow, FindWindowExW, FindWindowW, GetParent,
             GetWindowLongPtrW, GetWindowRect, IsWindow, IsWindowVisible,
             SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            GWL_STYLE, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
-            WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            GWL_EXSTYLE, GWL_STYLE, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
+            SW_SHOWNOACTIVATE, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_POPUP,
         },
     },
 };
@@ -417,17 +418,6 @@ impl TaskbarLyrics {
             self.report(false, &format!("任务栏透明表面初始化失败：{error}"));
             return false;
         }
-        SetLastError(0);
-        SetParent(hwnd, parent);
-        let error = GetLastError();
-        if GetParent(hwnd) != parent {
-            DestroyWindow(hwnd);
-            self.report(
-                false,
-                &format!("无法嵌入任务栏（错误 {error}），未启用桌面悬浮回退"),
-            );
-            return false;
-        }
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         SetWindowLongPtrW(
             hwnd,
@@ -446,6 +436,17 @@ impl TaskbarLyrics {
             GWL_EXSTYLE,
             (exstyle & !(WS_EX_TOOLWINDOW as isize)) | WS_EX_NOACTIVATE as isize,
         );
+        SetLastError(0);
+        SetParent(hwnd, parent);
+        let error = GetLastError();
+        if GetParent(hwnd) != parent {
+            DestroyWindow(hwnd);
+            self.report(
+                false,
+                &format!("无法嵌入任务栏（错误 {error}），未启用桌面悬浮回退"),
+            );
+            return false;
+        }
         self.hwnd = hwnd;
         self.shell = shell;
         self.parent = parent;
