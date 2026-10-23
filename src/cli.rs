@@ -1104,7 +1104,11 @@ fn playlist_transfer(
                 &mut list,
                 &known,
                 paths,
-                args.flag("--offline"),
+                playlists::ResolveOptions {
+                    offline: args.flag("--offline"),
+                    direct: args.flag("--direct"),
+                    retry: action == "resolve",
+                },
                 &cancel,
                 |done, total| {
                     if !args.flag("--json") && (done == total || done % 10 == 0) {
@@ -1161,6 +1165,7 @@ fn playlist_transfer(
                 entry.resolved = Some(track);
                 entry.status = MatchState::Matched;
                 entry.reason = "用户手动确认".into();
+                entry.manual = true;
                 entry.candidates.clear();
             }
             json!(playlists::save(store, list, Conflict::Replace)?)
@@ -1206,8 +1211,8 @@ fn playlist_transfer(
                     println!(
                         "  #{} {} · {}：{}",
                         i + 1,
-                        e["title"].as_str().unwrap_or(""),
-                        e["artist"].as_str().unwrap_or(""),
+                        crate::model::clean(e["title"].as_str().unwrap_or("")),
+                        crate::model::clean(e["artist"].as_str().unwrap_or("")),
                         e["reason"].as_str().unwrap_or("")
                     );
                 }

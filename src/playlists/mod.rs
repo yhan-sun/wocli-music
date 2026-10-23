@@ -6,7 +6,7 @@ mod storage;
 
 pub use export::write;
 pub use parse::read;
-pub use resolve::resolve;
+pub use resolve::{resolve, ResolveOptions};
 pub use storage::{backups, restore, save, stored, Conflict, SaveReport};
 
 use crate::model::{Error, Result, Track};
@@ -45,6 +45,7 @@ pub struct Entry {
     pub candidates: Vec<Track>,
     pub resolved: Option<Track>,
     pub duplicate: bool,
+    pub manual: bool,
 }
 impl Entry {
     pub fn from_track(track: Track) -> Self {

@@ -11,6 +11,6 @@ output = root / "docs/screenshots"
 subprocess.run(["cargo", "test", "tui::screenshots::export", "--", "--ignored"], cwd=root, env={**os.environ, "WOCLI_SCREENSHOTS": str(output)}, check=True)
 import resvg_py  # build-time rendering only
 
-for source in [output / f"{name}.svg" for name in ("library", "compact", "collections")]:
+for source in [output / f"{name}.svg" for name in ("library", "compact", "collections", "boss", "playlist-import")]:
     source.with_suffix(".png").write_bytes(resvg_py.svg_to_bytes(svg_string=source.read_text(), monospace_family="Menlo"))
     print(source.with_suffix(".png"))

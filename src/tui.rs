@@ -24,6 +24,8 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 
+mod transfer;
+
 const BG: Color = Color::Rgb(17, 25, 20);
 const FG: Color = Color::Rgb(218, 226, 209);
 const DIM: Color = Color::Rgb(135, 156, 128);
@@ -73,6 +75,12 @@ enum Action {
     SubmitInput,
     JobSelect(usize),
     Boss,
+    ImportPlaylist,
+    InspectPlaylist(String),
+    ExportPlaylist(String),
+    TransferGo,
+    TransferField(u8),
+    TransferChoose(usize),
 }
 #[derive(Clone)]
 struct Menu {
@@ -103,6 +111,7 @@ enum Popup {
     },
     Jobs(usize),
     Help,
+    Transfer(transfer::Dialog),
 }
 #[derive(Clone)]
 struct Hit {
@@ -110,6 +119,7 @@ struct Hit {
     action: Action,
 }
 enum Message {
+    Transfer(u64, transfer::Update),
     State(Box<Status>),
     Boss(u64, std::result::Result<Box<Status>, String>),
     Offline,
@@ -134,6 +144,7 @@ struct App {
     table: TableState,
     nav: ListState,
     folders: Vec<(String, usize)>,
+    pending_entries: usize,
     liked: HashSet<String>,
     nav_focus: bool,
     query: String,
@@ -158,6 +169,8 @@ struct App {
     boss_serial: u64,
     boss_pending: bool,
     boss_entered: Instant,
+    transfer_serial: u64,
+    transfer_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     tx: Sender<Request>,
     events: Sender<Message>,
 }
@@ -182,6 +195,7 @@ impl App {
             table: TableState::default(),
             nav: ListState::default(),
             folders: vec![],
+            pending_entries: 0,
             liked: HashSet::new(),
             nav_focus: false,
             query: String::new(),
@@ -206,6 +220,8 @@ impl App {
             boss_serial: 0,
             boss_pending: false,
             boss_entered: Instant::now(),
+            transfer_serial: 0,
+            transfer_cancel: None,
             tx,
             events,
         };
@@ -222,6 +238,11 @@ impl App {
     }
     fn reload(&mut self) -> Result<()> {
         let selected_id = self.rows.get(self.selected).map(|t| t.id.clone());
+        self.pending_entries = if let View::Folder(name) = &self.view {
+            self.store.db.query_row("SELECT COUNT(*) FROM playlist_imports p,json_each(p.data,'$.entries') e WHERE p.name=? AND json_extract(e.value,'$.status')!='matched' AND COALESCE(json_extract(e.value,'$.duplicate'),0)=0", [name], |r|r.get(0))?
+        } else {
+            0
+        };
         self.folders = self.store.folders()?;
         let likes = self.store.favorites()?;
         self.liked = likes.iter().map(|t| t.id.clone()).collect();
@@ -467,6 +488,11 @@ impl App {
                 name.clone(),
                 vec![
                     ("重命名…".into(), Action::Rename(name.clone())),
+                    ("导出歌单…".into(), Action::ExportPlaylist(name.clone())),
+                    (
+                        "导入条目 / 重试匹配…".into(),
+                        Action::InspectPlaylist(name.clone()),
+                    ),
                     ("删除收藏夹…".into(), Action::ConfirmDelete(name)),
                 ],
             ),
@@ -621,7 +647,36 @@ impl App {
             Action::Volume(delta) => self.send(
                 json!({"op":"volume","value":(i16::from(self.state.volume)+delta).clamp(0,100)}),
             ),
-            Action::Close => self.popup = None,
+            Action::Close => self.close_transfer(),
+            Action::ImportPlaylist => self.open_transfer(None),
+            Action::InspectPlaylist(name) => {
+                let list = crate::playlists::stored(&self.store, &name)?;
+                self.close_transfer();
+                self.popup = Some(Popup::Transfer(transfer::Dialog {
+                    existing: true,
+                    stage: transfer::Stage::Review(std::sync::Arc::new(list)),
+                    ..transfer::Dialog::default()
+                }));
+            }
+            Action::ExportPlaylist(name) => self.open_transfer(Some(name)),
+            Action::TransferGo => self.transfer_go()?,
+            Action::TransferField(field) => {
+                if let Some(Popup::Transfer(dialog)) = &mut self.popup {
+                    dialog.focus = field;
+                    if field == 3 {
+                        dialog.title_first = !dialog.title_first;
+                    }
+                    if field == 4 {
+                        dialog.offline = !dialog.offline;
+                    }
+                }
+            }
+            Action::TransferChoose(index) => {
+                if let Some(Popup::Transfer(dialog)) = &mut self.popup {
+                    dialog.selected = index;
+                }
+                self.transfer_go()?;
+            }
             Action::SubmitInput => self.submit_input()?,
             Action::JobSelect(index) => self.popup = Some(Popup::Jobs(index)),
             Action::Boss => {
@@ -712,7 +767,7 @@ impl App {
             || (!self.editing
                 && !matches!(
                     self.popup,
-                    Some(Popup::Input { .. } | Popup::Download { .. })
+                    Some(Popup::Input { .. } | Popup::Download { .. } | Popup::Transfer(_))
                 )
                 && key.code == KeyCode::Char('B'))
         {
@@ -744,6 +799,10 @@ impl App {
                 }
                 _ => {}
             }
+            return Ok(false);
+        }
+        if matches!(self.popup, Some(Popup::Transfer(_))) {
+            self.transfer_key(key)?;
             return Ok(false);
         }
         if let Some(popup) = &mut self.popup {
@@ -826,6 +885,7 @@ impl App {
                     }
                     _ => {}
                 },
+                Popup::Transfer(_) => unreachable!(),
                 Popup::Help => {
                     if key.code == KeyCode::Char('?') {
                         self.popup = None;
@@ -862,16 +922,32 @@ impl App {
             KeyCode::Char('?') => Some(Action::Help),
             KeyCode::Char('v') => Some(Action::Lyrics),
             KeyCode::Char('b') => {
-                let items = self
+                let mut items: Vec<_> = self
                     .navigation()
                     .into_iter()
                     .map(|(label, view)| (label, Action::View(view)))
                     .collect();
+                items.push(("导入歌单… (I)".into(), Action::ImportPlaylist));
+                if let View::Folder(name) = &self.view {
+                    items.push((
+                        "导出当前歌单… (E)".into(),
+                        Action::ExportPlaylist(name.clone()),
+                    ));
+                }
                 self.menu("音乐库", String::new(), items);
                 None
             }
             KeyCode::Char('m') => Some(Action::Mode),
             KeyCode::Char('n') => Some(Action::NewFolder(None)),
+            KeyCode::Char('I') => Some(Action::ImportPlaylist),
+            KeyCode::Char('E') => {
+                if let View::Folder(name) = &self.view {
+                    Some(Action::ExportPlaylist(name.clone()))
+                } else {
+                    self.notice("请先打开需要导出的歌单");
+                    None
+                }
+            }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::Control(json!({"op":"retry"})))
             }
@@ -1001,6 +1077,7 @@ impl App {
     }
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
+            Message::Transfer(serial, update) => self.transfer_update(serial, update)?,
             Message::State(state) => {
                 if !self.boss_pending {
                     self.boss_mode = state.boss;
@@ -1371,7 +1448,15 @@ impl App {
             self.rows.len()
         };
         frame.render_widget(
-            Paragraph::new(format!("{title}  {count}")).style(Style::default().fg(ACCENT).bold()),
+            Paragraph::new(format!(
+                "{title}  {count}{}",
+                if self.pending_entries > 0 {
+                    format!(" · {} 条待匹配（⋯ 查看）", self.pending_entries)
+                } else {
+                    String::new()
+                }
+            ))
+            .style(Style::default().fg(ACCENT).bold()),
             Rect::new(area.x, top, area.width, 1),
         );
         top += 2;
@@ -1839,7 +1924,15 @@ impl App {
             Popup::Input { title, .. } => (title.as_str(), 7),
             Popup::Download { .. } => ("下载歌曲", 15),
             Popup::Jobs(_) => ("下载任务", 18),
-            Popup::Help => ("快捷键", 22),
+            Popup::Help => ("快捷键", 24),
+            Popup::Transfer(dialog) => (
+                if dialog.export.is_some() {
+                    "导出歌单"
+                } else {
+                    "导入歌单"
+                },
+                20,
+            ),
         };
         let outer = frame.area();
         let width = outer.width.saturating_sub(4).min(66);
@@ -1868,6 +1961,7 @@ impl App {
             false,
         );
         match popup {
+            Popup::Transfer(dialog) => self.draw_transfer(frame, body, dialog),
             Popup::Menu(menu)=>{
                 frame.render_widget(Paragraph::new(menu.caption).style(Style::default().fg(DIM)),Rect::new(body.x,body.y,body.width,1));
                 let list=Rect::new(body.x,body.y+2,body.width,body.height.saturating_sub(2));
@@ -1910,7 +2004,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nI  导入歌单     E  导出当前歌单\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2037,6 +2131,16 @@ pub fn run(paths: Paths) -> Result<()> {
                     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
                     match &mut app.popup {
                         Some(Popup::Input { value, .. }) => value.push_str(&clean),
+                        Some(Popup::Transfer(dialog)) => {
+                            if matches!(dialog.stage, transfer::Stage::Input) {
+                                match dialog.focus {
+                                    0 => dialog.path.push_str(&clean),
+                                    1 => dialog.name.push_str(&clean),
+                                    2 => dialog.list.push_str(&clean),
+                                    _ => {}
+                                }
+                            }
+                        }
                         Some(Popup::Download {
                             directory,
                             focus: 0,
@@ -2167,8 +2271,18 @@ mod screenshots {
             ("library", 123, 41, false),
             ("collections", 123, 41, true),
             ("compact", 80, 26, false),
+            ("boss", 140, 46, false),
+            ("playlist-import", 100, 30, false),
         ] {
             app.popup = None;
+            app.boss_mode = name == "boss";
+            if name == "playlist-import" {
+                app.open_transfer(None);
+                if let Some(Popup::Transfer(dialog)) = &mut app.popup {
+                    dialog.path = "/workspaces/playlists/收藏.lxmc".into();
+                    dialog.name = "以前的收藏".into();
+                }
+            }
             if collection {
                 app.collect(tracks[0].clone()).unwrap();
             }
@@ -2608,6 +2722,170 @@ mod interaction_tests {
         assert_eq!(cmd.value["op"], "play");
     }
     #[test]
+    fn transfer_mouse_preview_cancel_and_commit_use_the_real_worker() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("import.csv");
+        std::fs::write(&path, "title,artist,platform,trackId\n歌曲,歌手,wy,123\n").unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let (events, messages) = mpsc::channel();
+        let mut app = App::new(
+            Paths {
+                home: root.path().into(),
+                runtime: root.path().join("run"),
+            },
+            tx,
+            events,
+        )
+        .unwrap();
+        app.key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT))
+            .unwrap();
+        if let Some(Popup::Transfer(dialog)) = &mut app.popup {
+            dialog.path = path.to_string_lossy().into();
+            dialog.name = "导入测试".into();
+            dialog.offline = true;
+        } else {
+            panic!("import dialog missing");
+        }
+        // B is text in the path field, while F12 still enters the privacy view.
+        app.key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert!(!app.boss_mode);
+        if let Some(Popup::Transfer(dialog)) = &mut app.popup {
+            assert!(dialog.path.ends_with('B'));
+            dialog.path.pop();
+        }
+        draw_terminal(&mut app, 100, 30);
+        let submit = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::TransferGo))
+            .unwrap()
+            .rect;
+        click(&mut app, submit);
+        while !matches!(&app.popup,Some(Popup::Transfer(d)) if matches!(d.stage,transfer::Stage::Preview(_)))
+        {
+            app.message(messages.recv_timeout(Duration::from_secs(5)).unwrap())
+                .unwrap();
+        }
+        assert!(app.store.folders().unwrap().is_empty());
+        draw_terminal(&mut app, 100, 30);
+        let confirm = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::TransferGo))
+            .unwrap()
+            .rect;
+        click(&mut app, confirm);
+        assert_eq!(app.pending_entries, 1);
+        assert_eq!(
+            crate::playlists::stored(&app.store, "导入测试")
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+        let screen_text = screen(&draw_terminal(&mut app, 100, 30));
+        assert!(screen_text.contains("待匹配"));
+        app.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT))
+            .unwrap();
+        let exported = root.path().join("export.json");
+        if let Some(Popup::Transfer(dialog)) = &mut app.popup {
+            dialog.path = exported.to_string_lossy().into();
+        }
+        draw_terminal(&mut app, 100, 30);
+        let export = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::TransferGo))
+            .unwrap()
+            .rect;
+        click(&mut app, export);
+        assert_eq!(
+            crate::playlists::read(&exported, "artist-title").unwrap()[0]
+                .entries
+                .len(),
+            1
+        );
+        app.open_transfer(None);
+        let serial = app.transfer_serial;
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        app.message(Message::Transfer(
+            serial,
+            transfer::Update::Resolved(Ok(crate::playlists::Playlist::default())),
+        ))
+        .unwrap();
+        assert!(app.popup.is_none());
+        assert_eq!(app.store.folders().unwrap().len(), 1);
+    }
+    #[test]
+    fn transfer_selects_backups_beyond_255_and_renders_small_terminals() {
+        let (_root, mut app, _rx) = setup();
+        app.open_transfer(None);
+        let lists = (0..300)
+            .map(|i| crate::playlists::Playlist {
+                name: format!("list{i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.transfer_update(app.transfer_serial, transfer::Update::Parsed(Ok(lists)))
+            .unwrap();
+        for _ in 0..299 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert!(matches!(&app.popup,Some(Popup::Transfer(d)) if d.selected==299));
+        for (w, h) in [(120, 40), (80, 26), (60, 24), (30, 10), (10, 4)] {
+            draw_terminal(&mut app, w, h);
+        }
+        app.open_transfer(None);
+        for (w, h) in [(120, 40), (80, 26), (60, 24), (30, 10), (10, 4)] {
+            draw_terminal(&mut app, w, h);
+        }
+    }
+    #[test]
+    fn boss_workspace_is_fictional_at_every_size() {
+        let (_root, mut app, _rx) = setup();
+        app.boss_mode = true;
+        app.state.track = Some(Track {
+            title: "PRIVATE_SONG_SENTINEL".into(),
+            path: "/Users/pyu/private/music.mp3".into(),
+            ..Default::default()
+        });
+        app.query = "PRIVATE_QUERY_SENTINEL".into();
+        for (w, h) in [(140, 48), (100, 30), (80, 24), (30, 10), (10, 3)] {
+            let rendered = screen(&draw_terminal(&mut app, w, h));
+            for private in [
+                "pyu",
+                "PRIVATE_SONG_SENTINEL",
+                "PRIVATE_QUERY_SENTINEL",
+                "wocli/music",
+            ] {
+                assert!(!rendered.contains(private), "leaked {private}");
+            }
+            if w >= 80 {
+                assert!(rendered.contains("ATLAS"));
+                assert!(rendered.contains("AtomicU64"));
+            }
+            if w >= 100 {
+                assert!(rendered.contains("Quorum"));
+                assert!(rendered.contains("build-node-07") || cfg!(windows));
+            }
+        }
+        // This module cannot reach real machine or player state at all.
+        let source = include_str!("tui_camouflage.rs");
+        for forbidden in [
+            "std::env",
+            "var_os(",
+            "current_dir(",
+            "USERNAME",
+            "HOSTNAME",
+            "USERPROFILE",
+        ] {
+            assert!(!source.contains(forbidden));
+        }
+    }
+    #[test]
     fn boss_mode_camouflage_and_toggle() {
         let (_root, mut app, rx) = setup();
         assert!(!app.boss_mode);
@@ -2620,7 +2898,7 @@ mod interaction_tests {
         assert_eq!(cmd.value["op"], "boss");
         assert_eq!(cmd.value["active"], true);
 
-        // While in camouflage mode, drawing renders cargo test output instead of music UI
+        // Fictional engineering view retains build output below the source editor.
         let terminal = draw_terminal(&mut app, 100, 30);
         let s = screen(&terminal);
         assert!(s.contains("cargotest"));
@@ -2718,5 +2996,13 @@ mod interaction_tests {
             .unwrap();
         assert!(rx.try_recv().is_err());
         assert!(app.boss_mode);
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.transfer_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }

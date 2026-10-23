@@ -89,27 +89,53 @@ fn local(entry: &mut Entry) {
         }
     }
 }
-fn resolve_one(mut entry: Entry, known: &[Track], provider: Option<&Provider>) -> Entry {
+fn resolve_one(
+    mut entry: Entry,
+    known: &[Track],
+    provider: Option<&Provider>,
+    retry: bool,
+) -> Entry {
+    if !retry && entry.resolved.is_none() && !entry.reason.is_empty() {
+        return entry;
+    }
     if entry.status == MatchState::Invalid {
         return entry;
+    }
+    if entry.manual {
+        if let Some(track) = entry.resolved.as_mut() {
+            if !track.path.is_empty() {
+                if std::path::Path::new(&track.path).is_file() {
+                    entry.status = MatchState::Matched;
+                    return entry;
+                }
+            } else if let Ok(id) = normalize_id(&track.id) {
+                track.id = id;
+                entry.status = MatchState::Matched;
+                return entry;
+            }
+        }
     }
     if !entry.path.is_empty() {
         local(&mut entry);
         return entry;
     }
-    // Native backups carry explicit wocli/Kuwo IDs, but reject arbitrary injected provider IDs.
-    if let Some(track) = entry.resolved.as_ref() {
-        if track.path.is_empty() && normalize_id(&track.id).is_ok() {
-            entry.status = MatchState::Matched;
-            return entry;
+    // Native backups carry explicit wocli/Kuwo IDs, never foreign provider IDs.
+    if let Some(track) = entry.resolved.as_mut() {
+        if track.path.is_empty() {
+            if let Ok(id) = normalize_id(&track.id) {
+                track.id = id;
+                entry.status = MatchState::Matched;
+                return entry;
+            }
         }
     }
     entry.resolved = None;
     entry.candidates.clear();
     if entry.source == "kw" && normalize_id(&entry.id).is_ok() {
+        let target_id = normalize_id(&entry.id).unwrap();
         let direct = known
             .iter()
-            .find(|t| t.id == entry.id)
+            .find(|t| t.id == target_id)
             .cloned()
             .or_else(|| provider.and_then(|p| p.details(&entry.id).ok()));
         if let Some(track) = direct {
@@ -149,11 +175,17 @@ fn resolve_one(mut entry: Entry, known: &[Track], provider: Option<&Provider>) -
 }
 /// All network work finishes before a caller starts its database transaction.
 /// At most four requests run at once; cancellation prevents any subsequent commit.
+#[derive(Clone, Copy, Default)]
+pub struct ResolveOptions {
+    pub offline: bool,
+    pub direct: bool,
+    pub retry: bool,
+}
 pub fn resolve(
     list: &mut Playlist,
     known: &[Track],
     paths: &Paths,
-    offline: bool,
+    options: ResolveOptions,
     cancel: &AtomicBool,
     progress: impl Fn(usize, usize) + Sync,
 ) -> Result<()> {
@@ -168,18 +200,21 @@ pub fn resolve(
     let mut indices = Vec::with_capacity(input.len());
     let mut jobs = Vec::new();
     for (i, entry) in input.iter().enumerate() {
-        let n = *unique.entry(entry.key()).or_insert_with(|| {
-            jobs.push(i);
-            jobs.len() - 1
-        });
+        let n = *unique
+            .entry(serde_json::to_string(entry)?)
+            .or_insert_with(|| {
+                jobs.push(i);
+                jobs.len() - 1
+            });
         indices.push(n);
     }
     std::thread::scope(|scope| {
         for _ in 0..4.min(jobs.len()) {
             let (jobs, next, done, results, progress) = (&jobs, &next, &done, &results, &progress);
             scope.spawn(move || {
-                let provider =
-                    (!offline).then(|| Provider::with_sources(settings.direct, paths.home.clone()));
+                let provider = (!options.offline).then(|| {
+                    Provider::with_sources(options.direct || settings.direct, paths.home.clone())
+                });
                 loop {
                     if cancel.load(Ordering::Relaxed) {
                         break;
@@ -188,7 +223,8 @@ pub fn resolve(
                     let Some(&i) = jobs.get(n) else {
                         break;
                     };
-                    let entry = resolve_one(input[i].clone(), known, provider.as_ref());
+                    let entry =
+                        resolve_one(input[i].clone(), known, provider.as_ref(), options.retry);
                     results.lock().unwrap()[n] = Some(entry);
                     progress(done.fetch_add(1, Ordering::Relaxed) + 1, jobs.len());
                 }
@@ -225,7 +261,7 @@ mod tests {
             artist: "乙".into(),
             ..Track::default()
         };
-        assert!(resolve_one(entry.clone(), &[wrong], None)
+        assert!(resolve_one(entry.clone(), &[wrong], None, true)
             .resolved
             .is_none());
         let live = Track {
@@ -234,7 +270,9 @@ mod tests {
             artist: "甲".into(),
             ..Track::default()
         };
-        assert!(resolve_one(entry.clone(), &[live], None).resolved.is_none());
+        assert!(resolve_one(entry.clone(), &[live], None, true)
+            .resolved
+            .is_none());
         let track = Track {
             id: "2".into(),
             title: "歌".into(),
@@ -246,13 +284,13 @@ mod tests {
         second.id = "3".into();
         second.album = "B".into();
         assert_eq!(
-            resolve_one(entry.clone(), &[track.clone(), second.clone()], None).status,
+            resolve_one(entry.clone(), &[track.clone(), second.clone()], None, true).status,
             MatchState::Ambiguous
         );
         let mut exact = entry;
         exact.album = "A".into();
         assert_eq!(
-            resolve_one(exact, &[track, second], None)
+            resolve_one(exact, &[track, second], None, true)
                 .resolved
                 .unwrap()
                 .id,

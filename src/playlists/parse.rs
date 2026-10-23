@@ -293,7 +293,11 @@ fn local_path(value: &str, base: &Path) -> Option<String> {
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(n) = u8::from_str_radix(&uri[i + 1..i + 3], 16) {
+                if let (Some(a), Some(b)) = (
+                    (bytes[i + 1] as char).to_digit(16),
+                    (bytes[i + 2] as char).to_digit(16),
+                ) {
+                    let n = (a * 16 + b) as u8;
                     out.push(n);
                     i += 3;
                     continue;
@@ -343,14 +347,12 @@ pub fn read(path: &Path, text_order: &str) -> Result<Vec<Playlist>> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let mut lists = if raw.starts_with('{') || raw.starts_with('[') || raw.starts_with('"') {
-        json(raw, &name)?
+    let mut lists = if ext == "csv" || ext == "tsv" {
+        csv(raw, &name, if ext == "tsv" { b'\t' } else { b',' })?
     } else if raw.starts_with("#EXTM3U") || ["m3u", "m3u8"].contains(&ext.as_str()) {
         m3u(raw, &name)?
     } else if raw.starts_with("[playlist]") || ext == "pls" {
         pls(raw, &name)?
-    } else if ext == "csv" || ext == "tsv" {
-        csv(raw, &name, if ext == "tsv" { b'\t' } else { b',' })?
     } else if ext == "txt" {
         vec![Playlist {
             name: name.into(),
@@ -362,6 +364,8 @@ pub fn read(path: &Path, text_order: &str) -> Result<Vec<Playlist>> {
                 .map(|l| text_entry(l, text_order == "title-artist"))
                 .collect(),
         }]
+    } else if raw.starts_with('{') || raw.starts_with('[') || raw.starts_with('"') {
+        json(raw, &name)?
     } else {
         return Err(Error::new(
             "不支持的歌单格式；请导出 CSV/TXT、LX 单歌单 v2、MusicFree JSON、M3U8/PLS 或 JSPF",
