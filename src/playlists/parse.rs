@@ -68,6 +68,7 @@ fn list(value: &Value, name: &str, key: &str, lx: bool, format: &str) -> Result<
     let entries = value[key]
         .as_array()
         .ok_or_else(|| Error::new(format!("{format} 缺少 {key} 数组")))?;
+    check_count(entries.len())?;
     Ok(Playlist {
         name: get(value, &["name", "title"]).trim().to_string(),
         format: format.into(),
@@ -83,6 +84,22 @@ impl Playlist {
         self
     }
 }
+fn check_count(count: usize) -> Result<()> {
+    if count > MAX_ENTRIES {
+        return Err(Error::new("一份文件最多 10000 条歌曲"));
+    }
+    Ok(())
+}
+fn check_json_lists(lists: &[Value], key: &str) -> Result<()> {
+    if lists.len() > 1000 {
+        return Err(Error::new("一份文件最多 1000 张歌单"));
+    }
+    let count = lists
+        .iter()
+        .map(|v| v[key].as_array().map_or(0, Vec::len))
+        .sum();
+    check_count(count)
+}
 fn json(raw: &str, name: &str) -> Result<Vec<Playlist>> {
     let mut value: Value = serde_json::from_str(raw)?;
     if let Value::String(inner) = &value {
@@ -91,6 +108,17 @@ fn json(raw: &str, name: &str) -> Result<Vec<Playlist>> {
     if value["format"] == "wocli-playlist" {
         if value["version"] != 1 {
             return Err(Error::new("不支持的 wocli 歌单版本"));
+        }
+        let raw_lists = value["playlists"]
+            .as_array()
+            .ok_or_else(|| Error::new("缺少 playlists 数组"))?;
+        check_json_lists(raw_lists, "entries")?;
+        for list in raw_lists {
+            for entry in list["entries"].as_array().into_iter().flatten() {
+                if entry["candidates"].as_array().is_some_and(|v| v.len() > 20) {
+                    return Err(Error::new("单条歌曲最多保留 20 个匹配候选"));
+                }
+            }
         }
         let lists: Vec<Playlist> = serde_json::from_value(value["playlists"].clone())?;
         return Ok(lists);
@@ -104,6 +132,7 @@ fn json(raw: &str, name: &str) -> Result<Vec<Playlist>> {
         };
     }
     if let Some(sheets) = value["musicSheets"].as_array() {
+        check_json_lists(sheets, "musicList")?;
         return sheets
             .iter()
             .map(|v| list(v, name, "musicList", false, "musicfree"))
@@ -114,6 +143,7 @@ fn json(raw: &str, name: &str) -> Result<Vec<Playlist>> {
             .get("track")
             .and_then(Value::as_array)
             .ok_or_else(|| Error::new("JSPF 缺少 track 数组"))?;
+        check_count(tracks.len())?;
         return Ok(vec![Playlist {
             name: string(&value["playlist"]["title"]),
             format: "jspf".into(),
@@ -235,6 +265,7 @@ fn m3u(raw: &str, name: &str) -> Result<Vec<Playlist>> {
             }
         } else if !line.starts_with('#') {
             info.url = line.into();
+            check_count(entries.len() + 1)?;
             entries.push(std::mem::take(&mut info));
         }
     }
@@ -256,6 +287,9 @@ fn pls(raw: &str, name: &str) -> Result<Vec<Playlist>> {
                 .strip_prefix(prefix)
                 .and_then(|v| v.parse::<usize>().ok())
             {
+                if !entries.contains_key(&n) {
+                    check_count(entries.len() + 1)?;
+                }
                 let entry = entries.entry(n).or_default();
                 match prefix {
                     "file" => entry.url = val.into(),
@@ -354,6 +388,7 @@ pub fn read(path: &Path, text_order: &str) -> Result<Vec<Playlist>> {
     } else if raw.starts_with("[playlist]") || ext == "pls" {
         pls(raw, &name)?
     } else if ext == "txt" {
+        check_count(raw.lines().filter(|l| !l.trim().is_empty()).count())?;
         vec![Playlist {
             name: name.into(),
             format: "txt".into(),

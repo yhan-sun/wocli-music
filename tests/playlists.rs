@@ -408,3 +408,68 @@ fn cli_dry_run_import_rename_export_reimport_and_manual_repair() {
     .success());
     assert_eq!(playlists::stored(&store, "通勤").unwrap().entries.len(), 1);
 }
+
+#[test]
+fn parser_limits_apply_before_expanding_records() {
+    let (root, _, _) = setup();
+    let text = file(
+        root.path(),
+        "many.txt",
+        &"歌\n".repeat(playlists::MAX_ENTRIES + 1),
+    );
+    assert!(playlists::read(&text, "artist-title")
+        .unwrap_err()
+        .message
+        .contains("10000"));
+    let m3u = file(
+        root.path(),
+        "many.m3u8",
+        &format!(
+            "#EXTM3U\n{}",
+            "song.mp3\n".repeat(playlists::MAX_ENTRIES + 1)
+        ),
+    );
+    assert!(playlists::read(&m3u, "artist-title").is_err());
+    let entries = vec![serde_json::json!({}); playlists::MAX_ENTRIES + 1];
+    for (name, value) in [
+        (
+            "many.json",
+            serde_json::json!({"format":"wocli-playlist","version":1,"playlists":[{"name":"many","entries":entries}]}),
+        ),
+        (
+            "many-lx.json",
+            serde_json::json!({"type":"playListPart_v2","data":{"name":"many","list":entries}}),
+        ),
+        (
+            "many-mf.json",
+            serde_json::json!({"musicSheets":[{"title":"many","musicList":entries}]}),
+        ),
+        (
+            "candidates.json",
+            serde_json::json!({"format":"wocli-playlist","version":1,"playlists":[{"name":"many","entries":[{"title":"歌","candidates":vec![serde_json::json!({});21]}]}]}),
+        ),
+    ] {
+        let path = file(root.path(), name, &value.to_string());
+        assert!(playlists::read(&path, "artist-title").is_err());
+    }
+}
+
+#[test]
+fn database_failure_rolls_back_members_metadata_tracks_and_snapshot() {
+    let (_, _, store) = setup();
+    playlists::save(&store, pending("原子写入", "旧曲目"), Conflict::Error).unwrap();
+    store.db.execute_batch("CREATE TRIGGER fail_playlist BEFORE INSERT ON members BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END;").unwrap();
+    let list = Playlist {
+        name: "原子写入".into(),
+        format: "test".into(),
+        entries: vec![Entry::from_track(track("987"))],
+    };
+    assert!(playlists::save(&store, list, Conflict::Replace).is_err());
+    assert_eq!(
+        playlists::stored(&store, "原子写入").unwrap().entries[0].title,
+        "旧曲目"
+    );
+    assert!(store.folder("原子写入").unwrap().is_empty());
+    assert!(store.track("kuwo:987").unwrap().is_none());
+    assert!(playlists::backups(&store, "原子写入").unwrap().is_empty());
+}
