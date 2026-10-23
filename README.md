@@ -2,7 +2,7 @@
 
   <img src="docs/screenshots/library.png" width="820" alt="wocli-music" style="border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.35); max-width: 100%;" />
 
-  # 🎵 wocli-music
+  # wocli-music
 
   **让音乐无缝融入你的终端、脚本与 AI 工作流**
   <br />
@@ -20,13 +20,13 @@
   </p>
 
   <p align="center">
-    <a href="#--快速开始">⚡ 快速开始</a> •
-    <a href="#--为什么选择-wocli-music播放器横向对比">📊 横向对比</a> •
-    <a href="#--核心特性与场景">✨ 核心特性</a> •
-    <a href="#--快捷键速查">⌨️ 快捷键</a> •
-    <a href="#--ai-伴侣模式mcp让-ai-控制播放器">🤖 AI MCP</a> •
-    <a href="#--cli-与自动化指令">💻 命令行</a> •
-    <a href="#--高级配置与诊断">⚙️ 配置</a> •
+    <a href="#快速开始">快速开始</a> •
+    <a href="#为什么选择-wocli-music播放器横向对比">横向对比</a> •
+    <a href="#核心特性与场景">核心特性</a> •
+    <a href="#快捷键速查">快捷键</a> •
+    <a href="#ai-伴侣模式mcp让-ai-控制播放器">AI MCP</a> •
+    <a href="#cli-与自动化指令">命令行</a> •
+    <a href="#高级配置与诊断">配置</a> •
     <a href="README_EN.md">English</a>
   </p>
 
@@ -34,55 +34,55 @@
 
 ---
 
-## ⚡ 为什么选择 wocli-music？
+## 为什么选择 wocli-music？
 
-`wocli-music` 是一款专为**开发者、极客与命令行重度用户**打造的现代化音乐播放器。不同于臃肿的 Electron/Web 客户端，它使用纯 Rust 原生开发，单二进制开箱即用，并首次将 **现代终端界面 (TUI)**、**自动化命令行 (CLI)** 与 **AI 智能体控制 (MCP)** 深度融为一体。
+`wocli-music` 是一款专为开发者、极客与命令行重度用户打造的现代化音乐播放器。不同于臃肿的 Electron / Web 客户端，它使用纯 Rust 原生开发，单二进制开箱即用，并将现代终端界面 (TUI)、自动化命令行 (CLI) 与 AI 智能体控制 (MCP) 深度融为一体。
 
-### ✨ 亮点一览
+### 亮点一览
 
-- 🚀 **极小体积 & 极低内存**：打包仅 **~3MB**，单二进制开箱即用（无 Python/Node/mpv 依赖）；运行时仅占用 **~15–30MB 内存**。
-- 🎧 **即开即听，完全免登录**：无需手机号、无验证码、无会员限制，直接检索数百万公开曲库并统一纳管本地无损音乐（FLAC/MP3/AAC/WAV）。
-- 🤫 **硬核老板模式（Boss Mode）**：按下 <kbd>Shift</kbd>+<kbd>B</kbd> 或全局热键，音频瞬间静音暂停，全屏切换为高仿 `cargo test` 编译测试运行终端，彻底抹除听歌痕迹；再按即刻恢复续播。
-- 🖥️ **跨平台原生桌面伴侣**：
+- **极小体积与极低内存**：打包仅 **~3MB**，单二进制开箱即用（无 Python、Node.js、mpv 依赖）；运行时常驻仅占用 **~15–30MB 内存**。
+- **即开即听，完全免登录**：无需手机号、无验证码、无会员限制，直接检索数百万公开曲库并统一纳管本地无损音乐（FLAC、MP3、AAC、WAV）。
+- **硬核老板模式（Boss Mode）**：按下 <kbd>Shift</kbd>+<kbd>B</kbd> 或全局热键，音频瞬间静音暂停，全屏切换为仿真 `cargo test` 编译测试运行终端，彻底抹除听歌痕迹；再按即刻恢复续播。
+- **跨平台原生桌面伴侣**：
   - **macOS**：原生菜单栏滚动歌词 + 系统 Control Center / Now Playing 媒体中心联动。
-  - **Windows**：独家任务栏内嵌交互歌词条（带切歌/暂停按键）+ 系统托盘常驻。
-  - **Linux**：纯粹极简，支持脚本无缝绑定任意窗口管理器快捷键（GNOME / KDE / i3 / Sway）。
-- 🤖 **内置原生 AI MCP 协议**：无需配置额外网关，直接向 Claude / Cursor / OpenCode 等 AI 暴露 17 项音乐与歌单控制工具。
-- 🔁 **全场景共享同一状态**：终端选歌、命令行脚本切歌、AI 整理歌单共用同一个后台守护进程与 SQLite 曲库；关闭界面音乐绝不断流。
+  - **Windows**：独家任务栏内嵌交互歌词条（带切歌与暂停按键）+ 系统托盘常驻。
+  - **Linux**：纯粹极简，支持脚本无缝绑定任意窗口管理器快捷键（GNOME、KDE、i3、Sway）。
+- **内置原生 AI MCP 协议**：无需配置额外网关，直接向 Claude、Cursor、OpenCode 等 AI 暴露 17 项音乐与歌单控制工具。
+- **全场景共享同一状态**：终端选歌、命令行脚本切歌、AI 整理歌单共用同一个后台守护进程与 SQLite 曲库；关闭界面音乐绝不断流。
 
 ---
 
-## 📊 为什么选择 wocli-music？（播放器横向对比）
+## 为什么选择 wocli-music？（播放器横向对比）
 
-无论是在服务器终端工作，还是希望在日常编程中拥有一款**极致轻量、零干扰、免登录**的听歌伴侣，wocli-music 都能带来截然不同的体验：
+无论是在服务器终端工作，还是希望在日常编程中拥有一款极致轻量、零干扰、免登录的听歌伴侣，wocli-music 都能带来截然不同的体验：
 
-| 评估维度 / 播放器方案 | 🎵 **wocli-music** | 📱 **官方商业客户端**<br>*(网易云/QQ/Spotify)* | 🪟 **LX Music 桌面版** | 🦊 **go-musicfox** | 🎛️ **ncmpcpp + MPD** |
+| 评估维度 / 播放器方案 | wocli-music | 官方商业客户端<br>*(网易云/QQ/Spotify)* | LX Music 桌面版 | go-musicfox | ncmpcpp + MPD |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **是否需要登录** | 🟢 **完全免登录**<br>开箱即用，无账号门槛与会员限制 | 🔴 **强制登录绑定**<br>未登录仅试听，重度依赖 VIP | 🟢 **免登录**<br>依赖第三方公开音源脚本 | 🟡 **必须登录**<br>需扫码或 Cookie 绑定网易云 | 🟢 **免登录**<br>面向本地私有音乐库 |
-| **内存占用 (RAM)** | 🟢 **~15 – 30 MB**<br>Rust 原生极低内存常驻 | 🔴 **300 MB – 1.2 GB+**<br>多进程 Chromium/Electron 庞大开销 | 🔴 **150 – 450 MB**<br>基于 Electron + Web 渲染引擎 | 🟡 **40 – 95 MB**<br>基于 Go 运行时与终端 UI | 🟢 **15 – 40 MB**<br>基于 C/C++ 守护进程与终端 |
-| **安装包 / App 体积** | 🟢 **~3.0 – 4.2 MB**<br>单文件自包含二进制包 | 🔴 **150 – 350 MB**<br>庞大富客户端安装包 | 🔴 **80 – 120 MB**<br>跨平台 Electron 打包文件 | 🟡 **20 – 35 MB**<br>Go 静态编译产物 | 🟢 **5 – 15 MB**<br>需额外安装 MPD 服务与依赖库 |
-| **启动与响应延迟** | 🟢 **< 10ms 极速启动**<br>无开屏、无启动广告、无网络阻塞 | 🔴 **2 – 6 秒**<br>含开屏推荐、商业广告与登录鉴权 | 🟡 **1.5 – 3 秒**<br>桌面渲染引擎加载耗时 | 🟢 **< 100ms**<br>终端启动迅速 | 🟢 **< 50ms**<br>需系统已预启 MPD 守护进程 |
+| **是否需要登录** | **完全免登录**<br>开箱即用，无账号门槛与会员限制 | **强制登录绑定**<br>未登录仅试听，重度依赖 VIP | **免登录**<br>依赖第三方公开音源脚本 | **必须登录**<br>需扫码或 Cookie 绑定网易云 | **免登录**<br>面向本地私有音乐库 |
+| **内存占用 (RAM)** | **~15 – 30 MB**<br>Rust 原生极低内存常驻 | **300 MB – 1.2 GB+**<br>多进程 Chromium/Electron 庞大开销 | **150 – 450 MB**<br>基于 Electron + Web 渲染引擎 | **40 – 95 MB**<br>基于 Go 运行时与终端 UI | **15 – 40 MB**<br>基于 C/C++ 守护进程与终端 |
+| **安装包 / App 体积** | **~3.0 – 4.2 MB**<br>单文件自包含二进制包 | **150 – 350 MB**<br>庞大富客户端安装包 | **80 – 120 MB**<br>跨平台 Electron 打包文件 | **20 – 35 MB**<br>Go 静态编译产物 | **5 – 15 MB**<br>需额外安装 MPD 服务与依赖库 |
+| **启动与响应延迟** | **< 10ms 极速启动**<br>无开屏、无启动广告、无网络阻塞 | **2 – 6 秒**<br>含开屏推荐、商业广告与登录鉴权 | **1.5 – 3 秒**<br>桌面渲染引擎加载耗时 | **< 100ms**<br>终端启动迅速 | **< 50ms**<br>需系统已预启 MPD 守护进程 |
 | **核心使用形态** | **TUI + CLI + AI MCP + 托盘歌词**<br>共用一套曲库与后台 | **传统桌面 GUI 窗口**<br>重度集成社交动态、社区与直播 | **桌面 GUI 窗口**<br>专注音乐播放与音源扩展 | **终端 TUI**<br>专注网易云生态终端化 | **终端 TUI (C/S 架构)**<br>专注本地音乐库与标签管理 |
-| **AI 智能体控制 (MCP)**| 🟢 **内置原生 stdio MCP**<br>Claude / Cursor 一句话查听与编排 | ❌ **无**<br>封闭商业生态 | 🟡 **有限**<br>仅提供本地 HTTP 开放 API 需自封装 | ❌ **无** | ❌ **无**<br>仅支持传统 MPD 网络套接字协议 |
-| **防查伪装（老板模式）**| 🟢 **一键仿真 `cargo test` 编译终端**<br>瞬间静音暂停，托盘指示器全隐蔽 | ❌ **无**<br>普通隐藏窗口，往往仍在发声 | ❌ **无**<br>仅常规最小化至系统托盘 | ❌ **无** | ❌ **无** |
-| **外部运行环境依赖** | 🟢 **零外部依赖**<br>内置解码、音频栈与 JS 引擎 | ❌ 捆绑庞大 Web 浏览器引擎 | ❌ 捆绑 Chromium / Node 运行时 | 🟡 依赖外部播放引擎/音频库 | 🔴 依赖系统级 MPD 服务配置 |
+| **AI 智能体控制 (MCP)**| **内置原生 stdio MCP**<br>Claude / Cursor 一句话查听与编排 | **不支持**<br>封闭商业生态 | **有限**<br>仅提供本地 HTTP 开放 API 需自封装 | **不支持** | **不支持**<br>仅支持传统 MPD 网络套接字协议 |
+| **上班防查（老板模式）**| **一键仿真 cargo test 编译终端**<br>瞬间静音暂停，托盘指示器全隐蔽 | **不支持**<br>普通隐藏窗口，往往仍在发声 | **不支持**<br>仅常规最小化至系统托盘 | **不支持** | **不支持** |
+| **外部运行环境依赖** | **零外部依赖**<br>内置解码、音频栈与 JS 引擎 | 捆绑庞大 Web 浏览器引擎 | 捆绑 Chromium / Node 运行时 | 依赖外部播放引擎与音频库 | 需繁琐配置系统级 MPD 守护进程 |
 
-> 📌 *数据来源说明：数据基于各项目公开版本与实际环境基准测试（核验于 2026-10）。wocli-music 安装包体积取自官方发布的压缩包，内存占用为播放 320kbps 音频时的实测常驻内存集。更多技术选择细节参见 [播放器横向对比报告](docs/comparison.md)。*
+> **数据来源说明**：数据基于各项目公开版本与实际环境基准测试（核验于 2026-10）。wocli-music 安装包体积取自官方发布的压缩包，内存占用为播放 320kbps 音频时的实测常驻内存集。更多技术选择细节参见 [播放器横向对比报告](docs/comparison.md)。
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 无需预装 Rust、Python、Node.js、mpv 或 FFmpeg，复制单行命令即刻完成安装并自动配置环境变量：
 
 ### 1. 一键安装
 
-#### 🍎 macOS / 🐧 Linux (Terminal)
+#### macOS / Linux (Terminal)
 ```bash
 curl -fsSL https://wocli.yhan.fun/install.sh | bash
 ```
 
-#### 🪟 Windows (PowerShell)
+#### Windows (PowerShell)
 ```powershell
 irm https://wocli.yhan.fun/install.ps1 | iex
 ```
@@ -92,17 +92,17 @@ irm https://wocli.yhan.fun/install.ps1 | iex
 安装完成后，打开任何终端窗口即可使用：
 
 ```bash
-wocli                          # 🚀 打开交互式终端播放器（按 / 搜索，Enter 播放，Space 暂停）
-wocli play '周杰伦 晴天'         # 🎵 CLI 直接搜索并起播首选歌曲
-wocli status --json             # 📊 获取结构化播放状态（便于脚本编排与状态栏展示）
-wocli mcp prompt                # 🤖 输出 AI 客户端接入提示词（直接复制给 Claude / Cursor）
+wocli                          # 打开交互式终端播放器（按 / 搜索，Enter 播放，Space 暂停）
+wocli play '周杰伦 晴天'         # CLI 直接搜索并起播首选歌曲
+wocli status --json             # 获取结构化播放状态（便于脚本编排与状态栏展示）
+wocli mcp prompt                # 输出 AI 客户端接入提示词（直接复制给 Claude / Cursor）
 ```
 
-> 💡 **小贴士**：在终端中按 <kbd>q</kbd> 可安全退出界面，**音乐与后台下载在系统守护进程中静默继续**；运行 `wocli stop` 停止播放，`wocli daemon stop` 彻底关闭后台服务。
+> **说明**：在终端中按 <kbd>q</kbd> 可安全退出界面，**音乐与后台下载在系统守护进程中静默继续**；运行 `wocli stop` 停止播放，`wocli daemon stop` 彻底关闭后台服务。
 
 ---
 
-## 📸 界面展示
+## 界面展示
 
 <div align="center">
   <table>
@@ -119,7 +119,7 @@ wocli mcp prompt                # 🤖 输出 AI 客户端接入提示词（直�
     <tr>
       <td colspan="2">
         <img src="docs/screenshots/compact.png" alt="80x26 紧凑小窗口模式" /><br />
-        <p align="center"><b>自适应响应式布局：在 80×26 极小窗口甚至 tmux 分屏中自适应优雅排版</b></p>
+        <p align="center"><b>自适应响应式布局：在 80×26 极小窗口甚至 tmux 分屏中自适应排版</b></p>
       </td>
     </tr>
   </table>
@@ -127,26 +127,26 @@ wocli mcp prompt                # 🤖 输出 AI 客户端接入提示词（直�
 
 ---
 
-## ✨ 核心特性与场景
+## 核心特性与场景
 
-### 1. 🖥️ 现代化交互式终端（TUI）
+### 1. 现代化交互式终端（TUI）
 - **键鼠双控**：支持完全使用 Vim 键位（`j` / `k` 上下移动、`g` / `G` 顶底跳转、`/` 搜索），同时支持鼠标直接点击、拖拽进度条跳转与双击切歌。
 - **动态歌词**：支持时间轴高亮同屏歌词；按 <kbd>v</kbd> 可一键切换沉浸式全屏歌词视图。
-- **本地与在线统一管理**：本地无损文件与在线搜索曲目自由混合收藏，建立你自己的音乐库。
+- **本地与在线统一管理**：本地无损文件与在线搜索曲目自由混合收藏，建立专属音乐库。
 - **后台异步下载**：选中歌曲按 <kbd>d</kbd> 一键下载并自动保存元数据与同名 `.lrc` 歌词文件，退出 TUI 界面下载任务仍平稳进行。
 
-### 2. 🤫 硬核老板模式（Boss Mode / 工作伪装）
-专为办公室、工位及自习室设计的“防查神器”，彻底杜绝被突然巡查时的尴尬：
-- **终端工作伪装**：在 TUI 界面中按下 <kbd>Shift</kbd>+<kbd>B</kbd> 或 <kbd>Ctrl</kbd>+<kbd>B</kbd>，播放器**立即静音暂停**，屏幕瞬间全屏切换为逼真的底层工程编译与测试运行日志（模拟真实项目的 `cargo test` 编译日志、18 项核心测试全部 `ok` 通过提示以及带动态闪烁光标 `█` 的命令行提示符）。
+### 2. 硬核老板模式（Boss Mode / 工作伪装）
+专为办公室、工位及自习室设计的防查模式，彻底杜绝意外尴尬：
+- **终端工作伪装**：在 TUI 界面中按下 <kbd>Shift</kbd>+<kbd>B</kbd> 或 <kbd>Ctrl</kbd>+<kbd>B</kbd>，播放器**立即静音暂停**，屏幕瞬间全屏切换为逼真的底层工程编译与测试运行日志（模拟真实项目的 `cargo test` 编译日志、18 项核心测试全部 `ok` 通过提示以及带动态光标 `█` 的命令行提示符）。
 - **一键无缝恢复**：轻按 <kbd>B</kbd>、<kbd>Ctrl</kbd>+<kbd>B</kbd> 或 <kbd>Esc</kbd>，瞬间恢复播放器界面并**继续无缝播放**原有歌曲。
 - **全局桌面隐蔽**：
   - **Windows**：后台原生全局热键 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> 或 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd>，一键暂停音频并完全隐藏任务栏歌词条与通知区提示。
   - **macOS**：状态栏菜单点击「老板模式 (Shift+B)」，即刻清除菜单栏歌词并清空系统 Control Center / Now Playing 播控状态。
   - **Linux**：系统桌面快捷键可直接绑定命令 `wocli boss`，实现全局一键静音隐蔽。
 
-### 3. 🪟 任务栏与菜单栏歌词（Tray & Taskbar Lyrics）
+### 3. 任务栏与菜单栏歌词（Tray & Taskbar Lyrics）
 无需时刻盯着终端，音乐信息尽在眼帘：
-- **macOS**：原生接入顶部菜单栏，实时滚动当前逐句歌词；深度接入 `MPRemoteCommandCenter`，键盘多媒体键与 AirPods 耳机控制完美协同。
+- **macOS**：原生接入顶部菜单栏，实时滚动当前逐句歌词；深度接入 `MPRemoteCommandCenter`，键盘多媒体键与 AirPods 耳机控制协同工作。
 - **Windows**：**独家任务栏嵌入式歌词**，高度精确匹配 Windows 任务栏，左侧自带上一首、播放/暂停、下一首交互按键；文字区支持鼠标按住任意拖动位置。
 - 控制指令：
   ```bash
@@ -158,7 +158,7 @@ wocli mcp prompt                # 🤖 输出 AI 客户端接入提示词（直�
 
 ---
 
-## 🤖 AI 伴侣模式（MCP：让 AI 控制播放器）
+## AI 伴侣模式（MCP：让 AI 控制播放器）
 
 wocli-music 原生实现了官方 **Model Context Protocol (MCP)** 标准，通过本地标准输入/输出 (stdio) 为 AI Agent 提供系统级音乐控制能力，**不监听 HTTP 端口、不泄露隐私、完全离线安全**。
 
@@ -175,7 +175,7 @@ wocli-music 原生实现了官方 **Model Context Protocol (MCP)** 标准，通�
 
 ### 1. 快速接入配置
 
-运行以下命令，直接获取适配你本机的配置 JSON 或提示词：
+运行以下命令，直接获取适配本机的配置 JSON 或提示词：
 
 ```bash
 wocli mcp prompt             # 输出给 AI 的一键连接与引导提示词
@@ -198,16 +198,16 @@ wocli mcp config             # 输出包含当前绝对路径的客户端配置
 ### 2. 赋予 AI 的核心能力
 
 AI 助手接入后，即可直接使用 17 个工具接管音乐世界：
-- 🔍 **智能点歌**：“帮我放一首周杰伦适合现在写的抒情歌”
-- 📋 **歌单管理**：“把当前播放的歌曲加入我的‘深度工作’歌单”
-- 🎧 **播放控制**：“暂停”、“快进 30 秒”、“切换随机播放”、“音量调到 40”
-- 💾 **自动归档**：“检索告五人的最新 3 首歌并下载无损音频到我的本地音乐目录”
+- **智能点歌**：“帮我放一首周杰伦适合现在写的抒情歌”
+- **歌单管理**：“把当前播放的歌曲加入我的‘深度工作’歌单”
+- **播放控制**：“暂停”、“快进 30 秒”、“切换随机播放”、“音量调到 40”
+- **自动归档**：“检索告五人的最新 3 首歌并下载无损音频到我的本地音乐目录”
 
 > 详见 [MCP 协议与接入完整指南](docs/mcp.md)。
 
 ---
 
-## 💻 CLI 与自动化指令
+## CLI 与自动化指令
 
 所有操作均可通过命令行直接调用，与 TUI 界面完全共享同一套后台：
 
@@ -254,7 +254,7 @@ wocli retry                      # 重新尝试当前歌曲及备用音源
 
 ---
 
-## ⌨️ 快捷键速查
+## 快捷键速查
 
 在终端交互界面（TUI）中，键盘多媒体键与以下快捷键原生可用：
 
@@ -283,10 +283,10 @@ wocli retry                      # 重新尝试当前歌曲及备用音源
 
 ---
 
-## ⚙️ 高级配置与诊断
+## 高级配置与诊断
 
 <details>
-<summary><b>🔧 持久化配置 (wocli config)</b></summary>
+<summary><b>持久化配置 (wocli config)</b></summary>
 
 ```bash
 wocli config quality best        # 设置默认音质：best / 320k / 192k / 128k
@@ -298,7 +298,7 @@ wocli config direct true         # 忽略环境代理直接直连网络 (true / 
 </details>
 
 <details>
-<summary><b>🌐 环境变量支持</b></summary>
+<summary><b>环境变量支持</b></summary>
 
 | 环境变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -310,17 +310,17 @@ wocli config direct true         # 忽略环境代理直接直连网络 (true / 
 </details>
 
 <details>
-<summary><b>🩺 环境诊断与自检 (wocli doctor)</b></summary>
+<summary><b>环境诊断与自检 (wocli doctor)</b></summary>
 
 遇到任何网络或音频设备问题时，运行环境自检：
 ```bash
 wocli doctor
 ```
-会以 JSON 格式输出当前系统的架构、音频引擎、配置有效路径、后台运行状态及活跃网络变量。
+输出当前系统的架构、音频引擎、配置有效路径、后台运行状态及活跃网络变量。
 </details>
 
 <details>
-<summary><b>📦 离线安装与手动下载</b></summary>
+<summary><b>离线安装与手动下载</b></summary>
 
 无法使用一键安装脚本时，可直接从 [Cloudflare 快速分发入口](https://wocli.yhan.fun/) 或 [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest) 下载解压：
 - **Apple Silicon Mac**: `wocli-music-*-macos-arm64.tar.gz`
@@ -330,7 +330,7 @@ wocli doctor
 </details>
 
 <details>
-<summary><b>🛠️ 源码构建与开发</b></summary>
+<summary><b>源码构建与开发</b></summary>
 
 需要 Rust **1.93.1+** 与 C 编译器工具链：
 ```bash
@@ -344,7 +344,7 @@ cargo clippy --all-targets     # 代码质量检查
 
 ---
 
-## 💬 常见问题 (FAQ)
+## 常见问题 (FAQ)
 
 **Q: 退出终端界面后，怎么停止音乐？**  
 A: `wocli stop` 停止播放；`wocli daemon stop` 彻底关闭后台服务。
@@ -356,11 +356,11 @@ A: 在线搜索索引与上游音频授权不完全一致。若当前音质无�
 A: Windows 安装脚本会自动写入环境变量。如果此前已有打开的命令提示符或 PowerShell 窗口，请完全退出并重新打开终端应用以继承最新 PATH。
 
 **Q: 可以在远程服务器或 Docker 容器中使用吗？**  
-A: 可以！在无物理声卡的 Linux 服务器或 CI 容器中，设定 `WOCLI_AUDIO_OUTPUT=null` 即可无声运行与测试。
+A: 可以。在无物理声卡的 Linux 服务器或 CI 容器中，设定 `WOCLI_AUDIO_OUTPUT=null` 即可无声运行与测试。
 
 ---
 
-## 🤝 致谢与开源协议
+## 致谢与开源协议
 
 - 终端界面交互深受 [MiaowCham/ncm-cli](https://github.com/MiaowCham/ncm-cli) 启发。
 - 底层技术栈依托 [Ratatui](https://github.com/ratatui/ratatui)、[Rodio](https://github.com/RustAudio/rodio)、[Symphonia](https://github.com/pdeljanov/Symphonia)、[QuickJS](https://bellard.org/quickjs/) 与官方 [Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)。

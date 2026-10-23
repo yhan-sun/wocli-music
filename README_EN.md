@@ -2,7 +2,7 @@
 
   <img src="docs/screenshots/library.png" width="820" alt="wocli-music" style="border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.35); max-width: 100%;" />
 
-  # 🎵 wocli-music
+  # wocli-music
 
   **Seamless music for your terminal, shell scripts, and AI workflows**
   <br />
@@ -20,13 +20,13 @@
   </p>
 
   <p align="center">
-    <a href="#--quick-start">⚡ Quick Start</a> •
-    <a href="#--why-wocli-music-feature-comparison">📊 Comparison</a> •
-    <a href="#--key-features">✨ Key Features</a> •
-    <a href="#--keybindings-cheat-sheet">⌨️ Keybindings</a> •
-    <a href="#--ai-agent-integration-mcp">🤖 AI MCP</a> •
-    <a href="#--cli-reference">💻 CLI</a> •
-    <a href="#--advanced-configuration">⚙️ Config</a> •
+    <a href="#quick-start">Quick Start</a> •
+    <a href="#why-wocli-music-feature-comparison">Comparison</a> •
+    <a href="#key-features">Key Features</a> •
+    <a href="#keybindings-cheat-sheet">Keybindings</a> •
+    <a href="#ai-agent-integration-mcp">AI MCP</a> •
+    <a href="#cli-reference">CLI</a> •
+    <a href="#advanced-configuration">Config</a> •
     <a href="README.md">中文文档</a>
   </p>
 
@@ -34,55 +34,55 @@
 
 ---
 
-## ⚡ Why wocli-music?
+## Why wocli-music?
 
-`wocli-music` is crafted specifically for **developers, terminal enthusiasts, and workflow automators**. Unlike bulky Electron or Web-based clients, it is written in 100% native Rust, ships as a single standalone executable, and unifies an interactive **Terminal UI (TUI)**, a scriptable **CLI**, and native **AI Model Context Protocol (MCP)** integration.
+`wocli-music` is crafted specifically for developers, terminal enthusiasts, and workflow automators. Unlike bulky Electron or Web-based clients, it is written in 100% native Rust, ships as a single standalone executable, and unifies an interactive Terminal UI (TUI), a scriptable CLI, and native AI Model Context Protocol (MCP) integration.
 
-### ✨ Highlights at a Glance
+### Highlights at a Glance
 
-- 🚀 **Ultralight & Minimal Footprint**: Archive size is only **~3.0–4.2 MB**; runs out of the box with zero runtime dependencies (no Python, Node.js, mpv, or FFmpeg needed). Uses only **~15–30 MB RAM** during playback.
-- 🎧 **Instant Playback with Zero Login**: No account registration, no verification codes, no VIP paywalls. Search millions of public tracks and manage your local lossless audio library (FLAC, MP3, AAC, WAV) in one place.
-- 🤫 **Authentic Boss Mode (Stealth Camouflage)**: Press <kbd>Shift</kbd>+<kbd>B</kbd> or a global hotkey to instantly mute audio and switch the entire screen into an authentic development compilation/test simulation (`cargo test` suite with blinking prompt). Press again to resume seamlessly.
-- 🖥️ **Native Desktop Companion**:
+- **Ultralight and Minimal Footprint**: Archive size is only **~3.0–4.2 MB**; runs out of the box with zero runtime dependencies (no Python, Node.js, mpv, or FFmpeg needed). Uses only **~15–30 MB RAM** during playback.
+- **Instant Playback with Zero Login**: No account registration, no verification codes, no VIP paywalls. Search millions of public tracks and manage your local lossless audio library (FLAC, MP3, AAC, WAV) in one place.
+- **Authentic Boss Mode (Stealth Camouflage)**: Press <kbd>Shift</kbd>+<kbd>B</kbd> or a global hotkey to instantly mute audio and switch the entire screen into an authentic development compilation/test simulation (`cargo test` suite with blinking prompt). Press again to resume seamlessly.
+- **Native Desktop Companion**:
   - **macOS**: Native menu bar scrolling lyrics + system Control Center / Now Playing media integration.
   - **Windows**: Exclusive taskbar-embedded interactive lyrics bar (with play/pause/skip buttons) + system tray.
   - **Linux**: Pure and minimal; easily bind `wocli boss` or playback controls to any window manager (GNOME, KDE, i3, Sway).
-- 🤖 **Native AI MCP Integration**: Directly exposes 17 music management and playback tools to AI agents like Claude Desktop, Cursor, and OpenCode via standard stdio.
-- 🔁 **Shared Unified State**: TUI browsing, shell automation, and AI playlist orchestration share the exact same background daemon and SQLite database. Closing the terminal never interrupts playback.
+- **Native AI MCP Integration**: Directly exposes 17 music management and playback tools to AI agents like Claude Desktop, Cursor, and OpenCode via standard stdio.
+- **Shared Unified State**: TUI browsing, shell automation, and AI playlist orchestration share the exact same background daemon and SQLite database. Closing the terminal never interrupts playback.
 
 ---
 
-## 📊 Why wocli-music? (Feature Comparison)
+## Why wocli-music? (Feature Comparison)
 
-Whether you are hacking in a remote terminal or looking for a **distraction-free, memory-efficient** desktop companion, see how `wocli-music` compares:
+Whether you are hacking in a remote terminal or looking for a distraction-free, memory-efficient desktop companion, see how `wocli-music` compares:
 
-| Comparison Metric | 🎵 **wocli-music** | 📱 **Official Clients**<br>*(Spotify / NetEase / QQ)* | 🪟 **LX Music Desktop** | 🦊 **go-musicfox** | 🎛️ **ncmpcpp + MPD** |
+| Comparison Metric | wocli-music | Official Clients<br>*(Spotify / NetEase / QQ)* | LX Music Desktop | go-musicfox | ncmpcpp + MPD |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Account / Login Required** | 🟢 **100% Login-Free**<br>Instant access, zero paywalls | 🔴 **Mandatory Login**<br>Limited previews without VIP subscription | 🟢 **Login-Free**<br>Relies on user-provided scripts | 🟡 **Mandatory Login**<br>Requires QR/Cookie NetEase binding | 🟢 **Login-Free**<br>Local audio library |
-| **RAM Footprint** | 🟢 **~15 – 30 MB**<br>Native Rust minimal footprint | 🔴 **300 MB – 1.2 GB+**<br>Bulky multi-process Chromium/Electron | 🔴 **150 – 450 MB**<br>Electron + Web engine | 🟡 **40 – 95 MB**<br>Go runtime + terminal UI | 🟢 **15 – 40 MB**<br>Native C/C++ daemon + client |
-| **App / Binary Size** | 🟢 **~3.0 – 4.2 MB**<br>Self-contained single binary | 🔴 **150 – 350 MB**<br>Massive desktop installer | 🔴 **80 – 120 MB**<br>Electron cross-platform package | 🟡 **20 – 35 MB**<br>Go compiled binary | 🟢 **5 – 15 MB**<br>Requires system-level MPD packages |
-| **Cold Startup Latency** | 🟢 **< 10ms instantaneous**<br>No splash screen, no ads | 🔴 **2 – 6 seconds**<br>Splash ads, newsfeed & auth check | 🟡 **1.5 – 3 seconds**<br>Webview engine loading time | 🟢 **< 100ms**<br>Fast terminal launch | 🟢 **< 50ms**<br>Requires pre-running MPD daemon |
+| **Account / Login Required** | **100% Login-Free**<br>Instant access, zero paywalls | **Mandatory Login**<br>Limited previews without VIP subscription | **Login-Free**<br>Relies on user-provided scripts | **Mandatory Login**<br>Requires QR/Cookie NetEase binding | **Login-Free**<br>Local audio library |
+| **RAM Footprint** | **~15 – 30 MB**<br>Native Rust minimal footprint | **300 MB – 1.2 GB+**<br>Bulky multi-process Chromium/Electron | **150 – 450 MB**<br>Electron + Web engine | **40 – 95 MB**<br>Go runtime + terminal UI | **15 – 40 MB**<br>Native C/C++ daemon + client |
+| **App / Binary Size** | **~3.0 – 4.2 MB**<br>Self-contained single binary | **150 – 350 MB**<br>Massive desktop installer | **80 – 120 MB**<br>Electron cross-platform package | **20 – 35 MB**<br>Go compiled binary | **5 – 15 MB**<br>Requires system-level MPD packages |
+| **Cold Startup Latency** | **< 10ms instantaneous**<br>No splash screen, no ads | **2 – 6 seconds**<br>Splash ads, newsfeed & auth check | **1.5 – 3 seconds**<br>Webview engine loading time | **< 100ms**<br>Fast terminal launch | **< 50ms**<br>Requires pre-running MPD daemon |
 | **Interface Modalities** | **TUI + CLI + AI MCP + Tray Lyrics**<br>Unified shared background state | **Desktop GUI Window**<br>Heavy social feed, banners & streams | **Desktop GUI Window**<br>Clean standalone player | **Terminal TUI**<br>NetEase ecosystem focused | **Terminal TUI (C/S)**<br>Local tag & library management |
-| **AI Agent Support (MCP)** | 🟢 **Built-in native stdio MCP**<br>Claude & Cursor play & curate via prompt | ❌ **None**<br>Walled garden | 🟡 **Limited**<br>Requires custom local HTTP API wrapper | ❌ **None** | ❌ **None**<br>Legacy MPD socket protocol only |
-| **Boss Mode (Stealth)** | 🟢 **Simulates `cargo test` terminal**<br>Mutes audio & hides all OS indicators | ❌ **None**<br>Minimizing window keeps audio playing | ❌ **None**<br>Standard minimize to tray | ❌ **None** | ❌ **None** |
-| **External Dependencies** | 🟢 **Zero Dependencies**<br>Built-in decoders, audio stack & JS engine | ❌ Bundled Chromium & Node runtime | ❌ Bundled Chromium & Node runtime | 🟡 Requires system audio decoders | 🔴 Requires separate MPD server setup |
+| **AI Agent Support (MCP)** | **Built-in native stdio MCP**<br>Claude & Cursor play & curate via prompt | **None**<br>Walled garden | **Limited**<br>Requires custom local HTTP API wrapper | **None** | **None**<br>Legacy MPD socket protocol only |
+| **Boss Mode (Stealth)** | **Simulates cargo test terminal**<br>Mutes audio & hides all OS indicators | **None**<br>Minimizing window keeps audio playing | **None**<br>Standard minimize to tray | **None** | **None** |
+| **External Dependencies** | **Zero Dependencies**<br>Built-in decoders, audio stack & JS engine | Bundled Chromium & Node runtime | Bundled Chromium & Node runtime | Requires system audio decoders | Requires separate MPD server setup |
 
-> 📌 *Methodology: Benchmark data verified as of October 2026. `wocli-music` package size reflects the official release archive; RAM footprint reflects actual Resident Set Size (RSS) during 320kbps playback. See [Detailed Comparison Notes](docs/comparison.md) for full technical context.*
+> **Methodology**: Benchmark data verified as of October 2026. `wocli-music` package size reflects the official release archive; RAM footprint reflects actual Resident Set Size (RSS) during 320kbps playback. See [Detailed Comparison Notes](docs/comparison.md) for full technical context.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 No need to install Rust, Python, Node.js, mpv, or FFmpeg. Copy and run the single command below:
 
 ### 1. One-Line Install
 
-#### 🍎 macOS / 🐧 Linux (Terminal)
+#### macOS / Linux (Terminal)
 ```bash
 curl -fsSL https://wocli.yhan.fun/install.sh | bash
 ```
 
-#### 🪟 Windows (PowerShell)
+#### Windows (PowerShell)
 ```powershell
 irm https://wocli.yhan.fun/install.ps1 | iex
 ```
@@ -92,17 +92,17 @@ irm https://wocli.yhan.fun/install.ps1 | iex
 Open any terminal and start playing:
 
 ```bash
-wocli                          # 🚀 Launch interactive TUI (/ search, Enter play, Space pause)
-wocli play 'Jay Chou Sunny'    # 🎵 CLI: search and start playback immediately
-wocli status --json             # 📊 Output structured JSON status for scripting
-wocli mcp prompt                # 🤖 Output copy-paste AI connection prompt
+wocli                          # Launch interactive TUI (/ search, Enter play, Space pause)
+wocli play 'Jay Chou Sunny'    # CLI: search and start playback immediately
+wocli status --json             # Output structured JSON status for scripting
+wocli mcp prompt                # Output copy-paste AI connection prompt
 ```
 
-> 💡 **Tip**: Press <kbd>q</kbd> in the TUI to exit the interface anytime; **music playback and queued downloads continue uninterrupted in the background daemon**. Run `wocli stop` to pause/stop playback, or `wocli daemon stop` to terminate the background service.
+> **Tip**: Press <kbd>q</kbd> in the TUI to exit the interface anytime; **music playback and queued downloads continue uninterrupted in the background daemon**. Run `wocli stop` to pause/stop playback, or `wocli daemon stop` to terminate the background service.
 
 ---
 
-## 📸 Visual Showcase
+## Visual Showcase
 
 <div align="center">
   <table>
@@ -127,15 +127,15 @@ wocli mcp prompt                # 🤖 Output copy-paste AI connection prompt
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-### 1. 🖥️ Interactive Terminal UI (TUI)
+### 1. Interactive Terminal UI (TUI)
 - **Keyboard & Mouse**: Full Vim-style navigation (`j` / `k` move, `g` / `G` top/bottom, `/` search), alongside full mouse support for seeking, clicking buttons, and double-clicking to play.
 - **Dynamic Synced Lyrics**: Real-time line-by-line highlight; press <kbd>v</kbd> to enter full-screen immersive lyrics mode.
 - **Unified Online & Local Library**: Combine local FLAC/MP3 files and online streams into custom playlists.
 - **Background Downloads**: Press <kbd>d</kbd> on any song to queue high-quality audio and `.lrc` downloads.
 
-### 2. 🤫 Authentic Boss Mode (Work Camouflage)
+### 2. Authentic Boss Mode (Work Camouflage)
 A dedicated feature designed for office, classroom, or public environments:
 - **Terminal Camouflage**: Press <kbd>Shift</kbd>+<kbd>B</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> in the TUI to **immediately pause/mute audio** and switch the entire screen to a simulated terminal running `cargo test --workspace` (with 18 passing unit tests and an active command prompt `█`).
 - **Instant Resume**: Press <kbd>B</kbd>, <kbd>Ctrl</kbd>+<kbd>B</kbd>, or <kbd>Esc</kbd> to return to your player and **seamlessly resume music**.
@@ -144,7 +144,7 @@ A dedicated feature designed for office, classroom, or public environments:
   - **macOS**: Menu bar item provides a one-click "Boss Mode" option that clears Now Playing info and hides lyrics.
   - **Linux**: Easily bind `wocli boss` to any desktop shortcut.
 
-### 3. 🪟 Taskbar & Menu Bar Lyrics
+### 3. Taskbar & Menu Bar Lyrics
 Keep an eye on what's playing without switching windows:
 - **macOS**: Native menu bar item displays live synced lyrics; integrates with `MPRemoteCommandCenter` and hardware media keys.
 - **Windows**: **Exclusive embedded taskbar lyrics bar** positioned neatly inside the Windows taskbar, featuring built-in previous, play/pause, and next buttons.
@@ -158,7 +158,7 @@ Keep an eye on what's playing without switching windows:
 
 ---
 
-## 🤖 AI Agent Integration (MCP)
+## AI Agent Integration (MCP)
 
 `wocli-music` implements the official **Model Context Protocol (MCP)** specification over standard I/O (stdio). It allows local AI clients to control music playback safely without opening network ports.
 
@@ -189,16 +189,16 @@ Run `wocli mcp prompt` to generate a tailored setup prompt, or add this to your 
 ```
 
 Once connected, your AI assistant can:
-- 🔍 *"Play some relaxing instrumental music for deep work"*
-- 📋 *"Save the currently playing song to my Favorites"*
-- 🎧 *"Skip to the next song and set the volume to 50"*
-- 💾 *"Download the top 3 tracks by Coldplay in lossless quality"*
+- *"Play some relaxing instrumental music for deep work"*
+- *"Save the currently playing song to my Favorites"*
+- *"Skip to the next song and set the volume to 50"*
+- *"Download the top 3 tracks by Coldplay in lossless quality"*
 
 > See [MCP Protocol Reference & Guide](docs/mcp.md) for full details.
 
 ---
 
-## 💻 CLI Reference
+## CLI Reference
 
 Every action can be invoked directly from your command line:
 
@@ -234,7 +234,7 @@ wocli retry                       # Retry playback across fallback sources
 
 ---
 
-## ⌨️ Keybindings Cheat Sheet
+## Keybindings Cheat Sheet
 
 In the TUI, physical media keys and the following shortcuts are supported:
 
@@ -255,7 +255,7 @@ In the TUI, physical media keys and the following shortcuts are supported:
 | <kbd>f</kbd> | Toggle favorite heart |
 | <kbd>d</kbd> / <kbd>D</kbd> | Download track / Open download tasks |
 | <kbd>a</kbd> / <kbd>x</kbd> | Append to queue / Open track actions menu |
-| <kbd>Shift</kbd>+<kbd>B</kbd> / <kbd>Ctrl</kbd>+<kbd>B</kbd> | **Boss Mode**: Mute & switch to `cargo test` camouflage (press <kbd>B</kbd>/<kbd>Esc</kbd> to restore) |
+| <kbd>Shift</kbd>+<kbd>B</kbd> / <kbd>Ctrl</kbd>+<kbd>B</kbd> | **Boss Mode**: Mute & switch to cargo test camouflage (press <kbd>B</kbd>/<kbd>Esc</kbd> to restore) |
 | <kbd>Tab</kbd> / <kbd>b</kbd> | Switch pane focus / Open library menu |
 | <kbd>?</kbd> | Open help dialog |
 | <kbd>Esc</kbd> | Close popup / Cancel search / Exit full-screen lyrics |
@@ -263,10 +263,10 @@ In the TUI, physical media keys and the following shortcuts are supported:
 
 ---
 
-## ⚙️ Advanced Configuration
+## Advanced Configuration
 
 <details>
-<summary><b>🔧 Persistent Settings (wocli config)</b></summary>
+<summary><b>Persistent Settings (wocli config)</b></summary>
 
 ```bash
 wocli config quality best        # Default audio quality: best / 320k / 192k / 128k
@@ -278,7 +278,7 @@ wocli config direct true         # Ignore proxy and connect directly (true / fal
 </details>
 
 <details>
-<summary><b>🌐 Environment Variables</b></summary>
+<summary><b>Environment Variables</b></summary>
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
@@ -290,7 +290,7 @@ wocli config direct true         # Ignore proxy and connect directly (true / fal
 </details>
 
 <details>
-<summary><b>🩺 Diagnostics (wocli doctor)</b></summary>
+<summary><b>Diagnostics (wocli doctor)</b></summary>
 
 Troubleshoot your environment and audio output:
 ```bash
@@ -300,7 +300,7 @@ Outputs system architecture, audio engine, active paths, and network proxy statu
 </details>
 
 <details>
-<summary><b>📦 Manual Offline Download</b></summary>
+<summary><b>Manual Offline Download</b></summary>
 
 If the install script cannot reach the network, download release archives directly from [Cloudflare Fast Mirror](https://wocli.yhan.fun/) or [GitHub Releases](https://github.com/yhan-sun/wocli-music/releases/latest):
 - **Apple Silicon Mac**: `wocli-music-*-macos-arm64.tar.gz`
@@ -310,7 +310,7 @@ If the install script cannot reach the network, download release archives direct
 </details>
 
 <details>
-<summary><b>🛠️ Building from Source</b></summary>
+<summary><b>Building from Source</b></summary>
 
 Requires Rust **1.93.1+** and a C compiler:
 ```bash
@@ -324,7 +324,7 @@ cargo clippy --all-targets     # Linting check
 
 ---
 
-## 💬 Frequently Asked Questions (FAQ)
+## Frequently Asked Questions (FAQ)
 
 **Q: How do I stop music playback after closing the terminal?**  
 A: Run `wocli stop` to stop playback, or `wocli daemon stop` to kill the background daemon.
@@ -336,11 +336,11 @@ A: Search indexes and upstream streaming authorizations are sometimes out of syn
 A: The installer updates your user PATH. If you had existing command prompt or PowerShell windows open, completely restart your terminal app to inherit the updated PATH.
 
 **Q: Can I run this in Docker or a remote server?**  
-A: Yes! On headless Linux servers without sound hardware, launch with `WOCLI_AUDIO_OUTPUT=null` to run tests and decode audio silently.
+A: Yes. On headless Linux servers without sound hardware, launch with `WOCLI_AUDIO_OUTPUT=null` to run tests and decode audio silently.
 
 ---
 
-## 🤝 Credits & License
+## Credits & License
 
 - Terminal interaction is inspired by [MiaowCham/ncm-cli](https://github.com/MiaowCham/ncm-cli).
 - Built on top of [Ratatui](https://github.com/ratatui/ratatui), [Rodio](https://github.com/RustAudio/rodio), [Symphonia](https://github.com/pdeljanov/Symphonia), [QuickJS](https://bellard.org/quickjs/), and the official [Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk).
