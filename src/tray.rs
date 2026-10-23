@@ -119,21 +119,30 @@ pub fn stop(paths: &Paths) -> Result<()> {
                 {
                     unsafe {
                         use windows_sys::Win32::UI::WindowsAndMessaging::{
-                            FindWindowW, PostMessageW, WM_CLOSE,
+                            FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
                         };
-                        let class_name: Vec<u16> = "wocli_tray_class"
-                            .encode_utf16()
-                            .chain(std::iter::once(0))
-                            .collect();
+                        let class_name: Vec<u16> =
+                            "wocli_tray_class".encode_utf16().chain(Some(0)).collect();
                         let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
+                        let mut owner = 0;
                         if hwnd != 0 {
-                            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            GetWindowThreadProcessId(hwnd, &mut owner);
+                        }
+                        if hwnd != 0 && owner == pid && PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 {
+                            // Give WM_DESTROY time to restore the classic task-button band.
+                            for _ in 0..40 {
+                                if !status(paths)? {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
                         }
                     }
-                    let _ = Command::new("taskkill")
-                        .args(["/F", "/PID", &pid.to_string()])
-                        .output();
+                    if status(paths)? {
+                        let _ = Command::new("taskkill")
+                            .args(["/F", "/PID", &pid.to_string()])
+                            .output();
+                    }
                 }
             }
         }
