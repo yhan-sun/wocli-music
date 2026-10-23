@@ -29,6 +29,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   status | favorites | history       状态、喜欢、历史
   queue add|list|remove|clear         管理队列
   playlist create|list|show|add|remove|rename|delete|play
+  playlist import|export|scan|inspect|resolve|match|drop|backups|restore
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
@@ -80,6 +81,11 @@ impl Args {
                 "--limit",
                 "--home",
                 "--name",
+                "--format",
+                "--text-order",
+                "--on-conflict",
+                "--list",
+                "--entry",
             ]
             .contains(&value.as_str())
             {
@@ -102,6 +108,8 @@ impl Args {
                 "--tray",
                 "--check",
                 "--read-only",
+                "--dry-run",
+                "--offline",
             ]
             .contains(&value.as_str())
             {
@@ -761,7 +769,14 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         }
         "playlist" => {
             let action = args.arg(1)?;
-            let value = if action == "list" {
+            let transfer = [
+                "scan", "import", "export", "inspect", "resolve", "match", "drop", "backups",
+                "restore",
+            ]
+            .contains(&action);
+            let value = if transfer {
+                playlist_transfer(&args, &store, &paths, &provider)?
+            } else if action == "list" {
                 json!(store
                     .folders()?
                     .iter()
@@ -830,7 +845,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                     _ => return Err(Error::new("未知收藏夹操作")),
                 }
             };
-            if !args.flag("--json") && !["show", "play"].contains(&action) {
+            if !args.flag("--json") && !transfer && !["show", "play"].contains(&action) {
                 println!("{}", serde_json::to_string_pretty(&value)?);
             }
             value
@@ -1034,4 +1049,185 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         println!("{}", serde_json::to_string(&data)?);
     }
     Ok(())
+}
+
+fn playlist_transfer(
+    args: &Args,
+    store: &Store,
+    paths: &Paths,
+    provider: &Provider,
+) -> Result<Value> {
+    use crate::playlists::{self, Conflict, MatchState};
+    use std::sync::atomic::AtomicBool;
+    let action = args.arg(1)?;
+    let name = args.arg(2)?;
+    let conflict = Conflict::parse(args.value("--on-conflict").unwrap_or("rename"))?;
+    let value = match action {
+        "scan" => json!(playlists::read(
+            &expand_path(name),
+            args.value("--text-order").unwrap_or("artist-title")
+        )?
+        .iter()
+        .enumerate()
+        .map(
+            |(i, p)| json!({"index":i+1,"name":p.name,"format":p.format,"entries":p.entries.len()})
+        )
+        .collect::<Vec<_>>()),
+        "import" | "resolve" => {
+            let mut list = if action == "import" {
+                playlists::select(
+                    playlists::read(
+                        &expand_path(name),
+                        args.value("--text-order").unwrap_or("artist-title"),
+                    )?,
+                    args.value("--list"),
+                    args.value("--name"),
+                )?
+            } else {
+                playlists::stored(store, name)?
+            };
+            let cancel = AtomicBool::new(false);
+            let known = store.known_tracks()?;
+            if !args.flag("--json") {
+                eprintln!(
+                    "解析 {}：{} 条；正在{}匹配…",
+                    list.name,
+                    list.entries.len(),
+                    if args.flag("--offline") {
+                        "离线"
+                    } else {
+                        "跨平台"
+                    }
+                );
+            }
+            playlists::resolve(
+                &mut list,
+                &known,
+                paths,
+                args.flag("--offline"),
+                &cancel,
+                |done, total| {
+                    if !args.flag("--json") && (done == total || done % 10 == 0) {
+                        eprintln!("已匹配处理 {done}/{total}");
+                    }
+                },
+            )?;
+            if args.flag("--dry-run") {
+                json!({"dry_run":true,"name":list.name,"summary":list.summary(),"playlist":list})
+            } else {
+                json!(playlists::save(
+                    store,
+                    list,
+                    if action == "resolve" {
+                        Conflict::Replace
+                    } else {
+                        conflict
+                    }
+                )?)
+            }
+        }
+        "inspect" => {
+            let list = playlists::stored(store, name)?;
+            json!({"name":name,"summary":list.summary(),"playlist":list})
+        }
+        "export" => {
+            let path = expand_path(
+                args.value("--output")
+                    .ok_or_else(|| Error::new("需要 --output 文件路径"))?,
+            );
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("json");
+            let format = args.value("--format").unwrap_or(ext);
+            let list = playlists::stored(store, name)?;
+            playlists::write(&list, format, &path, args.flag("--force"))?;
+            json!({"name":name,"format":format,"output":path,"summary":list.summary()})
+        }
+        "match" | "drop" => {
+            let mut list = playlists::stored(store, name)?;
+            let index = args
+                .integer("--entry", 0)?
+                .checked_sub(1)
+                .filter(|&n| n < list.entries.len())
+                .ok_or_else(|| Error::new("--entry 应为 inspect 中的条目序号（从 1 开始）"))?;
+            if action == "drop" {
+                list.entries.remove(index);
+            } else {
+                let track = by_id(
+                    store,
+                    provider,
+                    args.value("--id")
+                        .ok_or_else(|| Error::new("需要 --id 目标酷我/本地歌曲 ID"))?,
+                )?;
+                let entry = &mut list.entries[index];
+                entry.resolved = Some(track);
+                entry.status = MatchState::Matched;
+                entry.reason = "用户手动确认".into();
+                entry.candidates.clear();
+            }
+            json!(playlists::save(store, list, Conflict::Replace)?)
+        }
+        "backups" => json!(playlists::backups(store, name)?),
+        "restore" => json!(playlists::restore(
+            store,
+            name,
+            args.value("--id")
+                .and_then(|v| v.parse().ok())
+                .ok_or_else(|| Error::new("需要 --id 快照编号"))?
+        )?),
+        _ => return Err(Error::new("未知导入导出操作")),
+    };
+    if !args.flag("--json") {
+        if action == "scan" || action == "backups" {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            if let Some(summary) = value.get("summary") {
+                println!(
+                    "{}{}：总计 {}，可播放 {}，未匹配 {}，待确认 {}，无效 {}，重复 {}",
+                    if args.flag("--dry-run") {
+                        "预览（未保存） "
+                    } else {
+                        ""
+                    },
+                    value["name"].as_str().unwrap_or(name),
+                    summary["total"],
+                    summary["matched"],
+                    summary["pending"],
+                    summary["ambiguous"],
+                    summary["invalid"],
+                    summary["duplicates"]
+                );
+            }
+            if let Some(entries) = value["playlist"]["entries"].as_array() {
+                for (i, e) in entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e["status"] != "matched" && e["duplicate"] != true)
+                    .take(20)
+                {
+                    println!(
+                        "  #{} {} · {}：{}",
+                        i + 1,
+                        e["title"].as_str().unwrap_or(""),
+                        e["artist"].as_str().unwrap_or(""),
+                        e["reason"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            if action == "export" {
+                println!("已导出到 {}", value["output"].as_str().unwrap_or(""));
+            }
+            if let Some(id) = value["backup"].as_i64() {
+                println!(
+                    "已保留快照 #{id}；恢复：wocli playlist restore \"{}\" --id {id}",
+                    value["name"].as_str().unwrap_or(name)
+                );
+            }
+            if value["summary"]["pending"].as_u64().unwrap_or(0)
+                + value["summary"]["ambiguous"].as_u64().unwrap_or(0)
+                > 0
+            {
+                println!("未匹配条目已保留；playlist inspect 查看，playlist resolve 重试，playlist match 手动指定。");
+            }
+        }
+    }
+    Ok(value)
 }

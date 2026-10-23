@@ -150,7 +150,9 @@ impl Store {
             CREATE TABLE IF NOT EXISTS playlists (name TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS members (name TEXT,id TEXT,position INTEGER,PRIMARY KEY(name,id));
             CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY,data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS lyrics (id TEXT PRIMARY KEY,text TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS lyrics (id TEXT PRIMARY KEY,text TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS playlist_imports (name TEXT PRIMARY KEY,data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS playlist_backups (id INTEGER PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL,created REAL NOT NULL);")?;
         Ok(Self { db })
     }
     pub fn remember(&self, tracks: &[Track]) -> Result<()> {
@@ -191,6 +193,9 @@ impl Store {
         let mut stmt = self.db.prepare(sql)?;
         let rows = stmt.query_map(args, |r| r.get::<_, String>(0))?;
         rows.map(|v| Ok(serde_json::from_str(&v?)?)).collect()
+    }
+    pub fn known_tracks(&self) -> Result<Vec<Track>> {
+        self.tracks("SELECT data FROM tracks", &[])
     }
     pub fn favorites(&self) -> Result<Vec<Track>> {
         self.tracks(
@@ -288,6 +293,14 @@ impl Store {
         let tx = self.db.unchecked_transaction()?;
         self.create_folder(new)?;
         tx.execute("UPDATE members SET name=? WHERE name=?", [new, old])?;
+        tx.execute(
+            "UPDATE playlist_imports SET name=? WHERE name=?",
+            [new, old],
+        )?;
+        tx.execute(
+            "UPDATE playlist_backups SET name=? WHERE name=?",
+            [new, old],
+        )?;
         tx.execute("DELETE FROM playlists WHERE name=?", [old])?;
         tx.commit()?;
         Ok(())
@@ -295,6 +308,7 @@ impl Store {
     pub fn delete(&self, name: &str) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM members WHERE name=?", [name])?;
+        tx.execute("DELETE FROM playlist_imports WHERE name=?", [name])?;
         tx.execute("DELETE FROM playlists WHERE name=?", [name])?;
         tx.commit()?;
         Ok(())

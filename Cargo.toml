@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 crossterm = { version = "0.28", default-features = false, features = ["events", "windows"] }
+csv = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
 md-5 = "0.10"

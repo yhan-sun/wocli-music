@@ -8,6 +8,7 @@ pub mod mcp;
 pub mod model;
 pub mod order;
 pub mod player;
+pub mod playlists;
 pub mod pool;
 pub mod provider;
 pub mod service;
@@ -16,5 +17,6 @@ pub mod store;
 pub mod stream;
 pub mod tray;
 pub mod tui;
+mod tui_camouflage;
 
 pub mod updater;
