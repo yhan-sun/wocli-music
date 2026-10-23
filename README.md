@@ -10,8 +10,6 @@
     <a href="https://github.com/yhan-sun/wocli-music/releases/latest"><img src="https://img.shields.io/github/v/release/yhan-sun/wocli-music?color=7aa874&label=release&logo=github&style=flat-square" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Rust-1.93%2B-e43716?logo=rust&style=flat-square" alt="Rust" />
     <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platforms" />
-    <img src="https://img.shields.io/badge/Size-~3.5MB-success?style=flat-square" alt="Binary Size" />
-    <img src="https://img.shields.io/badge/RAM-~20MB-brightgreen?style=flat-square" alt="RAM Footprint" />
     <img src="https://img.shields.io/badge/Auth-No_Login-blueviolet?style=flat-square" alt="No Login" />
     <a href="docs/mcp.md"><img src="https://img.shields.io/badge/AI-MCP_Native-8a2be2?logo=anthropic&style=flat-square" alt="MCP" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-lightgrey?style=flat-square" alt="License" /></a>
@@ -41,7 +39,7 @@
 `wocli-music` 为找回听歌自由而生：
 
 - **完全免登录**：不登账号、不扫码、无广告，输入歌名直接放。
-- **极小极快**：单文件仅 ~3.5MB，秒开即播，后台常驻仅消耗 ~20MB 内存。
+- **轻量原生运行**：Rust 音频引擎，发行包无需预装 Rust、Python、Node、mpv 或 FFmpeg；Linux 随包提供 ALSA 库。
 - **硬核老板模式**：一键静音暂停，全屏切换为固定虚构身份的 Rust 工程代码视图。
 - **原生桌面伴侣**：关掉终端音乐继续播；Mac 菜单栏、Windows 任务栏静默滚动当前歌词。
 - **让 AI 做你的私人 DJ**：原生接入 MCP 协议，在 Claude / Cursor 里一句话智能点歌与搜集歌单。
@@ -50,16 +48,16 @@
 
 ## 横向对比
 
-| 评估维度 | wocli-music | 商业客户端 (网易/QQ/Spotify) | LX Music 桌面版 | go-musicfox | ncmpcpp + MPD |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **是否需要登录** | **完全免登录**（开箱即播） | **强制登录**（重度 VIP 限制） | **免登录**（依赖第三方音源） | **必须登录**（需扫码绑定） | **免登录**（本地曲库） |
-| **内存占用 (RAM)** | **~15 – 30 MB** | **300 MB – 1.2 GB+** | **150 – 450 MB** | **40 – 95 MB** | **15 – 40 MB** |
-| **安装包体积** | **~3.5 MB**（单二进制） | **150 – 350 MB** | **80 – 120 MB** | **20 – 35 MB** | **5 – 15 MB** (+系统依赖) |
-| **启动耗时** | **< 10ms**（极速秒启） | **2 – 6 秒**（开屏广告与鉴权） | **1.5 – 3 秒** | **< 100ms** | **< 50ms** |
-| **运行形态** | **TUI + CLI + AI MCP + 任务栏歌词** | 桌面重度 GUI（多媒体/社交） | 桌面 GUI 窗口 | 终端 TUI | 终端 TUI (需预启守护进程) |
-| **上班防查老板模式** | **支持**（一键全屏代码编译伪装） | **不支持**（仅常规隐藏/最小化） | **不支持** | **不支持** | **不支持** |
-| **AI 智能体 (MCP)** | **内置原生 stdio MCP** | **不支持** | **仅本地 HTTP API** | **不支持** | **不支持** |
-| **运行依赖** | **零外部依赖**（纯 Rust 原生） | 捆绑 Chromium / Electron | 捆绑 Electron / Node | 依赖系统音频库 | 需配置本地 MPD 服务 |
+| 使用场景 | wocli-music 的实现 | 可比较的工具与侧重点 |
+| :--- | :--- | :--- |
+| **终端、脚本与 AI 共用播放器** | **TUI + CLI + 原生 stdio MCP**，共用后台和 SQLite 曲库 | go-musicfox 聚焦网易云终端体验；ncmpcpp 管理 MPD 服务 |
+| **运行环境准备** | 安装包包含所需运行组件，无需另装语言运行时或外部播放器 | ncmpcpp 需要 MPD；LX Music 提供桌面 GUI 与自定义音源 |
+| **工作伪装** | **固定虚构身份的工程代码视图**，暂停音频并隐藏歌词与歌曲信息 | 是否有类似功能及扩展，以各项目文档为准 |
+| **歌单迁移** | CSV/TXT、LX 单歌单 v2、MusicFree 等文件导入，保留未匹配项，可改名与恢复快照 | 原平台账号歌单同步与文件迁移是不同能力，需按需求选择 |
+| **曲库与账号** | 无需平台登录，管理本地收藏与酷我搜索结果；可播放性取决于音源 | 商业客户端提供各自账号、订阅和离线权益；wocli 不同步这些账号 |
+| **桌面歌词与控制** | macOS 菜单栏、Windows 任务栏歌词，CLI 与 AI 可操作同一后台 | 桌面 GUI、系统媒体协议或独立 MPD 各有不同使用方式 |
+
+数据说明：v0.3.5 四个平台正式压缩安装包为 **3.01–4.21 MB**（历史发行数据，包含随附文件）。目前没有同机、同曲目、同网络的横向内存或起播性能基准，因此不提供未经验证的内存、毫秒启动或竞品体积排名。版本与平台差异、官方资料见 [详细对比与数据来源](docs/comparison.md)。
 
 ---
 
@@ -122,7 +120,7 @@ wocli playlist export "通勤" --format json --output ./通勤.wocli.json
 - 运行 `wocli lyrics-bar on` 开启，`wocli lyrics-bar off` 关闭。
 
 ### 4. 原生 AI MCP 智能体驱动
-通过本地标准 stdio 接入 Claude Desktop、Cursor 或 OpenCode，完全本地离线通信、不开放端口、不泄露隐私：
+通过本地标准 stdio 接入 Claude Desktop、Cursor 或 OpenCode，MCP 链路不开放监听端口。在线搜歌和播放仍需要访问音源；AI 客户端的数据处理遵循其自身设置：
 - 复制 `wocli mcp prompt` 的引导词给 AI，直接自然语言点歌：“放首写代码听的轻音乐”、“把当前播放歌曲加到‘深度工作’歌单”。
 
 ---

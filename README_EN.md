@@ -10,8 +10,6 @@
     <a href="https://github.com/yhan-sun/wocli-music/releases/latest"><img src="https://img.shields.io/github/v/release/yhan-sun/wocli-music?color=7aa874&label=release&logo=github&style=flat-square" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Rust-1.93%2B-e43716?logo=rust&style=flat-square" alt="Rust" />
     <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platforms" />
-    <img src="https://img.shields.io/badge/Size-~3.5MB-success?style=flat-square" alt="Binary Size" />
-    <img src="https://img.shields.io/badge/RAM-~20MB-brightgreen?style=flat-square" alt="RAM Footprint" />
     <img src="https://img.shields.io/badge/Auth-No_Login-blueviolet?style=flat-square" alt="No Login" />
     <a href="docs/mcp.md"><img src="https://img.shields.io/badge/AI-MCP_Native-8a2be2?logo=anthropic&style=flat-square" alt="MCP" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-lightgrey?style=flat-square" alt="License" /></a>
@@ -41,7 +39,7 @@ All we wanted was to listen to a song in peace, but modern music apps have lost 
 `wocli-music` restores your listening freedom:
 
 - **100% Login-Free**: No accounts, no QR codes, no ads. Type a track name and play immediately.
-- **Ultra-Small & Instant**: Single self-contained binary (~3.5MB), launches in milliseconds, consumes only ~20MB RAM.
+- **Native runtime**: Release bundles need no separately installed Rust, Python, Node, mpv or FFmpeg; Linux includes its ALSA library.
 - **Authentic Boss Mode**: Instantly mutes audio and shows a fictional Rust engineering workspace.
 - **Native Desktop Companion**: Close the terminal and music continues in the background; glance at lyrics in your macOS menu bar or Windows taskbar.
 - **AI As Your Personal DJ**: Native MCP integration allows Claude or Cursor to curate, search, and manage playlists via natural language.
@@ -50,16 +48,16 @@ All we wanted was to listen to a song in peace, but modern music apps have lost 
 
 ## Comparison
 
-| Metric | wocli-music | Commercial Apps (Spotify/NetEase/QQ) | LX Music Desktop | go-musicfox | ncmpcpp + MPD |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Account Required** | **100% Login-Free** (Out of the box) | **Mandatory Login** (VIP restrictions) | **Login-Free** (Relies on scripts) | **Mandatory Login** (QR/Cookie) | **Login-Free** (Local library) |
-| **RAM Footprint** | **~15 – 30 MB** | **300 MB – 1.2 GB+** | **150 – 450 MB** | **40 – 95 MB** | **15 – 40 MB** |
-| **Binary / App Size** | **~3.5 MB** (Single binary) | **150 – 350 MB** | **80 – 120 MB** | **20 – 35 MB** | **5 – 15 MB** (+deps) |
-| **Startup Latency** | **< 10ms** (Instantaneous) | **2 – 6 seconds** (Splash ads/auth) | **1.5 – 3 seconds** | **< 100ms** | **< 50ms** |
-| **Interface Format** | **TUI + CLI + AI MCP + Taskbar Lyrics** | Heavy Desktop GUI (Social/media) | Desktop GUI Window | Terminal TUI | Terminal TUI (+daemon) |
-| **Stealth Boss Mode** | **Built-in** (Cargo test camouflage) | **None** (Only minimize) | **None** | **None** | **None** |
-| **AI Agent (MCP)** | **Native stdio MCP** | **None** | **Local HTTP API only** | **None** | **None** |
-| **Runtime Deps** | **Zero Dependencies** (Native Rust) | Bundled Chromium / Electron | Bundled Electron / Node | System audio decoders | Requires MPD server |
+| Use case | wocli-music | Other tools and their focus |
+| :--- | :--- | :--- |
+| **Terminal, scripts and AI** | **TUI + CLI + native stdio MCP** share a daemon and SQLite library | go-musicfox focuses on NetEase in the terminal; ncmpcpp controls MPD |
+| **Setup** | Runtime components ship in the bundle; no separate language runtime or external player required | ncmpcpp needs MPD; LX Music offers a desktop GUI and custom sources |
+| **Work camouflage** | Fixed fictional engineering workspace, paused audio and hidden lyrics/track metadata | Refer to each project's documentation for similar features or extensions |
+| **Playlist migration** | CSV/TXT, LX single-playlist v2, MusicFree and other files; rename, preserve unmatched entries and restore snapshots | Account synchronization and file migration are distinct capabilities |
+| **Library and accounts** | No platform login; local favorites and Kuwo search metadata; availability depends on sources | Commercial clients provide their own account, subscription and offline features; wocli does not synchronize them |
+| **Desktop lyrics** | macOS menu bar and Windows taskbar, with CLI/AI controlling the same daemon | GUI clients, system media protocols and MPD suit different workflows |
+
+Size reference: the four official **v0.3.5** compressed runtime bundles were **3.01–4.21 MB**, including bundled files. These are historical release sizes, not memory or startup benchmarks. We have no controlled cross-player benchmark and do not claim fixed RAM usage, millisecond playback or unsupported competitor rankings. See [the comparison and primary sources](docs/comparison.md).
 
 ---
 
@@ -122,7 +120,7 @@ Foreign IDs stay separate from playable Kuwo/local IDs. Unmatched entries and am
 - Run `wocli lyrics-bar on` to enable, `wocli lyrics-bar off` to disable.
 
 ### 4. AI MCP Integration
-Connect to Claude Desktop, Cursor, or OpenCode via local standard stdio (zero exposed ports, offline, completely private):
+Connect to Claude Desktop, Cursor, or OpenCode via local standard stdio, without a listening MCP port. Online music still accesses sources, and AI clients handle data according to their own settings:
 - Copy the prompt from `wocli mcp prompt` to your AI client to control music with natural language: *"Play some focus lo-fi music"*, *"Add this track to my 'Deep Work' playlist"*.
 
 ---
