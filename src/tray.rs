@@ -1431,7 +1431,7 @@ mod windows {
                             1,
                             0,
                             0,
-                            5,
+                            4, // ANTIALIASED_QUALITY
                             0,
                             btn_font_name.as_ptr(),
                         );
@@ -1512,7 +1512,7 @@ mod windows {
                         1, // DEFAULT_CHARSET
                         0,
                         0,
-                        5, // CLEARTYPE_QUALITY
+                        4, // ANTIALIASED_QUALITY
                         0,
                         font_name.as_ptr(),
                     );

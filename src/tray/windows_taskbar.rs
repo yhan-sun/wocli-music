@@ -1,5 +1,7 @@
 //! Explorer child-window hosting. No desktop/topmost fallback and no Explorer injection.
-use super::taskbar_layout::{classic_slot, modern_slot, pixels, snapshot_fresh, GeometryKey, Rect};
+use super::taskbar_layout::{
+    classic_slot, modern_slot_free, pixels, snapshot_fresh, GeometryKey, Rect,
+};
 use crate::store::Paths;
 use std::{
     ptr::null,
@@ -177,7 +179,32 @@ fn spawn_probe(
                                 UIA_IsOffscreenPropertyId,
                                 &false.into(),
                             )?;
-                            let condition = auto.CreateAndCondition(&explorer, &visible)?;
+                            let types = [
+                                UIA_ButtonControlTypeId,
+                                UIA_SplitButtonControlTypeId,
+                                UIA_MenuItemControlTypeId,
+                                UIA_TabItemControlTypeId,
+                                UIA_ListItemControlTypeId,
+                                UIA_EditControlTypeId,
+                                UIA_ComboBoxControlTypeId,
+                                UIA_CheckBoxControlTypeId,
+                                UIA_RadioButtonControlTypeId,
+                                UIA_HyperlinkControlTypeId,
+                            ];
+                            let mut types_cond: Option<IUIAutomationCondition> = None;
+                            for ct in types {
+                                let prop = auto.CreatePropertyCondition(
+                                    UIA_ControlTypePropertyId,
+                                    &(ct.0).into(),
+                                )?;
+                                types_cond = match types_cond {
+                                    Some(prev) => Some(auto.CreateOrCondition(&prev, &prop)?),
+                                    None => Some(prop),
+                                };
+                            }
+                            let types_cond = types_cond.unwrap();
+                            let exp_vis = auto.CreateAndCondition(&explorer, &visible)?;
+                            let condition = auto.CreateAndCondition(&exp_vis, &types_cond)?;
                             let cache = auto.CreateCacheRequest()?;
                             cache.SetTreeScope(TreeScope_Element)?;
                             for property in [
@@ -192,36 +219,6 @@ fn spawn_probe(
                             let host_count = hosts.Length()?;
                             let mut occupied = vec![];
                             let mut total = 0;
-                            let mut add =
-                                |item: IUIAutomationElement| -> ::windows::core::Result<()> {
-                                    if !item.CachedIsOffscreen()?.as_bool()
-                                        && [
-                                            UIA_ButtonControlTypeId,
-                                            UIA_SplitButtonControlTypeId,
-                                            UIA_MenuItemControlTypeId,
-                                            UIA_TabItemControlTypeId,
-                                            UIA_ListItemControlTypeId,
-                                            UIA_EditControlTypeId,
-                                            UIA_ComboBoxControlTypeId,
-                                            UIA_CheckBoxControlTypeId,
-                                            UIA_RadioButtonControlTypeId,
-                                            UIA_HyperlinkControlTypeId,
-                                        ]
-                                        .contains(&item.CachedControlType()?)
-                                    {
-                                        let raw = item.CachedBoundingRectangle()?;
-                                        let r = Rect {
-                                            left: raw.left,
-                                            top: raw.top,
-                                            right: raw.right,
-                                            bottom: raw.bottom,
-                                        };
-                                        if r.width() > 0 && r.height() > 0 && r.overlaps(bounds) {
-                                            occupied.push(r);
-                                        }
-                                    }
-                                    Ok(())
-                                };
                             if host_count > 64 {
                                 return Ok(vec![]);
                             }
@@ -230,7 +227,20 @@ fn spawn_probe(
                                     break;
                                 }
                                 let host = hosts.GetElement(h)?;
-                                add(host.clone())?;
+                                if !host.CachedIsOffscreen()?.as_bool()
+                                    && types.contains(&host.CachedControlType()?)
+                                {
+                                    let raw = host.CachedBoundingRectangle()?;
+                                    let r = Rect {
+                                        left: raw.left,
+                                        top: raw.top,
+                                        right: raw.right,
+                                        bottom: raw.bottom,
+                                    };
+                                    if r.width() > 0 && r.height() > 0 && r.overlaps(bounds) {
+                                        occupied.push(r);
+                                    }
+                                }
                                 let controls = host.FindAllBuildCache(
                                     TreeScope_Descendants,
                                     &condition,
@@ -238,11 +248,21 @@ fn spawn_probe(
                                 )?;
                                 let count = controls.Length()?;
                                 total += count;
-                                if total > 1024 {
+                                if total > 512 {
                                     return Ok(vec![]);
                                 }
                                 for i in 0..count {
-                                    add(controls.GetElement(i)?)?;
+                                    let item = controls.GetElement(i)?;
+                                    let raw = item.CachedBoundingRectangle()?;
+                                    let r = Rect {
+                                        left: raw.left,
+                                        top: raw.top,
+                                        right: raw.right,
+                                        bottom: raw.bottom,
+                                    };
+                                    if r.width() > 0 && r.height() > 0 && r.overlaps(bounds) {
+                                        occupied.push(r);
+                                    }
                                 }
                             }
                             Ok(occupied)
@@ -372,8 +392,9 @@ impl TaskbarLyrics {
         }
         self.reset();
         // Create hidden; WS_VISIBLE and WS_EX_TOPMOST are intentionally never used.
+        // WS_EX_TOOLWINDOW is omitted because Explorer child windows should not be tool windows.
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_NOACTIVATE,
             self.class.as_ptr(),
             wide("wocli taskbar lyrics").as_ptr(),
             WS_POPUP,
@@ -390,16 +411,10 @@ impl TaskbarLyrics {
             self.report(false, &format!("创建歌词窗口失败：{}", GetLastError()));
             return false;
         }
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        SetWindowLongPtrW(
-            hwnd,
-            GWL_STYLE,
-            (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
-        );
-        let child_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        if child_style & WS_CHILD as isize == 0 || child_style & WS_POPUP as isize != 0 {
+        if SetLayeredWindowAttributes(hwnd, 0x000A0A0A, 0, LWA_COLORKEY) == 0 {
+            let error = GetLastError();
             DestroyWindow(hwnd);
-            self.report(false, "无法切换为任务栏子窗口样式");
+            self.report(false, &format!("任务栏透明表面初始化失败：{error}"));
             return false;
         }
         SetLastError(0);
@@ -413,12 +428,24 @@ impl TaskbarLyrics {
             );
             return false;
         }
-        if SetLayeredWindowAttributes(hwnd, 0x000A0A0A, 0, LWA_COLORKEY) == 0 {
-            let error = GetLastError();
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
+        );
+        let child_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if child_style & WS_CHILD as isize == 0 || child_style & WS_POPUP as isize != 0 {
             DestroyWindow(hwnd);
-            self.report(false, &format!("任务栏透明表面初始化失败：{error}"));
+            self.report(false, "无法切换为任务栏子窗口样式");
             return false;
         }
+        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            (exstyle & !(WS_EX_TOOLWINDOW as isize)) | WS_EX_NOACTIVATE as isize,
+        );
         self.hwnd = hwnd;
         self.shell = shell;
         self.parent = parent;
@@ -489,8 +516,8 @@ impl TaskbarLyrics {
             }
         } else {
             let notify = window_rect(child(shell, "TrayNotifyWnd"));
-            match (&self.snapshot, notify) {
-                (Some(snapshot), Some(notify))
+            match &self.snapshot {
+                Some(snapshot)
                     if snapshot_fresh(
                         GeometryKey {
                             hwnd: snapshot.taskbar,
@@ -506,7 +533,7 @@ impl TaskbarLyrics {
                     ) =>
                 {
                     match &snapshot.occupied {
-                        Ok(occupied) => modern_slot(bar, notify, occupied, dpi)
+                        Ok(occupied) => modern_slot_free(bar, notify, occupied, dpi)
                             .and_then(|r| client_rect(parent, r)),
                         Err(note) => {
                             let note = note.clone();

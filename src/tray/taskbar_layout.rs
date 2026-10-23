@@ -24,17 +24,35 @@ pub fn pixels(value: i32, dpi: u32) -> i32 {
     ((value as i64 * dpi.clamp(96, 768) as i64 + 48) / 96) as i32
 }
 /// Find an actual empty slot, preferring the gap immediately before the system tray.
-pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> Option<Rect> {
+///
+/// On Windows 10, `notify` is `Some(Rect)` from `TrayNotifyWnd`.
+/// On Windows 11, `notify` is `None` because the notification area is part of Explorer's XAML tree,
+/// and its interactive buttons are reported directly in `occupied`.
+pub fn modern_slot_free(
+    taskbar: Rect,
+    notify: Option<Rect>,
+    occupied: &[Rect],
+    dpi: u32,
+) -> Option<Rect> {
     if taskbar.height() < pixels(24, dpi)
         || taskbar.height() > pixels(120, dpi)
         || taskbar.width() <= taskbar.height()
-        || !taskbar.overlaps(notify)
     {
         return None;
     }
+    if let Some(n) = notify {
+        if !taskbar.overlaps(n) {
+            return None;
+        }
+    }
     let margin = pixels(6, dpi);
     let left = taskbar.left + margin;
-    let right = notify.left - margin;
+    let right = notify
+        .map(|n| (n.left - margin).min(taskbar.right - margin))
+        .unwrap_or(taskbar.right - margin);
+    if right <= left {
+        return None;
+    }
     let mut intervals = occupied
         .iter()
         .filter(|r| r.overlaps(taskbar))
@@ -54,7 +72,7 @@ pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> 
             merged.push((l, r));
         }
     }
-    let minimum = pixels(120, dpi);
+    let minimum = pixels(100, dpi);
     let desired = pixels(400, dpi);
     let mut end = right;
     for (start, stop) in merged
@@ -76,6 +94,9 @@ pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> 
         end = end.min(start);
     }
     None
+}
+pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> Option<Rect> {
+    modern_slot_free(taskbar, Some(notify), occupied, dpi)
 }
 /// Reserve space in the classic task-button band, leaving its buttons a usable width.
 pub fn classic_slot(tasklist: Rect, dpi: u32) -> Option<(Rect, Rect)> {
@@ -158,6 +179,28 @@ mod tests {
         assert!(!slot.overlaps(band));
         assert!(band.width() >= 160);
         assert!(classic_slot(rect(0, 0, 250, 40), 96).is_none());
+    }
+    #[test]
+    fn windows_11_without_notify_window_places_between_app_buttons_and_tray() {
+        let bar = rect(0, 1032, 1920, 1080);
+        let start_widgets = rect(10, 1032, 60, 1080);
+        let centered_apps = rect(700, 1032, 1200, 1080);
+        let tray_cluster = rect(1650, 1032, 1910, 1080);
+        let occupied = [start_widgets, centered_apps, tray_cluster];
+        let slot = modern_slot_free(bar, None, &occupied, 96).unwrap();
+        assert_eq!(slot.right, 1644);
+        assert!(slot.width() <= 400);
+        assert!(slot.width() >= 100);
+        for obs in &occupied {
+            assert!(!slot.overlaps(*obs));
+        }
+    }
+    #[test]
+    fn windows_11_without_notify_returns_none_when_taskbar_is_crowded() {
+        let bar = rect(0, 1032, 1920, 1080);
+        let apps = rect(0, 1032, 1580, 1080);
+        let tray = rect(1620, 1032, 1920, 1080);
+        assert!(modern_slot_free(bar, None, &[apps, tray], 96).is_none());
     }
 }
 
