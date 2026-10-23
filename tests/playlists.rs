@@ -139,7 +139,13 @@ fn local_playlists_resolve_relative_unicode_paths_and_reject_hls() {
     let pls=file(root.path(),"local.pls","[playlist]\nFile2=missing.mp3\nTitle2=歌手 - 第二首\nFile1=歌 曲.mp3\nTitle1=歌手 - 第一首\nLength1=180\n");
     let list = playlists::read(&pls, "artist-title").unwrap().remove(0);
     assert_eq!(list.entries[0].title, "第一首");
-    let uri=file(root.path(),"uri.jspf",&serde_json::json!({"playlist":{"title":"URI","track":[{"title":"歌曲","duration":180000,"location":[format!("file://{}/%E6%AD%8C%20%E6%9B%B2.mp3",root.path().canonicalize().unwrap().display())]},{"title":"bad percent","location":["file:///x%歌"]}]}}).to_string());
+    let uri_root = root.path().to_string_lossy().replace('\\', "/");
+    let uri_root = if uri_root.starts_with('/') {
+        uri_root
+    } else {
+        format!("/{uri_root}")
+    };
+    let uri=file(root.path(),"uri.jspf",&serde_json::json!({"playlist":{"title":"URI","track":[{"title":"歌曲","duration":180000,"location":[format!("file://{}/%E6%AD%8C%20%E6%9B%B2.mp3",uri_root)]},{"title":"bad percent","location":["file:///x%歌"]}]}}).to_string());
     let list = playlists::read(&uri, "artist-title").unwrap().remove(0);
     assert!(list.entries[0].path.ends_with("歌 曲.mp3"));
     assert_eq!(list.entries[0].duration, 180.0);

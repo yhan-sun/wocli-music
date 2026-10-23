@@ -1,6 +1,7 @@
 """Exercise an extracted binary with no Python, uv or system mpv on its PATH."""
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -185,6 +186,25 @@ def main():
             cli("playlist", "create", "Portable")
             cli("playlist", "add", "Portable", "--id", state["track"]["id"])
             assert len(json.loads(cli("playlist", "show", "Portable", "--json"))) == 1
+            # Portable playlist transfer uses only the native binary and SQLite.
+            portable_csv = root / "portable.csv"
+            with portable_csv.open("w", encoding="utf-8-sig", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["title", "artist", "path"])
+                writer.writerow(["Portable song", "Portable artist", str(song)])
+                writer.writerow(["Missing song", "Unknown artist", str(root / "missing.wav")])
+            portable_input = "/work/portable.csv" if args.docker else str(portable_csv)
+            preview = json.loads(cli("playlist", "import", portable_input, "--name", "Migrated", "--offline", "--dry-run", "--json"))
+            assert preview["summary"]["matched"] == 1 and preview["summary"]["pending"] == 1, preview
+            assert all(item["name"] != "Migrated" for item in json.loads(cli("playlist", "list", "--json")))
+            imported = json.loads(cli("playlist", "import", portable_input, "--name", "Migrated", "--offline", "--json"))
+            assert imported["summary"]["total"] == 2, imported
+            assert len(json.loads(cli("playlist", "show", "Migrated", "--json"))) == 1
+            exported = root / "portable.wocli.json"
+            portable_output = "/work/portable.wocli.json" if args.docker else str(exported)
+            cli("playlist", "export", "Migrated", "--output", portable_output)
+            reimported = json.loads(cli("playlist", "import", portable_output, "--offline", "--json"))
+            assert reimported["name"] == "Migrated (导入 2)" and reimported["summary"]["total"] == 2, reimported
             cli("mode", "shuffle")
             assert json.loads(cli("status", "--json"))["mode"] == "shuffle"
             assert "Portable bundle test" in json.loads(cli("lyrics", "--json"))["lyrics"]

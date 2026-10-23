@@ -1,12 +1,12 @@
 # 歌单迁移设计与格式适配调研
 
-调研日期：2026-10-23。本文是待实现方案；当前发行版没有 `playlist import/export` 命令，不代表已完成兼容。
+调研日期：2026-10-23。第一批实现见 [使用说明](playlist-import.md)：CSV/TSV/TXT、wocli JSON、LX 单歌单 v2、MusicFree、M3U/M3U8/PLS、JSPF，以及 CLI/TUI 预览、改名、匹配与快照恢复。本文保留调研依据和后续阶段设计；在线链接、Apple XML/XSPF、Spotify 和 LX 全量备份仍待实现。
 
 ## 目标与现状
 
 用户可以选择其他播放器导出的歌单文件，或粘贴平台分享链接，预览曲目后保存为指定名称的本地歌单。导入曲目清单与下载音频是独立操作。
 
-目前 `src/cli.rs` 仅实现歌单创建、查看、增删歌曲、改名、删除和播放。`Track` 只有一个 `id`，在线提供器将数字 ID 作为酷我 ID；不能将网易、QQ 等平台 ID 直接传入现有播放接口。
+实现前 `src/cli.rs` 仅提供歌单创建、查看、增删歌曲、改名、删除和播放。`Track` 只有一个 `id`，在线提供器将数字 ID 作为酷我 ID；不能将网易、QQ 等平台 ID 直接传入现有播放接口。
 
 `playlists` 用名称作为主键，`members` 用 `(name,id)` 作为主键，具有顺序字段，但不能表达未匹配曲目或重复出现的同一首歌。导入前需确定去重策略，并补充来源与匹配记录。
 
@@ -38,12 +38,11 @@
 5. 展示总条目、已匹配、待确认、未匹配、无效、重复数量。每个条目有唯一处理结果，避免重复计数。
 6. 一次导入原子写入本地歌单；未匹配信息一并保留。用户取消不会留下半张歌单。
 
-建议 CLI 接口，以下均尚未实现：
+已实现的主要 CLI 接口：
 
 ```bash
 wocli playlist import ./通勤.csv --name "每天通勤" --dry-run
 wocli playlist import ./歌单.lxmc --name "以前的收藏"
-wocli playlist import 'https://music.163.com/#/playlist?id=歌单ID' --name "网易收藏"
 wocli playlist export "每天通勤" --format json --output ./通勤.wocli.json
 wocli playlist export "每天通勤" --format csv --output ./通勤.csv
 ```
@@ -61,7 +60,7 @@ wocli playlist export "每天通勤" --format csv --output ./通勤.csv
 - 实际播放继续使用现有本地文件/酷我提供器。能导入其他平台清单，不表示已经实现其他平台的直接音频播放。
 - 导出保留原始来源与匹配关系，不将临时音频直链作为长期歌曲标识。
 
-迁移存储时建议引入稳定的歌单 ID、独立条目 ID；名称成为可修改属性。旧歌单迁移保持当前名称和顺序。对现有全局歌曲 ID 的修改必须兼容收藏、队列、历史、歌词和 MCP，不能仅修改导入分支。
+当前采用独立 `playlist_imports` 元数据和 `playlist_backups` 快照表，保留旧 `members` 作为可播放视图，避免迁移影响旧曲库。后续可引入稳定的歌单 ID、独立条目 ID，让名称成为可修改属性。旧歌单迁移保持当前名称和顺序。对现有全局歌曲 ID 的修改必须兼容收藏、队列、历史、歌词和 MCP，不能仅修改导入分支。
 
 ## 必须验证的情况
 
@@ -89,3 +88,7 @@ wocli playlist export "每天通勤" --format csv --output ./通勤.csv
 - [XSPF 标准](https://xspf.org/spec)、[JSPF 格式](https://www.xspf.org/jspf)
 - [Soundiiz 导出格式与字段](https://support.soundiiz.com/hc/en-us/articles/38063068900754-How-to-Export-Your-Playlists-and-Favorites-to-a-File)
 - [mpv 歌单与 HLS 清单处理说明](https://mpv.io/manual/stable/)
+
+## 当前验证范围
+
+LX 与 MusicFree 回归数据按上述固定提交的官方 TypeScript 结构构造，不含用户真实备份；尚未声称验证其他历史版本。跨平台匹配测试默认离线，区分来源 ID、同名歌曲、Live 版本、多个候选及手动确认。
