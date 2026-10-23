@@ -339,6 +339,9 @@ impl App {
         Ok(())
     }
     fn act(&mut self, action: Action) -> Result<()> {
+        if !matches!(action, Action::Search) {
+            self.editing = false;
+        }
         match action {
             Action::View(view) => {
                 self.popup = None;
@@ -355,6 +358,7 @@ impl App {
                 self.reload()?;
             }
             Action::SearchGo => {
+                self.editing = false;
                 self.page = 1;
                 self.search();
             }
@@ -366,17 +370,21 @@ impl App {
                 }
             }
             Action::Lyrics => {
+                self.editing = false;
+                self.popup = None;
                 self.full_lyrics = !self.full_lyrics;
                 self.nav_focus = false;
             }
             Action::Jobs => self.popup = Some(Popup::Jobs(0)),
             Action::Help => self.popup = Some(Popup::Help),
             Action::Play(index) => {
+                self.editing = false;
                 if index < self.rows.len() {
                     self.send(json!({"op":"play","tracks":self.rows,"index":index}));
                 }
             }
             Action::Select(index) => {
+                self.editing = false;
                 self.selected = index.min(self.rows.len().saturating_sub(1));
                 self.table.select(Some(self.selected));
                 self.nav_focus = false;
@@ -391,6 +399,7 @@ impl App {
                 }
             }
             Action::Control(value) => {
+                self.editing = false;
                 if !matches!(
                     value["op"].as_str(),
                     Some("download_retry" | "download_cancel")
@@ -400,11 +409,14 @@ impl App {
                 self.send(value);
             }
             Action::Toggle => {
+                self.editing = false;
                 if ["stopped", "error", ""].contains(&self.state.phase.as_str()) {
                     if self.state.track.is_some() {
                         self.send(json!({"op":"retry"}));
-                    } else {
+                    } else if !self.rows.is_empty() {
                         self.act(Action::Play(self.selected))?;
+                    } else {
+                        self.send(json!({"op":"toggle"}));
                     }
                 } else {
                     self.send(json!({"op":"toggle"}));
@@ -903,6 +915,9 @@ impl App {
                     }
                 }
                 KeyCode::Enter => self.act(Action::SearchGo)?,
+                KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                    self.editing = false;
+                }
                 KeyCode::Backspace => {
                     self.query.pop();
                 }
@@ -937,7 +952,16 @@ impl App {
                 self.menu("音乐库", String::new(), items);
                 None
             }
-            KeyCode::Char('m') => Some(Action::Mode),
+            KeyCode::Char('m') => {
+                let next = match self.state.mode.as_str() {
+                    "list" => "repeat",
+                    "repeat" => "single",
+                    "single" => "shuffle",
+                    _ => "list",
+                };
+                self.notice(format!("播放方式：{}", mode_label(next)));
+                Some(Action::Control(json!({"op":"mode","value":next})))
+            }
             KeyCode::Char('n') => Some(Action::NewFolder(None)),
             KeyCode::Char('I') => Some(Action::ImportPlaylist),
             KeyCode::Char('E') => {
@@ -1188,10 +1212,21 @@ impl App {
         }
         match kind {
             MouseEventKind::Down(event::MouseButton::Left) => {
+                if self.popup.is_some() {
+                    let inside_popup = self
+                        .hits
+                        .iter()
+                        .any(|h| h.rect.contains(Position::new(x, y)));
+                    if !inside_popup {
+                        self.popup = None;
+                        return Ok(());
+                    }
+                }
                 if self.popup.is_none()
                     && self.timeline.contains(Position::new(x, y))
                     && ["playing", "paused"].contains(&self.state.phase.as_str())
                 {
+                    self.editing = false;
                     if let Some(track) = &self.state.track {
                         let duration = self.state.duration.max(track.duration);
                         self.seek = Some((
@@ -1264,11 +1299,16 @@ impl App {
             header,
         );
         let mut right = header.right();
-        for (label, action) in [
-            (" ? ", Action::Help),
-            (" 下载任务 ", Action::Jobs),
-            (" 歌词 ", Action::Lyrics),
-            (" 搜索 / ", Action::Search),
+        let lyrics_label = if self.full_lyrics {
+            " 关闭歌词 "
+        } else {
+            " 歌词 "
+        };
+        for (label, action, primary) in [
+            (" ? ", Action::Help, false),
+            (" 下载任务 ", Action::Jobs, false),
+            (lyrics_label, Action::Lyrics, self.full_lyrics),
+            (" 搜索 / ", Action::Search, false),
         ] {
             let width = label.width() as u16;
             right = right.saturating_sub(width);
@@ -1277,7 +1317,7 @@ impl App {
                 Rect::new(right, header.y, width, 1),
                 label,
                 action,
-                false,
+                primary,
             );
             right = right.saturating_sub(1);
         }
@@ -1636,7 +1676,15 @@ impl App {
             self.button(
                 frame,
                 Rect::new(inner.right().saturating_sub(6), inner.y, 6, 1),
-                "返回",
+                "关闭",
+                Action::Lyrics,
+                true,
+            );
+        } else {
+            self.button(
+                frame,
+                Rect::new(inner.right().saturating_sub(10), inner.y, 10, 1),
+                "全屏歌词",
                 Action::Lyrics,
                 false,
             );
@@ -1783,9 +1831,9 @@ impl App {
             .map(|t| format!("{} · {}", t.title, t.artist))
             .unwrap_or_default();
         let controls = if area.width >= 95 {
-            64
+            70
         } else {
-            area.width.min(64)
+            area.width.min(70)
         };
         let titlewidth = area.width.saturating_sub(controls + 2);
         if titlewidth > 0 {
@@ -1819,6 +1867,12 @@ impl App {
                 true,
             ),
             ("⏭".into(), 5, Action::Control(json!({"op":"next"})), false),
+            (
+                if self.full_lyrics { "关闭" } else { "歌词" }.into(),
+                6,
+                Action::Lyrics,
+                self.full_lyrics,
+            ),
             (
                 if self.state.liked { "♥" } else { "♡" }.into(),
                 4,
@@ -2095,6 +2149,16 @@ pub fn run(paths: Paths) -> Result<()> {
             }
         }
     });
+    if paths
+        .settings()
+        .map(|s| s.tray && s.lyrics_bar)
+        .unwrap_or(true)
+    {
+        let tray_paths = paths.clone();
+        thread::spawn(move || {
+            let _ = crate::tray::start(&tray_paths);
+        });
+    }
     let mut app = App::new(paths, tx, events)?;
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
@@ -2463,6 +2527,108 @@ mod interaction_tests {
             .unwrap()
             .iter()
             .any(|(name, _)| name == "旅途"));
+    }
+    #[test]
+    fn tui_controls_responsiveness_and_lyrics_buttons() {
+        let (_root, mut app, rx) = setup();
+        let track = Track {
+            id: "test:song1".into(),
+            title: "Testing Song".into(),
+            artist: "Artist".into(),
+            duration: 180.,
+            ..Default::default()
+        };
+        app.store.favorite(&track).unwrap();
+        app.reload().unwrap();
+
+        // 1. Search blur on enter & keyboard controls responsiveness (#1)
+        app.act(Action::Search).unwrap();
+        assert!(app.editing);
+        app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+            .unwrap();
+        app.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.query, "hi");
+
+        // Enter submits search and clears editing focus
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.editing);
+
+        // While not editing, Space triggers Toggle
+        app.state.phase = "playing".into();
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE))
+            .unwrap();
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.value["op"], "toggle");
+
+        // Next and prev shortcuts work
+        app.key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.value["op"], "next");
+
+        app.key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.value["op"], "prev");
+
+        // Tab/Down/Up also blurs editing
+        app.act(Action::Search).unwrap();
+        assert!(app.editing);
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.editing);
+
+        // 2. Mode cycling with 'm' without blocking popup (#1)
+        app.state.mode = "list".into();
+        app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.popup.is_none());
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.value["op"], "mode");
+        assert_eq!(msg.value["value"], "repeat");
+
+        // 3. Popup dismiss on outside click (#1)
+        app.act(Action::Help).unwrap();
+        assert!(app.popup.is_some());
+        draw_terminal(&mut app, 120, 30);
+        // Click at top-left corner (0, 0), which is outside the help popup
+        app.mouse(MouseEventKind::Down(event::MouseButton::Left), 0, 0)
+            .unwrap();
+        assert!(app.popup.is_none());
+
+        // 4. Header, panel, and transport lyrics buttons
+        app.state.track = Some(track.clone());
+        let terminal = draw_terminal(&mut app, 120, 30);
+        let text = screen(&terminal);
+        assert!(text.contains("歌词"));
+        assert!(!app.full_lyrics);
+
+        // Find transport lyrics button (at transport controls row y = 27)
+        let transport_lyrics = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::Lyrics) && h.rect.y == 27 && h.rect.width == 6)
+            .cloned()
+            .expect("transport lyrics button");
+        click(&mut app, transport_lyrics.rect);
+        assert!(app.full_lyrics);
+
+        // In full lyrics view, both header and transport show close buttons
+        let terminal_full = draw_terminal(&mut app, 120, 30);
+        let text_full = screen(&terminal_full);
+        assert!(text_full.contains("关闭"));
+
+        // Click transport close button
+        let transport_close = app
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::Lyrics) && h.rect.y == 27 && h.rect.width == 6)
+            .cloned()
+            .expect("transport close button");
+        click(&mut app, transport_close.rect);
+        assert!(!app.full_lyrics);
     }
     fn draw_terminal(
         app: &mut App,
