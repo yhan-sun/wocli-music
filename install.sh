@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="yhan-sun/wocli-music"
-DEFAULT_TAG="v0.4.2"
+DEFAULT_TAG="v0.4.3"
 # Set WOCLI_DOWNLOAD_BASE=github to bypass the distribution gateway.
 DOWNLOAD_BASE="${WOCLI_DOWNLOAD_BASE:-https://wocli.yhan.fun}"
 DOWNLOAD_BASE="${DOWNLOAD_BASE%/}"

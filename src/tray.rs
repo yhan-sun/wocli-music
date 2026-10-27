@@ -272,6 +272,7 @@ mod macos {
     const TAG_VOL_DOWN: isize = 15;
     const TAG_LYRICS_BAR: isize = 16;
     const TAG_BOSS: isize = 18;
+    const TAG_CONTROLS: isize = 19;
     const TAG_TUI: isize = 17;
     const TAG_QUIT: isize = 99;
 
@@ -477,8 +478,90 @@ mod macos {
                 "老板模式 (快捷键不可用，点击切换)"
             };
 
-            // 1. 顶部菜单栏 StatusItem
+            // 1. 顶部菜单栏 StatusItem 与 控制按钮
             let status_bar = NSStatusBar::systemStatusBar(nil);
+
+            // 快捷控制按钮：下一首、播放/暂停、上一首
+            // 在 macOS NSStatusBar 中，后创建的 item 会排在前创建 item 的左侧。
+            // 依次创建：下一首 -> 播放/暂停 -> 上一首 -> 歌词/状态栏
+            // 最终在菜单栏呈现顺序（自左向右）：
+            // [ 🎵 歌词/标题 ] [ ⏮ 上一首 ] [ ⏯ 播放/暂停 ] [ ⏭ 下一首 ]
+            let item_next = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![item_next, retain];
+            let btn_next: id = msg_send![item_next, button];
+            let _: () = msg_send![btn_next, retain];
+            let _: () = msg_send![btn_next, setTarget: target_obj];
+            let _: () = msg_send![btn_next, setAction: sel!(onAction:)];
+            let _: () = msg_send![btn_next, setTag: TAG_NEXT];
+            let _: () = msg_send![btn_next, setImagePosition: 1usize]; // NSImageOnly
+            let _: () = msg_send![btn_next, setToolTip: to_nsstring("下一首")];
+
+            let sym_next = to_nsstring("forward.end.fill");
+            let img_next: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: sym_next
+                accessibilityDescription: nil
+            ];
+            if img_next != nil {
+                let _: () = msg_send![img_next, setTemplate: YES];
+                let _: () = msg_send![btn_next, setImage: img_next];
+            }
+
+            let item_toggle = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![item_toggle, retain];
+            let btn_toggle: id = msg_send![item_toggle, button];
+            let _: () = msg_send![btn_toggle, retain];
+            let _: () = msg_send![btn_toggle, setTarget: target_obj];
+            let _: () = msg_send![btn_toggle, setAction: sel!(onAction:)];
+            let _: () = msg_send![btn_toggle, setTag: TAG_TOGGLE];
+            let _: () = msg_send![btn_toggle, setImagePosition: 1usize]; // NSImageOnly
+            let _: () = msg_send![btn_toggle, setToolTip: to_nsstring("播放 / 暂停")];
+
+            let sym_play = to_nsstring("play.fill");
+            let img_play: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: sym_play
+                accessibilityDescription: nil
+            ];
+            if img_play != nil {
+                let _: () = msg_send![img_play, setTemplate: YES];
+                let _: () = msg_send![img_play, retain];
+                let _: () = msg_send![btn_toggle, setImage: img_play];
+            }
+
+            let sym_pause = to_nsstring("pause.fill");
+            let img_pause: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: sym_pause
+                accessibilityDescription: nil
+            ];
+            if img_pause != nil {
+                let _: () = msg_send![img_pause, setTemplate: YES];
+                let _: () = msg_send![img_pause, retain];
+            }
+
+            let item_prev = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![item_prev, retain];
+            let btn_prev: id = msg_send![item_prev, button];
+            let _: () = msg_send![btn_prev, retain];
+            let _: () = msg_send![btn_prev, setTarget: target_obj];
+            let _: () = msg_send![btn_prev, setAction: sel!(onAction:)];
+            let _: () = msg_send![btn_prev, setTag: TAG_PREV];
+            let _: () = msg_send![btn_prev, setImagePosition: 1usize]; // NSImageOnly
+            let _: () = msg_send![btn_prev, setToolTip: to_nsstring("上一首")];
+
+            let sym_prev = to_nsstring("backward.end.fill");
+            let img_prev: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: sym_prev
+                accessibilityDescription: nil
+            ];
+            if img_prev != nil {
+                let _: () = msg_send![img_prev, setTemplate: YES];
+                let _: () = msg_send![btn_prev, setImage: img_prev];
+            }
+
+            // 主歌词 / 状态菜单项
             let status_item = status_bar.statusItemWithLength_(-1.0); // NSVariableStatusItemLength
             let _: () = msg_send![status_item, retain];
             let button: id = msg_send![status_item, button];
@@ -526,6 +609,9 @@ mod macos {
 
             let item_lyrics_bar = create_item("任务栏歌词: 开启", TAG_LYRICS_BAR, target_obj);
             let _: () = msg_send![menu, addItem: item_lyrics_bar];
+
+            let item_controls_bar = create_item("菜单栏控制按钮: 开启", TAG_CONTROLS, target_obj);
+            let _: () = msg_send![menu, addItem: item_controls_bar];
 
             let item_boss = create_item(boss_menu_label, TAG_BOSS, target_obj);
             let _: () = msg_send![menu, addItem: item_boss];
@@ -637,6 +723,9 @@ mod macos {
             let mut current_mode = "list".to_string();
             let mut current_volume = 60u8;
             let mut lyrics_bar_enabled = true;
+            let mut controls_enabled = true;
+            let mut last_phase = String::new();
+            let mut last_controls_visible = true;
 
             loop {
                 let subpool = NSAutoreleasePool::new(nil);
@@ -694,6 +783,19 @@ mod macos {
                         TAG_BOSS => {
                             let _ = ipc::request(&paths, json!({"op":"boss"}), true);
                         }
+                        TAG_CONTROLS => {
+                            controls_enabled = !controls_enabled;
+                            let new_cb = format!(
+                                "菜单栏控制按钮: {}",
+                                if controls_enabled { "开启" } else { "关闭" }
+                            );
+                            set_item_title(item_controls_bar, &new_cb);
+                            let flag = if controls_enabled { YES } else { NO };
+                            let _: () = msg_send![item_prev, setVisible: flag];
+                            let _: () = msg_send![item_toggle, setVisible: flag];
+                            let _: () = msg_send![item_next, setVisible: flag];
+                            last_controls_visible = controls_enabled;
+                        }
                         TAG_TUI => {
                             let exe =
                                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli"));
@@ -706,6 +808,10 @@ mod macos {
                         TAG_QUIT => {
                             clear_now_playing();
                             let _: () = msg_send![lyrics_window, orderOut: nil];
+                            let _: () = msg_send![status_bar, removeStatusItem: item_prev];
+                            let _: () = msg_send![status_bar, removeStatusItem: item_toggle];
+                            let _: () = msg_send![status_bar, removeStatusItem: item_next];
+                            let _: () = msg_send![status_bar, removeStatusItem: status_item];
                             let _ = super::stop(&paths);
                             let _ = ipc::request(&paths, json!({"op":"shutdown"}), false);
                             break;
@@ -896,6 +1002,32 @@ mod macos {
                     } else {
                         clear_now_playing();
                     }
+
+                    let controls_visible = !is_boss && controls_enabled;
+                    if controls_visible != last_controls_visible {
+                        let flag = if controls_visible { YES } else { NO };
+                        let _: () = msg_send![item_prev, setVisible: flag];
+                        let _: () = msg_send![item_toggle, setVisible: flag];
+                        let _: () = msg_send![item_next, setVisible: flag];
+                        last_controls_visible = controls_visible;
+                    }
+
+                    if phase != last_phase {
+                        if phase == "playing" {
+                            if img_pause != nil {
+                                let _: () = msg_send![btn_toggle, setImage: img_pause];
+                            }
+                            let tip_ns = to_nsstring("暂停");
+                            let _: () = msg_send![btn_toggle, setToolTip: tip_ns];
+                        } else {
+                            if img_play != nil {
+                                let _: () = msg_send![btn_toggle, setImage: img_play];
+                            }
+                            let tip_ns = to_nsstring("播放");
+                            let _: () = msg_send![btn_toggle, setToolTip: tip_ns];
+                        }
+                        last_phase = phase.to_string();
+                    }
                 } else {
                     clear_now_playing();
                     let new_status = "后台未运行";
@@ -907,6 +1039,22 @@ mod macos {
                         let ns_title = to_nsstring("wocli");
                         let _: () = msg_send![button, setTitle: ns_title];
                         last_title = "wocli".to_string();
+                    }
+                    if last_phase != "stopped" {
+                        if img_play != nil {
+                            let _: () = msg_send![btn_toggle, setImage: img_play];
+                        }
+                        let tip_ns = to_nsstring("播放");
+                        let _: () = msg_send![btn_toggle, setToolTip: tip_ns];
+                        last_phase = "stopped".to_string();
+                    }
+                    let controls_visible = controls_enabled;
+                    if controls_visible != last_controls_visible {
+                        let flag = if controls_visible { YES } else { NO };
+                        let _: () = msg_send![item_prev, setVisible: flag];
+                        let _: () = msg_send![item_toggle, setVisible: flag];
+                        let _: () = msg_send![item_next, setVisible: flag];
+                        last_controls_visible = controls_visible;
                     }
                     if !last_bar_text.is_empty() {
                         let _: () = msg_send![lyrics_label, setStringValue: empty_str];
@@ -1147,20 +1295,21 @@ mod windows {
         }
     }
 
-    fn button_at(hwnd: HWND, x: i32) -> u8 {
+    fn button_at(hwnd: HWND, x: i32, y: i32) -> u8 {
         unsafe {
             let mut area: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut area);
             let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
             let dp = |v| super::taskbar_layout::pixels(v, dpi);
-            if area.right < dp(260) {
+            let h = area.bottom - area.top;
+            if area.right < dp(180) || y < dp(2) || y > h - dp(2) {
                 return 0;
             }
-            if (dp(6)..=dp(34)).contains(&x) {
+            if (dp(4)..=dp(34)).contains(&x) {
                 1
             } else if (dp(36)..=dp(64)).contains(&x) {
                 2
-            } else if (dp(66)..=dp(94)).contains(&x) {
+            } else if (dp(66)..=dp(96)).contains(&x) {
                 3
             } else {
                 0
@@ -1296,7 +1445,7 @@ mod windows {
                 let mut point: POINT = std::mem::zeroed();
                 GetCursorPos(&mut point);
                 windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
-                if button_at(hwnd, point.x) != 0 {
+                if button_at(hwnd, point.x, point.y) != 0 {
                     SetCursor(LoadCursorW(0, IDC_HAND));
                     1
                 } else {
@@ -1305,7 +1454,8 @@ mod windows {
             }
             WM_MOUSEMOVE => {
                 let x = (lparam & 0xFFFF) as i16 as i32;
-                let new_hover = button_at(hwnd, x);
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                let new_hover = button_at(hwnd, x, y);
                 let old_hover = HOVER_BTN.swap(new_hover, Ordering::Relaxed);
                 if old_hover != new_hover {
                     InvalidateRect(hwnd, null(), 0);
@@ -1314,13 +1464,15 @@ mod windows {
             }
             WM_LBUTTONDOWN => {
                 let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
                 STATE.with(|st| {
                     if let Some(state) = st.borrow().as_ref() {
-                        if button_at(hwnd, x) == 1 {
+                        let btn = button_at(hwnd, x, y);
+                        if btn == 1 {
                             let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
-                        } else if button_at(hwnd, x) == 2 {
+                        } else if btn == 2 {
                             let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
-                        } else if button_at(hwnd, x) == 3 {
+                        } else if btn == 3 {
                             let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
                         }
                     }
@@ -1386,7 +1538,7 @@ mod windows {
                             windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
                         )
                     };
-                    let controls = w >= dp(260);
+                    let controls = w >= dp(180);
                     if controls {
                         // 1. 绘制控制按钮背景（悬停浅底）
                         let hover_brush = CreateSolidBrush(0x00282828);
