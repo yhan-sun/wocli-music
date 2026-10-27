@@ -278,6 +278,9 @@ fn print_status(value: &Value) {
     } else {
         println!("{phase}");
     }
+    if value["buffering"] == true {
+        println!("音频缓冲中，等待供数；播放进度暂时停留在实际播放位置");
+    }
 }
 
 fn source_command(paths: &Paths, args: &Args) -> Result<()> {

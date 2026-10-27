@@ -1924,6 +1924,8 @@ impl App {
             } else {
                 "解析中".into()
             }
+        } else if self.state.buffering {
+            "音频缓冲中".into()
         } else if self.state.phase == "error" {
             match self.state.error_code.as_str() {
                 "incomplete_audio" => "仅试听",

@@ -73,6 +73,9 @@ pub struct Status {
     pub lyrics_bar: bool,
     pub tray: bool,
     pub boss: bool,
+    pub buffering: bool,
+    pub buffered_seconds: f64,
+    pub buffer_underruns: u64,
 }
 #[derive(Serialize, Deserialize, Default)]
 struct Queue {
@@ -146,6 +149,7 @@ struct Service {
     quit: Arc<AtomicBool>,
     boss: bool,
     boss_previous_phase: Option<String>,
+    buffering_since: Option<Instant>,
 }
 impl Service {
     fn new(paths: Paths, tx: Sender<Event>, quit: Arc<AtomicBool>) -> Result<Self> {
@@ -205,6 +209,7 @@ impl Service {
             quit,
             boss: false,
             boss_previous_phase: None,
+            buffering_since: None,
         })
     }
     fn current(&self) -> Option<&Track> {
@@ -235,6 +240,9 @@ impl Service {
             lyrics_bar: self.settings.lyrics_bar,
             tray: self.settings.tray,
             boss: self.boss,
+            buffering: self.phase == "playing" && self.player.buffering(),
+            buffered_seconds: self.player.buffered_seconds(),
+            buffer_underruns: self.player.underruns(),
             error: self
                 .error
                 .as_ref()
@@ -283,6 +291,7 @@ impl Service {
             coord.mark_cancelled();
         }
         self.audio_input = None;
+        self.buffering_since = None;
         self.generation += 1;
         self.player.stop();
         self.phase = "stopped".into();
@@ -397,14 +406,14 @@ impl Service {
                                         state.1 = Some(result);
                                     }
                                 };
-                                match crate::stream::start_stream(
+                                match crate::stream::start_stream_buffered(
                                     provider.agent(),
                                     &stream.url,
                                     stream.size,
+                                    track.duration,
                                     target.clone(),
                                     cancelled.clone(),
-                                    on_buffer,
-                                    on_complete,
+                                    (on_buffer, on_complete),
                                 ) {
                                     Ok(stream_handle) => {
                                         let _ = tx.send(Event::StreamReady(
@@ -636,6 +645,29 @@ impl Service {
             .is_some_and(|(deadline, _)| Instant::now() >= *deadline)
         {
             self.cancel_seek("等待跳转位置缓冲超时，请稍后重试");
+        }
+        if self.phase == "playing" && self.player.buffering() {
+            let since = self.buffering_since.get_or_insert_with(|| {
+                eprintln!(
+                    "音频缓冲不足，等待供数（当前歌曲第 {} 次）",
+                    self.player.underruns()
+                );
+                Instant::now()
+            });
+            if since.elapsed() >= Duration::from_secs(15) {
+                self.playback_failed(Error::coded(
+                    "playback_stall",
+                    "音频供数持续中断超过 15 秒，尝试重试或备用音源",
+                ));
+                return;
+            }
+        } else if let Some(since) = self.buffering_since.take() {
+            if self.phase == "playing" {
+                eprintln!(
+                    "音频缓冲恢复（等待 {:.2} 秒）",
+                    since.elapsed().as_secs_f64()
+                );
+            }
         }
         if self.phase != "playing" || !self.player.finished() {
             return;
@@ -1692,6 +1724,48 @@ mod playback_tests {
             .playback_failed(Error::coded("audio_device", "no device"));
         assert_eq!(h.service.phase, "error");
         assert_eq!(h.service.index, 0);
+    }
+    #[test]
+    fn sustained_buffer_starvation_is_reported_and_does_not_wait_for_a_120_second_http_timeout() {
+        let mut h = Harness::new("single");
+        let path = h.dir.path().join("starved.wav");
+        let bytes = crate::player::test_wav(20);
+        fs::write(&path, &bytes[..40000]).unwrap();
+        let coord = Arc::new(crate::stream::StreamCoord::new(bytes.len() as u64));
+        coord.notify_progress(40000);
+        let input = AudioInput {
+            path,
+            hint: "wav".into(),
+            stream: Some(coord.clone()),
+        };
+        let track = Track {
+            duration: 20.0,
+            ..Track::default()
+        };
+        let audio = input
+            .prepare(&track, 0.0, Arc::new(AtomicBool::new(false)), false)
+            .unwrap();
+        let (player, mut output) = Player::test_output(audio);
+        h.service.player = player;
+        h.service.audio_input = Some(input);
+        h.service.queue = vec![track];
+        h.service.phase = "playing".into();
+        let ready = Instant::now() + Duration::from_secs(2);
+        while h.service.player.buffered_seconds() < 2.25 {
+            assert!(Instant::now() < ready);
+            thread::sleep(Duration::from_millis(2));
+        }
+        for _ in 0..32000 {
+            output.next();
+        }
+        assert!(h.service.status().buffering);
+        assert_eq!(h.service.status().buffer_underruns, 1);
+        h.service.buffering_since = Some(Instant::now() - Duration::from_secs(16));
+        h.service.tick();
+        assert_eq!(h.service.phase, "error");
+        assert_eq!(h.service.error.as_ref().unwrap().code, "playback_stall");
+        assert!(coord.cancelled.load(Ordering::Relaxed));
+        assert!(!h.service.status().buffering);
     }
     #[test]
     fn midstream_network_failure_retries_once_then_skips() {

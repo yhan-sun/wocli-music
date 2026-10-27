@@ -158,6 +158,7 @@ wocli stop                     # Stop playback
 - [Detailed Comparison Report](docs/comparison.md)
 - [AI MCP Setup Guide](docs/mcp.md)
 - [Playlist formats, migration and recovery](docs/playlist-import.md)
+- [Audio buffering and stutter diagnostics (Chinese)](docs/playback-buffering.md)
 - For more commands: run `wocli help` or `wocli doctor` for system diagnostics
 
 ---

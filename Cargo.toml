@@ -1,6 +1,6 @@
 [package]
 name = "wocli-music"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.93"
 description = "A compact terminal music player with native audio playback"
@@ -23,6 +23,7 @@ ratatui = { version = "0.29", default-features = false, features = ["crossterm"]
 rmcp = { version = "3.6", default-features = false, features = ["server", "transport-io"] }
 rodio = { version = "0.21.1", default-features = false, features = ["playback", "symphonia-mp3", "symphonia-flac", "symphonia-aac", "symphonia-isomp4", "symphonia-wav", "symphonia-pcm"] }
 rquickjs = { version = "0.14", default-features = false, features = ["std"] }
+rtrb = "0.4.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = "1.2"
 self-replace = "1.5"

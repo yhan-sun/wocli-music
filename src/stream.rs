@@ -7,7 +7,21 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub const PREBUFFER_SIZE: u64 = 256 * 1024; // 256 KB for instant start & seamless buffering
+pub const PREBUFFER_SIZE: u64 = 256 * 1024;
+
+// Compressed bytes must cover time, not just a fixed size: 256 KiB can be less
+// than two seconds of FLAC. Keep startup reserves bounded even for unusual files.
+pub(crate) fn prebuffer_size(total: u64, duration: f64) -> u64 {
+    let timed = if duration.is_finite() && duration > 0.0 {
+        (total as f64 / duration * 8.0) as u64
+    } else {
+        0
+    };
+    PREBUFFER_SIZE
+        .max(timed)
+        .min(4 * 1024 * 1024)
+        .min(if total > 0 { total } else { u64::MAX })
+}
 
 pub struct StreamCoord {
     pub written: AtomicU64,
@@ -61,6 +75,7 @@ pub struct ProgressiveReader {
     pos: u64,
     coord: Arc<StreamCoord>,
     cancelled: Arc<AtomicBool>,
+    disk_pos: Option<u64>,
 }
 
 impl ProgressiveReader {
@@ -73,6 +88,7 @@ impl ProgressiveReader {
             pos: 0,
             coord,
             cancelled,
+            disk_pos: None,
         }
     }
 }
@@ -98,9 +114,12 @@ impl Read for ProgressiveReader {
             let written = self.coord.written.load(Ordering::Acquire);
             if self.pos < written {
                 let available = (written - self.pos).min(buf.len() as u64) as usize;
-                self.file.seek(SeekFrom::Start(self.pos))?;
+                if self.disk_pos != Some(self.pos) {
+                    self.file.seek(SeekFrom::Start(self.pos))?;
+                }
                 let n = self.file.read(&mut buf[..available])?;
                 self.pos += n as u64;
+                self.disk_pos = Some(self.pos);
                 return Ok(n);
             }
 
@@ -115,6 +134,16 @@ impl Read for ProgressiveReader {
             // Wait for more bytes to be downloaded
             let (lock, cvar) = &self.coord.notifier;
             let guard = lock.lock().unwrap();
+            // Check again under the notifier lock so a just-published chunk
+            // cannot lose its wakeup and add an unnecessary 50ms audio gap.
+            if self.pos < self.coord.written.load(Ordering::Acquire)
+                || self.coord.completed.load(Ordering::Acquire)
+                || self.coord.failed.load(Ordering::Acquire)
+                || self.coord.cancelled.load(Ordering::Relaxed)
+                || self.cancelled.load(Ordering::Relaxed)
+            {
+                continue;
+            }
             let _ = cvar.wait_timeout(guard, Duration::from_millis(50));
         }
     }
@@ -171,6 +200,30 @@ pub fn start_stream(
     on_buffer: impl Fn(u64, u64) + Send + 'static,
     on_complete: impl Fn(Result<u64>) + Send + 'static,
 ) -> Result<StreamHandle> {
+    start_stream_buffered(
+        agent,
+        url,
+        total_size,
+        0.0,
+        cache_path,
+        cancelled,
+        (on_buffer, on_complete),
+    )
+}
+
+pub(crate) fn start_stream_buffered(
+    agent: &ureq::Agent,
+    url: &str,
+    total_size: u64,
+    duration: f64,
+    cache_path: PathBuf,
+    cancelled: Arc<AtomicBool>,
+    callbacks: (
+        impl Fn(u64, u64) + Send + 'static,
+        impl Fn(Result<u64>) + Send + 'static,
+    ),
+) -> Result<StreamHandle> {
+    let (on_buffer, on_complete) = callbacks;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use md5::{Digest, Md5};
     if let Some(parent) = cache_path.parent() {
@@ -244,11 +297,7 @@ pub fn start_stream(
             let mut head = Vec::new();
             let mut digest = Md5::new();
             let mut downloaded = 0u64;
-            let prebuffer_target = if actual_total > 0 {
-                PREBUFFER_SIZE.min(actual_total)
-            } else {
-                PREBUFFER_SIZE
-            };
+            let prebuffer_target = prebuffer_size(actual_total, duration);
             loop {
                 if cancelled.load(Ordering::Relaxed)
                     || coord_worker.cancelled.load(Ordering::Relaxed)
@@ -729,5 +778,19 @@ mod regression_tests {
         assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap() < 240000);
         assert!(start.elapsed() < Duration::from_secs(1));
         worker.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod buffer_sizing_tests {
+    use super::*;
+    #[test]
+    fn reserves_time_for_high_bitrate_audio_with_a_fixed_memory_bound() {
+        assert_eq!(prebuffer_size(30 * 1024 * 1024, 240.0), 1024 * 1024);
+        assert_eq!(prebuffer_size(4 * 1024 * 1024, 240.0), PREBUFFER_SIZE);
+        assert_eq!(prebuffer_size(10 * 1024 * 1024, 1.0), 4 * 1024 * 1024);
+        assert_eq!(prebuffer_size(10000, 5.0), 10000);
+        assert_eq!(prebuffer_size(0, 0.0), PREBUFFER_SIZE);
+        assert_eq!(prebuffer_size(0, f64::NAN), PREBUFFER_SIZE);
     }
 }

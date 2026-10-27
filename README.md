@@ -160,6 +160,7 @@ wocli stop                     # 停止播放
 - [AI MCP 协议接入指南](docs/mcp.md)
 - [歌单导入导出、格式与恢复](docs/playlist-import.md)
 - [Windows 任务栏嵌入歌词与诊断](docs/windows-taskbar-lyrics.md)
+- [播放缓冲与声音断续诊断](docs/playback-buffering.md)
 - 更多指令与配置帮助：运行 `wocli help` 或 `wocli doctor` 进行环境诊断
 
 ---

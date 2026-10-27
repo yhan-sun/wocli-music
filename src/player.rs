@@ -3,6 +3,7 @@ use crate::{
     stream::{ProgressiveReader, StreamCoord},
 };
 use rodio::{OutputStream, Sink, Source};
+mod buffered;
 use std::{
     fs::File,
     io::{BufReader, Read, Seek},
@@ -32,20 +33,16 @@ pub struct PreparedAudio {
     cancelled: Arc<AtomicBool>,
     samples: Arc<AtomicU64>,
     samples_per_second: f64,
+    buffer: Option<Arc<buffered::BufferState>>,
 }
 struct PrimedSource {
     source: Box<dyn Source<Item = f32> + Send>,
     first: Option<f32>,
-    samples: Arc<AtomicU64>,
 }
 impl Iterator for PrimedSource {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
-        let sample = self.first.take().or_else(|| self.source.next());
-        if sample.is_some() {
-            self.samples.fetch_add(1, Ordering::Relaxed);
-        }
-        sample
+        self.first.take().or_else(|| self.source.next())
     }
 }
 impl Source for PrimedSource {
@@ -159,17 +156,25 @@ impl AudioInput {
             return Err(Error::coded("cancelled", "已取消"));
         }
         let samples = Arc::new(AtomicU64::new(0));
+        let primed: Box<dyn Source<Item = f32> + Send> = Box::new(PrimedSource {
+            source: Box::new(decoder),
+            first,
+        });
+        let (source, buffer): (Box<dyn Source<Item = f32> + Send>, _) = if null {
+            (primed, None)
+        } else {
+            let (source, state) =
+                buffered::BufferedSource::prepare(primed, samples.clone(), cancelled.clone())?;
+            (Box::new(source), Some(state))
+        };
         Ok(PreparedAudio {
-            source: Box::new(PrimedSource {
-                source: Box::new(decoder),
-                first,
-                samples: samples.clone(),
-            }),
+            source,
             duration,
             position,
             cancelled,
             samples,
             samples_per_second,
+            buffer,
         })
     }
 }
@@ -185,6 +190,7 @@ pub struct Player {
     loaded: bool,
     cancelled: Option<Arc<AtomicBool>>,
     progress: Option<(Arc<AtomicU64>, f64)>,
+    buffer: Option<Arc<buffered::BufferState>>,
 }
 impl Default for Player {
     fn default() -> Self {
@@ -199,24 +205,37 @@ impl Default for Player {
             loaded: false,
             cancelled: None,
             progress: None,
+            buffer: None,
         }
     }
 }
 impl Player {
+    #[cfg(test)]
+    pub(crate) fn test_output(audio: PreparedAudio) -> (Self, impl Source<Item = f32>) {
+        let (sink, output) = Sink::new();
+        sink.append(audio.source);
+        (
+            Self {
+                sink: Some(sink),
+                null: false,
+                duration: audio.duration,
+                base: audio.position,
+                started: Instant::now(),
+                paused: false,
+                loaded: true,
+                cancelled: Some(audio.cancelled),
+                progress: Some((audio.samples, audio.samples_per_second)),
+                buffer: audio.buffer,
+                stream: None,
+            },
+            output,
+        )
+    }
     pub fn load(&mut self, audio: PreparedAudio, volume: u8, paused: bool) -> Result<()> {
         if !self.null && self.stream.is_none() {
-            let stream = rodio::OutputStreamBuilder::from_default_device()
-                .and_then(|b| {
-                    b.with_buffer_size(rodio::cpal::BufferSize::Fixed(512))
-                        .open_stream()
-                })
-                .or_else(|_| {
-                    rodio::OutputStreamBuilder::from_default_device().and_then(|b| {
-                        b.with_buffer_size(rodio::cpal::BufferSize::Fixed(1024))
-                            .open_stream()
-                    })
-                })
-                .or_else(|_| rodio::OutputStreamBuilder::open_default_stream())
+            // Let the host choose a safe callback size. A forced 512-frame buffer
+            // is unnecessarily fragile for music playback under ordinary CPU load.
+            let stream = rodio::OutputStreamBuilder::open_default_stream()
                 .map_err(|_| Error::coded("audio_device", "无法打开系统音频输出设备"))?;
             self.stream = Some(stream);
         }
@@ -225,6 +244,7 @@ impl Player {
         self.base = audio.position;
         self.cancelled = Some(audio.cancelled);
         self.progress = Some((audio.samples, audio.samples_per_second));
+        self.buffer = audio.buffer;
         if !self.null {
             let sink = Sink::connect_new(self.stream.as_ref().unwrap().mixer());
             sink.set_volume(volume as f32 / 100.);
@@ -243,8 +263,10 @@ impl Player {
         if !self.loaded {
             return 0.;
         }
-        let value = if let Some(sink) = &self.sink {
-            self.base + sink.get_pos().as_secs_f64()
+        let value = if let Some((samples, rate)) =
+            &self.progress.as_ref().filter(|_| self.sink.is_some())
+        {
+            self.base + samples.load(Ordering::Relaxed) as f64 / rate
         } else {
             self.base
                 + if self.paused {
@@ -290,7 +312,42 @@ impl Player {
                 .map(|v| v.empty())
                 .unwrap_or_else(|| self.duration > 0. && self.position() >= self.duration)
     }
+    pub fn buffering(&self) -> bool {
+        self.loaded
+            && !self.paused
+            && self
+                .buffer
+                .as_ref()
+                .is_some_and(|b| b.buffering.load(Ordering::Acquire))
+    }
+    pub fn underruns(&self) -> u64 {
+        self.buffer
+            .as_ref()
+            .map_or(0, |b| b.underruns.load(Ordering::Relaxed))
+    }
+    pub fn buffered_seconds(&self) -> f64 {
+        match (&self.buffer, &self.progress) {
+            (Some(b), Some((samples, rate))) => {
+                b.produced
+                    .load(Ordering::Acquire)
+                    .saturating_sub(samples.load(Ordering::Relaxed)) as f64
+                    / rate
+            }
+            _ => 0.0,
+        }
+    }
     pub fn end_error(&self) -> Option<Error> {
+        if self
+            .buffer
+            .as_ref()
+            .is_some_and(|b| b.format_error.load(Ordering::Acquire))
+            && self.finished()
+        {
+            return Some(Error::coded(
+                "decode_error",
+                "音频流在播放中改变了采样率或声道数",
+            ));
+        }
         if !self.null && self.finished() && self.duration > 0. {
             if let Some((samples, rate)) = &self.progress {
                 let decoded = self.base + samples.load(Ordering::Relaxed) as f64 / rate;
@@ -310,6 +367,7 @@ impl Player {
         }
         self.loaded = false;
         self.progress = None;
+        self.buffer = None;
         self.duration = 0.;
         self.base = 0.;
         self.paused = false;
@@ -358,11 +416,15 @@ mod tests {
         let first = input
             .prepare(&track, 5., Arc::new(AtomicBool::new(false)), false)
             .unwrap();
-        assert_eq!(first.source.count(), 40000);
+        let consumed = first.samples.clone();
+        assert!(first.source.count() >= 40000);
+        assert_eq!(consumed.load(Ordering::Relaxed), 40000);
         let back = input
             .prepare(&track, 1., Arc::new(AtomicBool::new(false)), false)
             .unwrap();
-        assert_eq!(back.source.count(), 72000);
+        let consumed = back.samples.clone();
+        assert!(back.source.count() >= 72000);
+        assert_eq!(consumed.load(Ordering::Relaxed), 72000);
     }
     #[test]
     fn decoding_an_incomplete_body_is_a_failure_even_with_a_valid_header() {
@@ -391,6 +453,7 @@ mod tests {
             duration: audio.duration,
             loaded: true,
             progress: Some((audio.samples, audio.samples_per_second)),
+            buffer: audio.buffer,
             stream: None,
             base: 0.,
             started: Instant::now(),
@@ -436,5 +499,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(audio.duration, 10.);
+    }
+}
+
+#[cfg(test)]
+mod buffering_regressions {
+    use super::*;
+    use std::{io::Write, thread};
+    #[test]
+    fn live_download_pause_keeps_callback_and_controls_responsive_and_freezes_only_audio_position()
+    {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("network.wav");
+        let bytes = test_wav(20);
+        std::fs::write(&path, &bytes[..40000]).unwrap();
+        let coord = Arc::new(StreamCoord::new(bytes.len() as u64));
+        coord.notify_progress(40000);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let input = AudioInput {
+            path: path.clone(),
+            hint: "wav".into(),
+            stream: Some(coord.clone()),
+        };
+        let audio = input
+            .prepare(
+                &Track {
+                    duration: 20.0,
+                    ..Track::default()
+                },
+                0.0,
+                cancel.clone(),
+                false,
+            )
+            .unwrap();
+        let (mut player, mut output) = Player::test_output(audio);
+        let ready = Instant::now() + Duration::from_secs(2);
+        while player.buffered_seconds() < 2.25 {
+            assert!(Instant::now() < ready);
+            thread::sleep(Duration::from_millis(2));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let callback = thread::spawn(move || {
+            for _ in 0..32000 {
+                assert!(output.next().is_some());
+            }
+            let _ = tx.send(output);
+        });
+        let result = rx.recv_timeout(Duration::from_millis(500));
+        if result.is_err() {
+            cancel.store(true, Ordering::Relaxed);
+            coord.mark_cancelled();
+        }
+        let mut output = result.expect("audio callback blocked on the network");
+        callback.join().unwrap();
+        assert!(player.buffering());
+        assert_eq!(player.underruns(), 1);
+        let position = player.position();
+        assert!((2.0..3.0).contains(&position));
+        for _ in 0..8000 {
+            output.next();
+        }
+        assert_eq!(player.position(), position);
+        let control = Instant::now();
+        player.pause(true);
+        player.pause(false);
+        assert!(control.elapsed() < Duration::from_millis(100));
+        let mut writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writer.write_all(&bytes[40000..]).unwrap();
+        writer.flush().unwrap();
+        coord.mark_completed(bytes.len() as u64);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while player.buffered_seconds() < 1.0 {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        for _ in 0..1024 {
+            output.next();
+        }
+        assert!(!player.buffering());
+        assert!(player.position() > position);
+        let control = Instant::now();
+        player.stop();
+        assert!(control.elapsed() < Duration::from_millis(100));
+        assert!(cancel.load(Ordering::Relaxed));
     }
 }
