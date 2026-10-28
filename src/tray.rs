@@ -24,6 +24,30 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(any(target_os = "macos", windows))]
+fn play_daily(paths: Paths) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<()> {
+            let store = crate::store::Store::open(&paths)?;
+            let provider = crate::provider::Provider::new(paths.settings()?.direct);
+            let daily = crate::recommend::daily(&store, &provider, true, false)?;
+            let tracks: Vec<_> = daily.items.into_iter().map(|item| item.track).collect();
+            if tracks.is_empty() {
+                return Err(Error::new("每日推荐为空，请先收藏歌曲或导入歌单"));
+            }
+            ipc::request(
+                &paths,
+                json!({"op":"play", "tracks":tracks, "index":0}),
+                true,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("每日推荐：{error}");
+        }
+    });
+}
+
 pub fn hotkeys(paths: &Paths) -> serde_json::Value {
     let pid = fs::read_to_string(pid_path(paths)).unwrap_or_default();
     let running = status(paths).unwrap_or(false);
@@ -273,6 +297,7 @@ mod macos {
     const TAG_LYRICS_BAR: isize = 16;
     const TAG_BOSS: isize = 18;
     const TAG_CONTROLS: isize = 19;
+    const TAG_DAILY: isize = 20;
     const TAG_TUI: isize = 17;
     const TAG_QUIT: isize = 99;
 
@@ -619,6 +644,8 @@ mod macos {
             let sep: id = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
+            let item_daily = create_item("播放每日推荐", TAG_DAILY, target_obj);
+            let _: () = msg_send![menu, addItem: item_daily];
             let item_tui = create_item("打开终端播放器", TAG_TUI, target_obj);
             let _: () = msg_send![menu, addItem: item_tui];
 
@@ -796,6 +823,7 @@ mod macos {
                             let _: () = msg_send![item_next, setVisible: flag];
                             last_controls_visible = controls_enabled;
                         }
+                        TAG_DAILY => super::play_daily(paths.clone()),
                         TAG_TUI => {
                             let exe =
                                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli"));
@@ -1137,6 +1165,7 @@ mod windows {
     const CMD_VOL_DOWN: usize = 207;
     const CMD_LYRICS_BAR: usize = 208;
     const CMD_BOSS: usize = 211;
+    const CMD_DAILY: usize = 212;
     const CMD_TUI: usize = 209;
     const CMD_QUIT: usize = 210;
 
@@ -1886,6 +1915,12 @@ mod windows {
 
                 AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
 
+                AppendMenuW(
+                    hmenu,
+                    MF_STRING,
+                    CMD_DAILY,
+                    to_wide("播放每日推荐").as_ptr(),
+                );
                 AppendMenuW(hmenu, MF_STRING, CMD_TUI, to_wide("打开控制终端").as_ptr());
                 AppendMenuW(hmenu, MF_STRING, CMD_QUIT, to_wide("退出播放器").as_ptr());
             }
@@ -1954,6 +1989,7 @@ mod windows {
                     CMD_BOSS => {
                         let _ = ipc::request(&state.paths, json!({"op":"boss"}), true);
                     }
+                    CMD_DAILY => super::play_daily(state.paths.clone()),
                     CMD_TUI => {
                         let exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));

@@ -114,6 +114,21 @@ wocli playlist export "通勤" --format json --output ./通勤.wocli.json
 
 保留原平台 ID，匹配到酷我或本地版本后加入播放列表；未匹配信息不会丢弃。支持离线匹配、重试、手动指定、同名另存/合并/替换和快照恢复。在线分享链接、旧版/全量 LX、Apple XML/XSPF、Spotify 备份暂未支持。参见 [完整使用说明与格式表](docs/playlist-import.md)。
 
+### 每日推荐（实验功能）
+
+TUI 侧栏选择「每日推荐」。首次打开按本地收藏、歌单和最近播放生成当天快照；再次打开保持不变。按 `r` 在线刷新，歌曲操作菜单可排除歌曲；也可播放全部或加入队列。macOS 菜单栏和 Windows 托盘菜单可播放每日推荐。MCP 可查看、刷新和播放同一份推荐。命令行也可以扩展候选：
+
+```bash
+wocli daily --refresh         # 在线重新生成；会搜索至多三位常听歌手
+wocli daily --offline         # 使用当天快照，无快照时仅用本地候选
+wocli daily play              # 播放推荐
+wocli daily add               # 加入播放队列
+wocli daily dislike --id 123  # 从日推排除；不修改收藏或歌单
+wocli daily undo --id 123     # 恢复推荐资格
+```
+
+列表显示推荐理由，`--json` 可供脚本使用。推荐保存在本地；在线生成会向酷我搜索发送所选歌手名称。历史仅表示歌曲加载成功，不代表完整收听。搜索或音源不可用时可能推荐较少或播放失败；首次没有收藏、歌单或历史时先添加歌曲并刷新。当天首次由 TUI 或 `--offline` 生成的是本地快照，可在 TUI 按 `r` 或运行 `wocli daily --refresh` 在线扩展。
+
 ### 3. 原生桌面伴侣
 - **macOS**：顶部菜单栏逐句滚动歌词，无缝联动系统 Control Center 与硬件媒体键。
 - **Windows**：歌词以真实子窗口嵌入任务栏，后台检测按钮位置并避让；窄空间优先显示歌词，空间不足时隐藏。宽度足够时带播放/暂停/切歌按钮。`wocli tray status` 查看挂接及显隐原因；[实现与兼容范围](docs/windows-taskbar-lyrics.md)。

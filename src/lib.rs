@@ -11,6 +11,7 @@ pub mod player;
 pub mod playlists;
 pub mod pool;
 pub mod provider;
+pub mod recommend;
 pub mod service;
 pub mod sources;
 pub mod store;

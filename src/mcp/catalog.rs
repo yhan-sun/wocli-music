@@ -33,6 +33,8 @@ pub fn tools(read_only: bool) -> Vec<Tool> {
         tool::<Empty>("get_playback_status","Read playback state, current track, position, source, volume and queue length. Does not start the audio daemon.",true,false,true,false),
         tool::<Page>("get_queue","Read a page of the queue and the current 1-based position, including while the audio daemon is stopped.",true,false,true,false),
         tool::<Library>("get_library","Read favorites, listening history, playlist names, or tracks in a named playlist. Results are paginated.",true,false,true,false),
+        tool::<Empty>("get_daily_recommendations","Read today’s saved daily mix and reasons without generating it; returns daily=null when none exists.",true,false,true,false),
+        tool::<DailyAction>("manage_daily_recommendations","Refresh daily recommendations (online unless offline is true), play or add the saved mix, or set whether a track is excluded. Play replaces the queue.",false,true,false,true),
         tool::<Lyrics>("get_lyrics","Read cached lyrics for a track or the current song; fetch from the music provider if missing or refresh is true.",true,false,true,true),
         tool::<Page>("get_downloads","Read background download jobs and progress without waiting for completion or starting the daemon.",true,false,true,false),
         tool::<Empty>("list_music_sources","List music source IDs, order and enabled state. Script bodies and import URLs are omitted. Import new sources with the CLI.",true,false,true,false),

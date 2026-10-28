@@ -38,6 +38,7 @@ enum View {
     Likes,
     Queue,
     History,
+    Daily,
     Folder(String),
     Search,
 }
@@ -46,6 +47,9 @@ enum Action {
     View(View),
     Search,
     SearchGo,
+    DailyRefresh,
+    DailyExclude(Track),
+    DailyAdd,
     Page(i32),
     Lyrics,
     Jobs,
@@ -120,6 +124,7 @@ struct Hit {
 }
 enum Message {
     Transfer(u64, transfer::Update),
+    DailyRefreshed(std::result::Result<(usize, Vec<String>), String>),
     State(Box<Status>),
     Boss(u64, std::result::Result<Box<Status>, String>),
     Offline,
@@ -158,6 +163,7 @@ struct App {
     popup: Option<Popup>,
     download_serial: u64,
     download_pending: bool,
+    daily_pending: bool,
     download_error: String,
     full_lyrics: bool,
     hits: Vec<Hit>,
@@ -209,6 +215,7 @@ impl App {
             popup: None,
             download_serial: 0,
             download_pending: false,
+            daily_pending: false,
             download_error: String::new(),
             full_lyrics: false,
             hits: vec![],
@@ -250,6 +257,13 @@ impl App {
             View::Likes => likes,
             View::Queue => self.state.queue.clone(),
             View::History => self.store.history()?,
+            View::Daily => {
+                crate::recommend::daily(&self.store, &Provider::new(false), true, false)?
+                    .items
+                    .into_iter()
+                    .map(|item| item.track)
+                    .collect()
+            }
             View::Folder(name) => self.store.folder(name).unwrap_or_default(),
             View::Search => self.search_rows.clone(),
         };
@@ -356,6 +370,43 @@ impl App {
                 self.editing = true;
                 self.nav_focus = false;
                 self.reload()?;
+            }
+            Action::DailyRefresh => {
+                if !self.daily_pending {
+                    self.daily_pending = true;
+                    self.notice("正在在线刷新每日推荐…");
+                    let paths = self.paths.clone();
+                    let events = self.events.clone();
+                    thread::spawn(move || {
+                        let result = (|| {
+                            let direct = paths.settings()?.direct;
+                            let store = Store::open(&paths)?;
+                            let daily = crate::recommend::daily(
+                                &store,
+                                &Provider::new(direct),
+                                false,
+                                true,
+                            )?;
+                            Ok::<_, crate::model::Error>((daily.items.len(), daily.warnings))
+                        })()
+                        .map_err(|e| e.to_string());
+                        let _ = events.send(Message::DailyRefreshed(result));
+                    });
+                }
+            }
+            Action::DailyExclude(track) => {
+                crate::recommend::set_blocked(&self.store, &track.id, true)?;
+                self.popup = None;
+                self.reload()?;
+                self.notice("已从日推排除；可使用 daily undo 恢复");
+            }
+            Action::DailyAdd => {
+                if self.rows.is_empty() {
+                    self.notice("每日推荐为空");
+                } else {
+                    self.send(json!({"op":"queue_add","tracks":self.rows,"next":false}));
+                    self.notice("已加入播放队列");
+                }
             }
             Action::SearchGo => {
                 self.editing = false;
@@ -564,6 +615,9 @@ impl App {
                     && matches!(self.view, View::Folder(_) | View::Likes | View::Queue)
                 {
                     items.push(("从列表移除".into(), Action::Remove(track.clone())));
+                }
+                if self.view == View::Daily {
+                    items.push(("日推不再推荐".into(), Action::DailyExclude(track.clone())));
                 }
                 self.menu(
                     "歌曲操作",
@@ -976,7 +1030,9 @@ impl App {
                 Some(Action::Control(json!({"op":"retry"})))
             }
             KeyCode::Char('r') => {
-                if let View::Folder(name) = &self.view {
+                if self.view == View::Daily {
+                    Some(Action::DailyRefresh)
+                } else if let View::Folder(name) = &self.view {
                     Some(Action::Rename(name.clone()))
                 } else {
                     None
@@ -1091,6 +1147,7 @@ impl App {
                 View::Queue,
             ),
             ("◷ 最近播放".into(), View::History),
+            ("✦ 每日推荐".into(), View::Daily),
         ];
         items.extend(
             self.folders
@@ -1102,6 +1159,20 @@ impl App {
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
             Message::Transfer(serial, update) => self.transfer_update(serial, update)?,
+            Message::DailyRefreshed(result) => {
+                self.daily_pending = false;
+                match result {
+                    Ok((n, warnings)) => {
+                        self.reload()?;
+                        self.notice(if warnings.is_empty() {
+                            format!("每日推荐已刷新：{n} 首")
+                        } else {
+                            format!("每日推荐已刷新：{n} 首；部分搜索失败")
+                        });
+                    }
+                    Err(error) => self.notice(format!("每日推荐刷新失败：{error}")),
+                }
+            }
             Message::State(state) => {
                 if !self.boss_pending {
                     self.boss_mode = state.boss;
@@ -1452,6 +1523,7 @@ impl App {
             View::Likes => "我喜欢",
             View::Queue => "播放队列",
             View::History => "最近播放",
+            View::Daily => "每日推荐",
             View::Folder(n) => n,
             View::Search => "搜索",
         }
@@ -1492,6 +1564,21 @@ impl App {
                 "{title}  {count}{}",
                 if self.pending_entries > 0 {
                     format!(" · {} 条待匹配（⋯ 查看）", self.pending_entries)
+                } else if self.view == View::Daily {
+                    let reason = crate::recommend::snapshot(&self.store)
+                        .ok()
+                        .flatten()
+                        .and_then(|daily| {
+                            let id = &self.rows.get(self.selected)?.id;
+                            daily
+                                .items
+                                .into_iter()
+                                .find(|item| &item.track.id == id)
+                                .map(|item| item.reason)
+                        });
+                    reason
+                        .map(|r| format!(" · {r}"))
+                        .unwrap_or_else(|| " · 收藏歌曲后按 r 刷新".into())
                 } else {
                     String::new()
                 }
@@ -1529,6 +1616,28 @@ impl App {
                     false,
                 );
                 x += 7;
+            }
+        }
+        if self.view == View::Daily {
+            if x + 10 <= area.right() {
+                self.button(
+                    frame,
+                    Rect::new(x, top, 10, 1),
+                    "刷新 r",
+                    Action::DailyRefresh,
+                    false,
+                );
+                x += 11;
+            }
+            if x + 10 <= area.right() {
+                self.button(
+                    frame,
+                    Rect::new(x, top, 10, 1),
+                    "加入队列",
+                    Action::DailyAdd,
+                    false,
+                );
+                x += 11;
             }
         }
         if let View::Folder(name) = &self.view {
@@ -2429,6 +2538,25 @@ mod interaction_tests {
         )
         .unwrap();
         (root, app, rx)
+    }
+    #[test]
+    fn daily_view_can_add_and_exclude_recommendations() {
+        let (_root, mut app, rx) = setup();
+        let track = Track {
+            id: "kuwo:1".into(),
+            title: "一首歌".into(),
+            artist: "歌手".into(),
+            ..Track::default()
+        };
+        app.store.set_favorite(&track, true).unwrap();
+        app.navigate(View::Daily).unwrap();
+        assert_eq!(app.rows.len(), 1);
+        app.act(Action::DailyAdd).unwrap();
+        let request = rx.try_recv().unwrap();
+        assert_eq!(request.value["op"], "queue_add");
+        assert_eq!(request.value["tracks"][0]["id"], track.id);
+        app.act(Action::DailyExclude(track)).unwrap();
+        assert!(app.rows.is_empty());
     }
     #[test]
     fn collection_context_is_selected_song_or_current_lyrics_song() {

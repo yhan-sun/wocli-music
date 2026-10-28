@@ -27,6 +27,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   next | prev | seek 秒数            切歌与跳转（支持 skip / previous，--no-wait）
   volume 0-100 | mode 播放方式        list / repeat / single / shuffle
   status | favorites | history       状态、喜欢、历史
+  daily [play|add|dislike|undo]      每日推荐
   queue add|list|remove|clear         管理队列
   playlist create|list|show|add|remove|rename|delete|play
   playlist import|export|scan|inspect|resolve|match|drop|backups|restore
@@ -739,6 +740,103 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 table(&tracks);
             }
             json!(tracks)
+        }
+        "daily" => {
+            let action = args.pos.get(1).map(String::as_str).unwrap_or("show");
+            match action {
+                "dislike" | "undo" => {
+                    let id = args
+                        .value("--id")
+                        .ok_or_else(|| Error::new("请使用 --id 指定歌曲"))?;
+                    let track = by_id(&store, &provider, id)?;
+                    crate::recommend::set_blocked(&store, &track.id, action == "dislike")?;
+                    if !args.flag("--json") {
+                        println!(
+                            "{}：{} - {}",
+                            if action == "dislike" {
+                                "日推已排除"
+                            } else {
+                                "已恢复日推"
+                            },
+                            track.artist,
+                            track.title
+                        );
+                    }
+                    json!({"track_id":track.id,"blocked":action == "dislike"})
+                }
+                "show" | "play" | "add" => {
+                    let daily = crate::recommend::daily(
+                        &store,
+                        &provider,
+                        args.flag("--offline"),
+                        args.flag("--refresh"),
+                    )?;
+                    let tracks: Vec<Track> = daily.items.iter().map(|i| i.track.clone()).collect();
+                    if action != "show" {
+                        if tracks.is_empty() {
+                            return Err(Error::new(
+                                "今日推荐为空；先收藏歌曲或导入歌单，再使用 --refresh",
+                            ));
+                        }
+                        if action == "play" {
+                            let result = request(
+                                &paths,
+                                json!({"op":"play","tracks":tracks,"index":0,"quality":args.value("--quality"),"direct":args.flag("--direct") || settings.direct}),
+                            )?;
+                            let result = if args.flag("--no-wait") {
+                                result
+                            } else {
+                                wait(&paths)?
+                            };
+                            if !args.flag("--json") {
+                                print_status(&result);
+                            }
+                            result
+                        } else {
+                            let result = request(
+                                &paths,
+                                json!({"op":"queue_add","tracks":tracks,"next":false}),
+                            )?;
+                            if !args.flag("--json") {
+                                println!("已将 {} 首推荐加入队列", daily.items.len());
+                            }
+                            result
+                        }
+                    } else {
+                        if !args.flag("--json") {
+                            println!(
+                                "每日推荐 {}{}",
+                                daily.date,
+                                if daily.offline {
+                                    "（本地候选）"
+                                } else {
+                                    ""
+                                }
+                            );
+                            for (i, item) in daily.items.iter().enumerate() {
+                                println!(
+                                    "{:>2}. {} - {}  [{}]  {}",
+                                    i + 1,
+                                    item.track.artist,
+                                    item.track.title,
+                                    item.track.id,
+                                    item.reason
+                                );
+                            }
+                            for warning in &daily.warnings {
+                                eprintln!("{warning}");
+                            }
+                            if daily.items.is_empty() {
+                                println!(
+                                    "暂无推荐；收藏歌曲或导入歌单后运行 wocli daily --refresh。"
+                                );
+                            }
+                        }
+                        json!(daily)
+                    }
+                }
+                _ => return Err(Error::new("未知每日推荐操作，请使用 wocli help daily")),
+            }
         }
         "queue" => {
             let action = args.arg(1)?;

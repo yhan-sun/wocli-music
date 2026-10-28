@@ -80,6 +80,8 @@ cargo build --release --locked
 | `get_playback_status` | 当前歌曲、阶段、进度、音量、模式、音源及错误摘要 | 开放 |
 | `get_queue` | `offset`、`limit`；队列分页和当前序号 | 开放 |
 | `get_library` | `kind`: `favorites/history/playlists/playlist`；单个歌单需 `name`；支持分页 | 开放 |
+| `get_daily_recommendations` | 查看当天快照和推荐理由；未生成时 `daily` 为 null，不触发生成 | 开放 |
+| `manage_daily_recommendations` | `action`: `refresh`（可选 `offline`）、`play`、`add`、`set_excluded`（需 `track_id`、`excluded`） | 不开放 |
 | `get_lyrics` | 可选 `track_id`、`refresh`；缺少 ID 时使用当前歌曲 | 开放 |
 | `get_downloads` | `offset`、`limit`；下载任务按最新在前分页 | 开放 |
 | `list_music_sources` | 音源 ID、类型、顺序、启用状态及音质；不返回脚本或接口 URL | 开放 |

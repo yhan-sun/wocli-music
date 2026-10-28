@@ -203,6 +203,45 @@ impl Backend {
                 result["current_index"] = json!(index);
                 Ok(result)
             }
+            "get_daily_recommendations" => {
+                let _: Empty = parse(args)?;
+                Ok(json!({"daily":crate::recommend::snapshot(&Store::open(&self.paths)?)?}))
+            }
+            "manage_daily_recommendations" => {
+                let action: DailyAction = parse(args)?;
+                let store = Store::open(&self.paths)?;
+                match action {
+                    DailyAction::Refresh { offline } => {
+                        let daily =
+                            crate::recommend::daily(&store, &self.provider()?, offline, true)?;
+                        Ok(json!(daily))
+                    }
+                    DailyAction::SetExcluded { track_id, excluded } => {
+                        let id = normalized(&track_id)?;
+                        if store.track(&id)?.is_none() {
+                            return Err(Error::new("歌曲不在曲库中"));
+                        }
+                        crate::recommend::set_blocked(&store, &id, excluded)?;
+                        Ok(json!({"track_id":id,"excluded":excluded}))
+                    }
+                    DailyAction::Play | DailyAction::Add => {
+                        let play = matches!(action, DailyAction::Play);
+                        let daily =
+                            crate::recommend::daily(&store, &self.provider()?, true, false)?;
+                        if daily.items.is_empty() {
+                            return Err(Error::new("每日推荐为空；请先收藏歌曲或导入歌单"));
+                        }
+                        let tracks: Vec<Track> = daily.items.into_iter().map(|i| i.track).collect();
+                        let request = if play {
+                            json!({"op":"play","tracks":tracks,"index":0,"direct":self.direct})
+                        } else {
+                            json!({"op":"queue_add","tracks":tracks,"next":false})
+                        };
+                        let state = self.request(request, true, cancelled)?;
+                        self.summary(Some(state))
+                    }
+                }
+            }
             "get_library" => {
                 let a: Library = parse(args)?;
                 let store = Store::open(&self.paths)?;

@@ -214,3 +214,19 @@ pub enum Config {
     LyricsBar(bool),
     Tray(bool),
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DailyAction {
+    /// Generate a new snapshot; offline defaults to false.
+    Refresh {
+        #[serde(default)]
+        offline: bool,
+    },
+    /// Play today's snapshot, generating a local snapshot if missing.
+    Play,
+    /// Add today's snapshot to the queue.
+    Add,
+    /// Exclude or restore a track in daily recommendations.
+    SetExcluded { track_id: String, excluded: bool },
+}

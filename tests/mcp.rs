@@ -259,7 +259,7 @@ fn stdio_legacy_and_modern_discovery_resources_and_config_work() {
         c.start(version);
         let list = c.rpc("tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 19);
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
         if version == "2026-07-28" {
             assert_eq!(list["result"]["resultType"], "complete");
@@ -404,7 +404,7 @@ fn read_only_and_typed_validation_prevent_hidden_mutations_and_url_leaks() {
     c.start("2025-11-25");
     let tools = c.rpc("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
     assert!(tools
         .iter()
         .all(|t| t["annotations"]["readOnlyHint"] == true));
@@ -549,7 +549,7 @@ fn terminal_shows_copyable_guide_keeps_rpc_clean_and_handles_ctrl_c() {
                     .as_array()
                     .unwrap()
                     .len(),
-                8
+                9
             );
         }
         assert_eq!(
@@ -738,4 +738,49 @@ fn cancelling_a_waiting_seek_keeps_stdio_responsive_and_downloads_are_background
         thread::sleep(Duration::from_millis(20));
     }
     c.finish();
+}
+
+#[test]
+fn daily_mix_is_shared_and_read_only_does_not_generate() {
+    let app = App::new();
+    let track = app.song();
+    app.store().set_favorite(&track, true).unwrap();
+    let mut read = Client::new(&app, true);
+    read.start("2025-06-18");
+    assert!(read.call("get_daily_recommendations", json!({}))["daily"].is_null());
+    let list = read.rpc("tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().unwrap();
+    assert!(!tools
+        .iter()
+        .any(|t| t["name"] == "manage_daily_recommendations"));
+    read.finish();
+    let mut client = Client::new(&app, false);
+    client.start("2025-06-18");
+    let generated = client.call(
+        "manage_daily_recommendations",
+        json!({"action":"refresh","offline":true}),
+    );
+    assert_eq!(generated["items"][0]["track"]["id"], track.id);
+    assert_eq!(
+        client.call("get_daily_recommendations", json!({}))["daily"]["items"][0]["track"]["id"],
+        track.id
+    );
+    client.call(
+        "manage_daily_recommendations",
+        json!({"action":"set_excluded","track_id":track.id,"excluded":true}),
+    );
+    assert_eq!(
+        client.call("get_daily_recommendations", json!({}))["daily"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    client.call(
+        "manage_daily_recommendations",
+        json!({"action":"set_excluded","track_id":track.id,"excluded":false}),
+    );
+    let state = client.call("manage_daily_recommendations", json!({"action":"play"}));
+    assert_eq!(state["queue_length"], 1);
+    client.finish();
 }
