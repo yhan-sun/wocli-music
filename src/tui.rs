@@ -49,6 +49,8 @@ enum Action {
     SearchGo,
     DailyRefresh,
     DailyExclude(Track),
+    DailyExcluded,
+    DailyRestore(String),
     DailyAdd,
     Page(i32),
     Lyrics,
@@ -398,7 +400,33 @@ impl App {
                 crate::recommend::set_blocked(&self.store, &track.id, true)?;
                 self.popup = None;
                 self.reload()?;
-                self.notice("已从日推排除；可使用 daily undo 恢复");
+                self.notice("已从日推排除；按 u 管理已排除歌曲");
+            }
+            Action::DailyExcluded => {
+                let mut ids: Vec<_> = crate::recommend::blocked(&self.store)?
+                    .into_iter()
+                    .collect();
+                ids.sort();
+                let mut items = Vec::new();
+                for id in ids {
+                    let label = self
+                        .store
+                        .track(&id)?
+                        .map(|t| format!("{} · {}", t.title, t.artist))
+                        .unwrap_or_else(|| id.clone());
+                    items.push((label, Action::DailyRestore(id)));
+                }
+                if items.is_empty() {
+                    self.notice("没有排除的歌曲");
+                } else {
+                    self.menu("已排除歌曲", "选择歌曲以恢复推荐资格".into(), items);
+                }
+            }
+            Action::DailyRestore(id) => {
+                crate::recommend::set_blocked(&self.store, &id, false)?;
+                self.popup = None;
+                self.reload()?;
+                self.notice("已恢复推荐资格；如未出现，请按 r 刷新");
             }
             Action::DailyAdd => {
                 if self.rows.is_empty() {
@@ -1038,6 +1066,11 @@ impl App {
                     None
                 }
             }
+            KeyCode::Char('u')
+                if self.view == View::Daily && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                Some(Action::DailyExcluded)
+            }
             KeyCode::Char('l') => Some(Action::Control(json!({"op":"lyrics_retry"}))),
             KeyCode::Char('c') => self.current().map(Action::Collect),
             KeyCode::Char('x') => self.current().map(Action::Song),
@@ -1565,20 +1598,25 @@ impl App {
                 if self.pending_entries > 0 {
                     format!(" · {} 条待匹配（⋯ 查看）", self.pending_entries)
                 } else if self.view == View::Daily {
-                    let reason = crate::recommend::snapshot(&self.store)
-                        .ok()
-                        .flatten()
-                        .and_then(|daily| {
-                            let id = &self.rows.get(self.selected)?.id;
-                            daily
-                                .items
-                                .into_iter()
-                                .find(|item| &item.track.id == id)
-                                .map(|item| item.reason)
-                        });
-                    reason
-                        .map(|r| format!(" · {r}"))
-                        .unwrap_or_else(|| " · 收藏歌曲后按 r 刷新".into())
+                    if self.daily_pending {
+                        " · 在线刷新中…".into()
+                    } else if let Ok(Some(daily)) = crate::recommend::snapshot(&self.store) {
+                        format!(
+                            " · {}{}",
+                            if daily.offline {
+                                "本地候选"
+                            } else {
+                                "在线搜索"
+                            },
+                            if daily.warnings.is_empty() {
+                                ""
+                            } else {
+                                " · 部分搜索失败，按 r 重试"
+                            }
+                        )
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
                 }
@@ -1586,7 +1624,30 @@ impl App {
             .style(Style::default().fg(ACCENT).bold()),
             Rect::new(area.x, top, area.width, 1),
         );
-        top += 2;
+        if self.view == View::Daily {
+            top += 1;
+            let reason = crate::recommend::snapshot(&self.store)
+                .ok()
+                .flatten()
+                .and_then(|daily| {
+                    let id = &self.rows.get(self.selected)?.id;
+                    daily
+                        .items
+                        .into_iter()
+                        .find(|item| &item.track.id == id)
+                        .map(|item| item.reason)
+                });
+            let hint = reason.unwrap_or_else(|| "收藏歌曲或导入歌单后，按 r 在线刷新".into());
+            if top < area.bottom() {
+                frame.render_widget(
+                    Paragraph::new(hint).style(Style::default().fg(DIM)),
+                    Rect::new(area.x, top, area.width, 1),
+                );
+            }
+            top += 1;
+        } else {
+            top += 2;
+        }
         let mut x = area.x;
         self.button(
             frame,
@@ -1596,6 +1657,20 @@ impl App {
             false,
         );
         x += 11;
+        if self.view == View::Daily && x + 8 <= area.right() {
+            self.button(
+                frame,
+                Rect::new(x, top, 8, 1),
+                if self.daily_pending {
+                    "刷新中"
+                } else {
+                    "刷新 r"
+                },
+                Action::DailyRefresh,
+                false,
+            );
+            x += 9;
+        }
         if let Some(track) = self.rows.get(self.selected).cloned() {
             if x + 9 <= area.right() {
                 self.button(
@@ -1618,27 +1693,15 @@ impl App {
                 x += 7;
             }
         }
-        if self.view == View::Daily {
-            if x + 10 <= area.right() {
-                self.button(
-                    frame,
-                    Rect::new(x, top, 10, 1),
-                    "刷新 r",
-                    Action::DailyRefresh,
-                    false,
-                );
-                x += 11;
-            }
-            if x + 10 <= area.right() {
-                self.button(
-                    frame,
-                    Rect::new(x, top, 10, 1),
-                    "加入队列",
-                    Action::DailyAdd,
-                    false,
-                );
-                x += 11;
-            }
+        if self.view == View::Daily && x + 10 <= area.right() {
+            self.button(
+                frame,
+                Rect::new(x, top, 10, 1),
+                "加入队列",
+                Action::DailyAdd,
+                false,
+            );
+            x += 11;
         }
         if let View::Folder(name) = &self.view {
             if x + 3 <= area.right() {
@@ -1651,6 +1714,15 @@ impl App {
                 );
             }
         }
+        if self.view == View::Daily && x + 10 <= area.right() {
+            self.button(
+                frame,
+                Rect::new(x, top, 10, 1),
+                "已排除 u",
+                Action::DailyExcluded,
+                false,
+            );
+        }
         top += 2;
         let tablearea = Rect::new(
             area.x,
@@ -1659,6 +1731,19 @@ impl App {
             area.bottom()
                 .saturating_sub(top + u16::from(self.view == View::Search) * 2),
         );
+        if self.view == View::Daily && self.rows.is_empty() {
+            let message = if self.daily_pending {
+                "正在搜索，原有推荐会保留在这里。"
+            } else {
+                "还没有推荐。先收藏喜欢的歌曲或导入歌单，再按 r 刷新。"
+            };
+            frame.render_widget(
+                Paragraph::new(message)
+                    .style(Style::default().fg(DIM))
+                    .wrap(Wrap { trim: true }),
+                tablearea,
+            );
+        }
         let current = self.state.track.as_ref().map(|t| t.id.as_str());
         let data: Vec<Row> = self
             .rows
@@ -1711,7 +1796,9 @@ impl App {
         .column_spacing(1)
         .header(Row::new(["", "歌曲", "歌手", "时长"]).style(Style::default().fg(DIM).bg(PANEL)))
         .row_highlight_style(Style::default().bg(SELECTED).fg(ACCENT));
-        frame.render_stateful_widget(table, tablearea, &mut self.table);
+        if !(self.view == View::Daily && self.rows.is_empty()) {
+            frame.render_stateful_widget(table, tablearea, &mut self.table);
+        }
         let offset = self.table.offset();
         for i in offset
             ..self
@@ -1939,23 +2026,50 @@ impl App {
             .as_ref()
             .map(|t| format!("{} · {}", t.title, t.artist))
             .unwrap_or_default();
-        let controls = if area.width >= 95 {
-            70
+        let status = if self.state.phase == "error" {
+            "播放失败 · Ctrl+R 重试"
+        } else if self.state.buffering {
+            "音频缓冲中"
+        } else if self.state.phase == "loading" {
+            "正在加载"
+        } else if self.state.phase == "paused" {
+            "已暂停"
+        } else if self.state.phase == "playing" {
+            "正在播放"
         } else {
-            area.width.min(70)
+            "未播放"
         };
-        let titlewidth = area.width.saturating_sub(controls + 2);
-        if titlewidth > 0 {
-            let title_rect = Rect::new(area.x, y, titlewidth, 1);
-            frame.render_widget(
-                Paragraph::new(title).style(Style::default().fg(ACCENT)),
-                title_rect,
-            );
-            if self.state.track.is_some() {
-                self.hit(title_rect, Action::Lyrics);
-            }
+        let status_width = (status.width() as u16).min(area.width.saturating_sub(12));
+        let title_width = area.width.saturating_sub(status_width + 1);
+        let title_rect = Rect::new(area.x, area.y, title_width, 1);
+        let title = if title.is_empty() {
+            "选择一首歌开始播放".to_string()
+        } else {
+            title
+        };
+        frame.render_widget(
+            Paragraph::new(title).style(Style::default().fg(ACCENT)),
+            title_rect,
+        );
+        if self.state.track.is_some() {
+            self.hit(title_rect, Action::Lyrics);
         }
-        let mut x = area.right().saturating_sub(controls);
+        frame.render_widget(
+            Paragraph::new(status)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(if self.state.phase == "error" {
+                    BAD
+                } else {
+                    DIM
+                })),
+            Rect::new(
+                area.right().saturating_sub(status_width),
+                area.y,
+                status_width,
+                1,
+            ),
+        );
+        let mut x = area.x;
         for (label, width, action, primary) in [
             (
                 "⏮".to_string(),
@@ -2169,7 +2283,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nI  导入歌单     E  导出当前歌单\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\n日推：r 刷新 / u 管理已排除\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nI  导入歌单     E  导出当前歌单\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2557,6 +2671,59 @@ mod interaction_tests {
         assert_eq!(request.value["tracks"][0]["id"], track.id);
         app.act(Action::DailyExclude(track)).unwrap();
         assert!(app.rows.is_empty());
+    }
+    #[test]
+    fn daily_empty_refresh_and_restore_are_visible_and_reversible() {
+        let (_root, mut app, _rx) = setup();
+        app.navigate(View::Daily).unwrap();
+        let screen_text = screen(&draw_terminal(&mut app, 80, 26));
+        assert!(screen_text.contains("还没有推荐"));
+        assert!(screen_text.contains("本地候选"));
+        app.daily_pending = true;
+        let screen_text = screen(&draw_terminal(&mut app, 80, 26));
+        assert!(screen_text.contains("在线刷新中"));
+        app.daily_pending = false;
+        let track = Track {
+            id: "kuwo:17".into(),
+            title: "需要恢复的歌".into(),
+            artist: "歌手".into(),
+            ..Track::default()
+        };
+        app.store.set_favorite(&track, true).unwrap();
+        app.act(Action::DailyExclude(track.clone())).unwrap();
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.popup, Some(Popup::Menu(_))));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!crate::recommend::blocked(&app.store)
+            .unwrap()
+            .contains(&track.id));
+        assert!(app.toast.as_ref().unwrap().0.contains("恢复推荐资格"));
+    }
+    #[test]
+    fn player_keeps_track_status_and_main_controls_in_narrow_terminals() {
+        for width in [30, 50, 80, 120] {
+            let (_root, mut app, _rx) = setup();
+            app.state.track = Some(Track {
+                id: "kuwo:1".into(),
+                title: "测试歌曲".into(),
+                artist: "歌手".into(),
+                ..Track::default()
+            });
+            app.state.phase = "playing".into();
+            app.state.buffering = true;
+            let rendered = screen(&draw_terminal(&mut app, width, 26));
+            assert!(rendered.contains("测试歌曲"), "width {width}: {rendered}");
+            assert!(rendered.contains("音频缓冲中"), "width {width}: {rendered}");
+            assert!(app
+                .hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::Toggle)));
+            assert!(app.hits.iter().any(
+                |hit| matches!(hit.action, Action::Control(ref value) if value["op"] == "next")
+            ));
+        }
     }
     #[test]
     fn collection_context_is_selected_song_or_current_lyrics_song() {

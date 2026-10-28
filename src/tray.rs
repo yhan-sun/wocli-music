@@ -44,8 +44,37 @@ fn play_daily(paths: Paths) {
         })();
         if let Err(error) = result {
             eprintln!("每日推荐：{error}");
+            daily_error_notice(&error.message);
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn daily_error_notice(message: &str) {
+    // Pass the message as an argv value, not AppleScript source.
+    let script =
+        "on run argv\n display alert \"每日推荐\" message (item 1 of argv) as warning\nend run";
+    let _ = Command::new("osascript")
+        .args(["-e", script, message])
+        .status();
+}
+
+#[cfg(windows)]
+fn daily_error_notice(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = "每日推荐"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING,
+        );
+    }
 }
 
 pub fn hotkeys(paths: &Paths) -> serde_json::Value {
