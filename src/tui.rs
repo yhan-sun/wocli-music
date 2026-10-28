@@ -52,6 +52,7 @@ enum Action {
     DailyExcluded,
     DailyRestore(String),
     DailyAdd,
+    Visualizer,
     Page(i32),
     Lyrics,
     Jobs,
@@ -166,6 +167,11 @@ struct App {
     download_serial: u64,
     download_pending: bool,
     daily_pending: bool,
+    visualizer: bool,
+    visual_bars: [f32; 8],
+    visual_peaks: [f32; 8],
+    visual_velocity: [f32; 8],
+    visual_updated: Instant,
     download_error: String,
     full_lyrics: bool,
     hits: Vec<Hit>,
@@ -218,6 +224,11 @@ impl App {
             download_serial: 0,
             download_pending: false,
             daily_pending: false,
+            visualizer: false,
+            visual_bars: [0.; 8],
+            visual_peaks: [0.; 8],
+            visual_velocity: [0.; 8],
+            visual_updated: Instant::now(),
             download_error: String::new(),
             full_lyrics: false,
             hits: vec![],
@@ -372,6 +383,18 @@ impl App {
                 self.editing = true;
                 self.nav_focus = false;
                 self.reload()?;
+            }
+            Action::Visualizer => {
+                self.visualizer = !self.visualizer;
+                self.visual_bars = [0.; 8];
+                self.visual_peaks = [0.; 8];
+                self.visual_velocity = [0.; 8];
+                self.visual_updated = Instant::now();
+                self.notice(if self.visualizer {
+                    "频谱已开启 · V 关闭"
+                } else {
+                    "频谱已关闭"
+                });
             }
             Action::DailyRefresh => {
                 if !self.daily_pending {
@@ -1018,6 +1041,7 @@ impl App {
             }
             KeyCode::Char('?') => Some(Action::Help),
             KeyCode::Char('v') => Some(Action::Lyrics),
+            KeyCode::Char('V') => Some(Action::Visualizer),
             KeyCode::Char('b') => {
                 let mut items: Vec<_> = self
                     .navigation()
@@ -1393,6 +1417,11 @@ impl App {
         let rows = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(4),
+            Constraint::Length(if self.visualizer && inner.height >= 20 {
+                5
+            } else {
+                0
+            }),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
@@ -1436,6 +1465,20 @@ impl App {
                 false,
             );
         }
+        if header.width >= 110 {
+            right = right.saturating_sub(10);
+            self.button(
+                frame,
+                Rect::new(right, header.y, 10, 1),
+                if self.visualizer {
+                    "频谱 ✓ V"
+                } else {
+                    "频谱 V"
+                },
+                Action::Visualizer,
+                self.visualizer,
+            );
+        }
         let body = rows[1];
         if self.full_lyrics {
             self.draw_lyrics(frame, body, true);
@@ -1457,7 +1500,10 @@ impl App {
                 self.draw_list(frame, music);
             }
         }
-        self.draw_transport(frame, rows[3]);
+        if rows[2].height > 0 {
+            self.draw_spectrum(frame, rows[2]);
+        }
+        self.draw_transport(frame, rows[4]);
         if let Some(popup) = self.popup.clone() {
             self.hits.clear();
             self.draw_popup(frame, popup);
@@ -1472,7 +1518,7 @@ impl App {
                         1,
                     )
                 } else {
-                    rows[2]
+                    rows[3]
                 };
                 frame.render_widget(
                     Paragraph::new(value.as_str()).style(Style::default().fg(ACCENT).bg(BG)),
@@ -2018,6 +2064,64 @@ impl App {
             }
         }
     }
+    fn draw_spectrum(&mut self, frame: &mut Frame, area: Rect) {
+        if area.height < 3 || area.width < 24 {
+            return;
+        }
+        let dt = self.visual_updated.elapsed().as_secs_f32().clamp(0., 0.15);
+        self.visual_updated = Instant::now();
+        let active = self.state.phase == "playing" && !self.state.buffering && !self.boss_mode;
+        for i in 0..8 {
+            let target = if active {
+                self.state.spectrum[i].clamp(0., 1.)
+            } else {
+                0.
+            };
+            self.visual_bars[i] = target.max(self.visual_bars[i] - dt * 1.8);
+            if self.visual_bars[i] >= self.visual_peaks[i] {
+                self.visual_peaks[i] = self.visual_bars[i];
+                self.visual_velocity[i] = 0.;
+            } else {
+                self.visual_velocity[i] += dt * 2.4;
+                self.visual_peaks[i] =
+                    (self.visual_peaks[i] - self.visual_velocity[i] * dt).max(self.visual_bars[i]);
+            }
+        }
+        let graph_height = area.height.saturating_sub(1);
+        let band_width = (area.width / 8).max(1);
+        for i in 0..8 {
+            let x = area.x + i as u16 * band_width;
+            let width = band_width
+                .saturating_sub(1)
+                .max(1)
+                .min(area.right().saturating_sub(x));
+            let level = (self.visual_bars[i] * graph_height as f32).ceil() as u16;
+            let peak = (self.visual_peaks[i] * graph_height as f32).ceil() as u16;
+            for row in 0..graph_height {
+                let from_bottom = graph_height - row;
+                let text = if peak > 0 && from_bottom == peak && peak > level {
+                    "▀".repeat(width as usize)
+                } else if from_bottom <= level {
+                    "▇".repeat(width as usize)
+                } else {
+                    String::new()
+                };
+                frame.render_widget(
+                    Paragraph::new(text).style(Style::default().fg(if i < 3 {
+                        ACCENT
+                    } else {
+                        DIM
+                    })),
+                    Rect::new(x, area.y + row, width, 1),
+                );
+            }
+        }
+        frame.render_widget(
+            Paragraph::new("低频                         高频   ·   V 关闭")
+                .style(Style::default().fg(DIM)),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
+    }
     fn draw_transport(&mut self, frame: &mut Frame, area: Rect) {
         let y = area.y + 1;
         let title = self
@@ -2283,7 +2387,7 @@ impl App {
                     else if !["done","cancelling"].contains(&job.phase.as_str()){self.button(frame,Rect::new(body.right().saturating_sub(10),body.bottom().saturating_sub(1),10.min(body.width),1),"取消 c",Action::Control(json!({"op":"download_cancel","id":job.id})),false);}
                 }
             }
-            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\n日推：r 刷新 / u 管理已排除\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nI  导入歌单     E  导出当前歌单\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
+            Popup::Help=>frame.render_widget(Paragraph::new("/  搜索\nEnter  播放所选歌曲\nSpace / 媒体键  暂停 / 继续\nj / k  上下移动\ng / G  列表顶部 / 底部\n[ / ] / 媒体键  上一首 / 下一首\nCtrl+U / D  翻页\n← →  跳转 5 秒\n+ − / 媒体键  音量调节\nc  收藏到…      f  喜欢\nx  歌曲操作     d  下载\n日推：r 刷新 / u 管理已排除\nD  下载任务\na  加入队列     m  播放方式\nv  展开 / 收起歌词     V  频谱动效\nl  刷新歌词     Ctrl+R  重试歌曲\nTab  切换侧栏   b  音乐库\nI  导入歌单     E  导出当前歌单\nShift+B / Ctrl+B / F12  老板模式（伪装终端）\nEsc  返回       q  退出界面").style(Style::default().fg(FG)),body),
         }
     }
 }
@@ -2395,9 +2499,15 @@ pub fn run(paths: Paths) -> Result<()> {
     let mut polled = Instant::now() - Duration::from_secs(1);
     let mut quit = false;
     while !quit {
-        if polled.elapsed() >= Duration::from_millis(350) {
+        if polled.elapsed()
+            >= Duration::from_millis(if app.visualizer && !app.boss_mode {
+                120
+            } else {
+                350
+            })
+        {
             let _ = app.tx.send(Request {
-                value: json!({"op":"status"}),
+                value: json!({"op":"status", "visualizer": app.visualizer && !app.boss_mode}),
                 start: false,
                 download_serial: None,
                 boss_serial: None,
@@ -2724,6 +2834,27 @@ mod interaction_tests {
                 |hit| matches!(hit.action, Action::Control(ref value) if value["op"] == "next")
             ));
         }
+    }
+    #[test]
+    fn visualizer_toggle_uses_live_bands_and_decays_when_paused() {
+        let (_root, mut app, _rx) = setup();
+        app.state.phase = "playing".into();
+        app.state.spectrum = [0.2, 0.8, 0.5, 0.1, 0.4, 0.7, 0.2, 0.1];
+        app.key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT))
+            .unwrap();
+        let rendered = screen(&draw_terminal(&mut app, 80, 26));
+        assert!(rendered.contains("低频"));
+        assert!(rendered.contains("▇"));
+        assert!(app.visual_bars[1] > app.visual_bars[0]);
+        app.state.phase = "paused".into();
+        app.visual_updated = Instant::now() - Duration::from_millis(100);
+        let before = app.visual_bars[1];
+        draw_terminal(&mut app, 80, 26);
+        assert!(app.visual_bars[1] < before);
+        assert!(app.visual_peaks[1] > app.visual_bars[1]);
+        app.key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert!(!app.visualizer);
     }
     #[test]
     fn collection_context_is_selected_song_or_current_lyrics_song() {

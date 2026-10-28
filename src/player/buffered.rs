@@ -20,6 +20,7 @@ pub(super) struct BufferState {
     pub underruns: AtomicU64,
     pub done: AtomicBool,
     pub format_error: AtomicBool,
+    pub spectrum: Arc<super::spectrum::Spectrum>,
 }
 pub(super) struct BufferedSource {
     consumer: Consumer<f32>,
@@ -32,6 +33,7 @@ pub(super) struct BufferedSource {
     silent_remaining: usize,
     rebuffer_target: usize,
     starved: bool,
+    tap: Option<super::spectrum::Tap>,
 }
 impl BufferedSource {
     pub fn prepare(
@@ -50,8 +52,16 @@ impl BufferedSource {
         let capacity = capacity - capacity % channels as usize;
         let target = per_second.min(capacity / 2).max(channels as usize);
         let (mut producer, consumer) = RingBuffer::new(capacity);
+        let (tap, spectrum) = match super::spectrum::start(rate, channels) {
+            Ok((tap, state)) => (Some(tap), state),
+            Err(error) => {
+                eprintln!("频谱分析不可用：{error}");
+                (None, Arc::new(super::spectrum::Spectrum::default()))
+            }
+        };
         let state = Arc::new(BufferState {
             samples,
+            spectrum,
             ..BufferState::default()
         });
         let worker = state.clone();
@@ -118,6 +128,7 @@ impl BufferedSource {
                 silent_remaining: 0,
                 rebuffer_target: target,
                 starved: false,
+                tap,
             },
             state,
         ))
@@ -163,6 +174,9 @@ impl Iterator for BufferedSource {
         // A complete frame was checked above; the producer never removes samples.
         let sample = self.consumer.pop().ok()?;
         self.frame_remaining -= 1;
+        if let Some(tap) = &mut self.tap {
+            tap.sample(sample);
+        }
         self.state.samples.fetch_add(1, Ordering::Relaxed);
         Some(sample)
     }
@@ -190,6 +204,25 @@ impl Drop for BufferedSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn output_samples_reach_frequency_visualizer() {
+        let samples: Vec<f32> = (0..48000)
+            .map(|n| (std::f32::consts::TAU * 2200. * n as f32 / 48000.).sin() * 0.4)
+            .collect();
+        let source = rodio::buffer::SamplesBuffer::new(1, 48000, samples);
+        let (mut buffered, state) = BufferedSource::prepare(
+            Box::new(source),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        state.spectrum.enabled.store(true, Ordering::Relaxed);
+        for _ in 0..12000 {
+            assert!(buffered.next().is_some());
+        }
+        wait(|| state.spectrum.levels()[5] > 0.05);
+        assert!(state.spectrum.levels()[5] > state.spectrum.levels()[1]);
+    }
     struct Gated {
         position: usize,
         limit: usize,

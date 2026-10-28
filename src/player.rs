@@ -4,6 +4,7 @@ use crate::{
 };
 use rodio::{OutputStream, Sink, Source};
 mod buffered;
+mod spectrum;
 use std::{
     fs::File,
     io::{BufReader, Read, Seek},
@@ -355,6 +356,19 @@ impl Player {
                 .buffer
                 .as_ref()
                 .is_some_and(|b| b.buffering.load(Ordering::Acquire))
+    }
+    pub fn set_visualizer(&self, enabled: bool) {
+        if let Some(buffer) = &self.buffer {
+            buffer.spectrum.enabled.store(enabled, Ordering::Relaxed);
+        }
+    }
+    pub fn spectrum(&self) -> [f32; spectrum::BANDS] {
+        if !self.loaded || self.paused || self.buffering() {
+            return [0.; spectrum::BANDS];
+        }
+        self.buffer
+            .as_ref()
+            .map_or([0.; spectrum::BANDS], |b| b.spectrum.levels())
     }
     pub fn underruns(&self) -> u64 {
         self.buffer

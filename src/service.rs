@@ -74,6 +74,7 @@ pub struct Status {
     pub tray: bool,
     pub boss: bool,
     pub buffering: bool,
+    pub spectrum: [f32; 8],
     pub buffered_seconds: f64,
     pub buffer_underruns: u64,
     pub audio_device: String,
@@ -153,6 +154,7 @@ struct Service {
     boss_previous_phase: Option<String>,
     buffering_since: Option<Instant>,
     last_device_check: Instant,
+    visualizer_seen: Option<Instant>,
 }
 impl Service {
     fn new(paths: Paths, tx: Sender<Event>, quit: Arc<AtomicBool>) -> Result<Self> {
@@ -214,6 +216,7 @@ impl Service {
             boss_previous_phase: None,
             buffering_since: None,
             last_device_check: Instant::now(),
+            visualizer_seen: None,
         })
     }
     fn current(&self) -> Option<&Track> {
@@ -245,6 +248,13 @@ impl Service {
             tray: self.settings.tray,
             boss: self.boss,
             buffering: self.phase == "playing" && self.player.buffering(),
+            spectrum: if self.phase == "playing" && !self.boss {
+                self.player
+                    .spectrum()
+                    .map(|v| v * self.settings.volume as f32 / 100.)
+            } else {
+                [0.; 8]
+            },
             buffered_seconds: self.player.buffered_seconds(),
             buffer_underruns: self.player.underruns(),
             audio_device: self
@@ -671,6 +681,13 @@ impl Service {
     }
     fn tick(&mut self) {
         if self
+            .visualizer_seen
+            .is_some_and(|seen| seen.elapsed() > Duration::from_secs(2))
+        {
+            self.player.set_visualizer(false);
+            self.visualizer_seen = None;
+        }
+        if self
             .pending_seek
             .as_ref()
             .is_some_and(|(deadline, _)| Instant::now() >= *deadline)
@@ -994,7 +1011,12 @@ impl Service {
             self.failed_indices.clear();
         }
         match op {
-            "status" => {}
+            "status" => {
+                if request["visualizer"].as_bool() == Some(true) {
+                    self.player.set_visualizer(true);
+                    self.visualizer_seen = Some(Instant::now());
+                }
+            }
             "play" => {
                 self.boss = false;
                 self.boss_previous_phase = None;

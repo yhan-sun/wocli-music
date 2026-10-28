@@ -34,7 +34,7 @@ pub const COMMANDS: &[&str] = &[
     "daemon",
     "help",
 ];
-pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\n键盘多媒体按键（播放/暂停、上一首、下一首、音量调节）原生可用\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；l 刷新歌词；Ctrl+R 重试当前歌曲\nShift+B / Ctrl+B / F12 老板键（固定虚构身份的工程代码伪装，即刻静音暂停，B/Ctrl+B/Esc 恢复）\n每日推荐中 r 在线刷新，x 打开歌曲操作并排除
+pub const KEYS:&str="终端快捷键（wocli tui）\n\n/ 搜索；Enter 播放；Space 暂停/继续\nj/k 或 ↑/↓ 选择；g/G 顶部/底部；Ctrl+U/D 翻页\n[ / ] 上一首/下一首；←/→ 跳转 5 秒；+/- 音量\n键盘多媒体按键（播放/暂停、上一首、下一首、音量调节）原生可用\nf 喜欢；c 收藏到歌单；a 加入队列；x 歌曲操作\nd 下载所选歌曲；D 下载任务；m 播放方式\nv 展开歌词；V 开关频谱动效；l 刷新歌词；Ctrl+R 重试当前歌曲\nShift+B / Ctrl+B / F12 老板键（固定虚构身份的工程代码伪装，即刻静音暂停，B/Ctrl+B/Esc 恢复）\n每日推荐中 r 在线刷新，x 打开歌曲操作并排除
 I 导入歌单；E 导出当前歌单（b 音乐库菜单也可进入）\nTab 切换侧栏；b 音乐库；? 帮助；Esc 返回；q 退出界面\n退出界面后后台继续播放；wocli stop 停止播放，wocli daemon stop 退出后台。\n\n音源管理：wocli help source";
 
 pub fn text(topic: Option<&str>) -> Result<String> {
