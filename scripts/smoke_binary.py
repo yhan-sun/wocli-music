@@ -138,9 +138,10 @@ def main():
         try:
             print(cli("--version"), flush=True)
             tools = json.loads(cli("mcp", "tools"))["tools"]
-            assert len(tools) == 17
+            assert len(tools) == 19
+            assert {"get_daily_recommendations", "manage_daily_recommendations"} <= {t["name"] for t in tools}
             readonly_tools = json.loads(cli("mcp", "tools", "--read-only"))["tools"]
-            assert len(readonly_tools) == 8 and all(t["annotations"]["readOnlyHint"] for t in readonly_tools)
+            assert len(readonly_tools) == 9 and all(t["annotations"]["readOnlyHint"] for t in readonly_tools)
             mcp_config = json.loads(cli("mcp", "config"))["mcpServers"]["wocli-music"]
             assert mcp_config["args"][:2] == ["mcp", "serve"]
             guide = json.loads(cli("mcp", "prompt", "--json"))
