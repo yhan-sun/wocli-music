@@ -179,8 +179,25 @@ impl AudioInput {
     }
 }
 
+pub fn current_default_device_name() -> Option<String> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use rodio::cpal::traits::{DeviceTrait, HostTrait};
+        rodio::cpal::default_host()
+            .default_output_device()
+            .and_then(|d| d.name().ok())
+    }))
+    .ok()
+    .flatten()
+}
+
 pub struct Player {
     stream: Option<OutputStream>,
+    stream_device_name: Option<String>,
     sink: Option<Sink>,
     pub null: bool,
     duration: f64,
@@ -191,11 +208,14 @@ pub struct Player {
     cancelled: Option<Arc<AtomicBool>>,
     progress: Option<(Arc<AtomicU64>, f64)>,
     buffer: Option<Arc<buffered::BufferState>>,
+    last_samples_count: u64,
+    last_samples_time: Instant,
 }
 impl Default for Player {
     fn default() -> Self {
         Self {
             stream: None,
+            stream_device_name: None,
             sink: None,
             null: std::env::var("WOCLI_AUDIO_OUTPUT").is_ok_and(|v| v == "null"),
             duration: 0.,
@@ -206,6 +226,8 @@ impl Default for Player {
             cancelled: None,
             progress: None,
             buffer: None,
+            last_samples_count: 0,
+            last_samples_time: Instant::now(),
         }
     }
 }
@@ -227,19 +249,31 @@ impl Player {
                 progress: Some((audio.samples, audio.samples_per_second)),
                 buffer: audio.buffer,
                 stream: None,
+                stream_device_name: None,
+                last_samples_count: 0,
+                last_samples_time: Instant::now(),
             },
             output,
         )
     }
+    #[cfg(test)]
+    pub(crate) fn set_stream_device_name_for_test(&mut self, name: Option<String>) {
+        self.stream_device_name = name;
+    }
     pub fn load(&mut self, audio: PreparedAudio, volume: u8, paused: bool) -> Result<()> {
-        if !self.null && self.stream.is_none() {
-            // Let the host choose a safe callback size. A forced 512-frame buffer
-            // is unnecessarily fragile for music playback under ordinary CPU load.
-            let stream = rodio::OutputStreamBuilder::open_default_stream()
-                .map_err(|_| Error::coded("audio_device", "无法打开系统音频输出设备"))?;
-            self.stream = Some(stream);
-        }
         self.stop();
+        if !self.null {
+            let current_dev = current_default_device_name();
+            // Drop and reopen output stream if not yet opened or default audio device changed
+            if self.stream.is_none() || self.stream_device_name != current_dev {
+                self.stream = None;
+                self.stream_device_name = None;
+                let stream = rodio::OutputStreamBuilder::open_default_stream()
+                    .map_err(|_| Error::coded("audio_device", "无法打开系统音频输出设备"))?;
+                self.stream = Some(stream);
+                self.stream_device_name = current_dev;
+            }
+        }
         self.duration = audio.duration;
         self.base = audio.position;
         self.cancelled = Some(audio.cancelled);
@@ -257,6 +291,8 @@ impl Player {
         self.started = Instant::now();
         self.paused = paused;
         self.loaded = true;
+        self.last_samples_count = 0;
+        self.last_samples_time = Instant::now();
         Ok(())
     }
     pub fn position(&self) -> f64 {
@@ -358,6 +394,47 @@ impl Player {
         }
         None
     }
+    pub fn reset_stream(&mut self) {
+        let pos = self.position();
+        if let Some(sink) = self.sink.take() {
+            sink.stop();
+        }
+        self.stream = None;
+        self.stream_device_name = None;
+        self.base = pos;
+        self.progress = None;
+        self.buffer = None;
+        self.paused = true;
+        self.last_samples_count = 0;
+        self.last_samples_time = Instant::now();
+    }
+    pub fn stream_is_none(&self) -> bool {
+        self.stream.is_none()
+    }
+    pub fn stream_device_name(&self) -> Option<&str> {
+        self.stream_device_name.as_deref()
+    }
+    pub fn is_device_stalled(&mut self) -> bool {
+        if self.null || self.paused || !self.loaded || self.sink.is_none() {
+            return false;
+        }
+        if self.buffering() || self.finished() {
+            self.last_samples_time = Instant::now();
+            return false;
+        }
+        if let Some((samples, _)) = &self.progress {
+            let count = samples.load(Ordering::Relaxed);
+            if count != self.last_samples_count {
+                self.last_samples_count = count;
+                self.last_samples_time = Instant::now();
+                return false;
+            }
+            if self.last_samples_time.elapsed() >= Duration::from_millis(2500) {
+                return true;
+            }
+        }
+        false
+    }
     pub fn stop(&mut self) {
         if let Some(cancelled) = self.cancelled.take() {
             cancelled.store(true, Ordering::Relaxed);
@@ -371,6 +448,8 @@ impl Player {
         self.duration = 0.;
         self.base = 0.;
         self.paused = false;
+        self.last_samples_count = 0;
+        self.last_samples_time = Instant::now();
     }
 }
 impl Drop for Player {
@@ -455,10 +534,13 @@ mod tests {
             progress: Some((audio.samples, audio.samples_per_second)),
             buffer: audio.buffer,
             stream: None,
+            stream_device_name: None,
             base: 0.,
             started: Instant::now(),
             paused: false,
             cancelled: Some(audio.cancelled),
+            last_samples_count: 0,
+            last_samples_time: Instant::now(),
         };
         // Consume a hardware-free Sink through the same rodio adapters as real output.
         output.take(80000).for_each(drop);
@@ -585,5 +667,73 @@ mod buffering_regressions {
         player.stop();
         assert!(control.elapsed() < Duration::from_millis(100));
         assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_player_reset_stream_preserves_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        std::fs::write(&path, test_wav(10)).unwrap();
+        let input = AudioInput {
+            path: path.clone(),
+            hint: "wav".into(),
+            stream: None,
+        };
+        let audio = input
+            .prepare(
+                &Track::local(&path).unwrap(),
+                0.,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .unwrap();
+        let (mut player, mut output) = Player::test_output(audio);
+        player.set_stream_device_name_for_test(Some("Mock Headphones".into()));
+        assert_eq!(player.stream_device_name(), Some("Mock Headphones"));
+        assert!(player.stream_is_none());
+
+        for _ in 0..16000 {
+            output.next();
+        }
+        let pos = player.position();
+        assert!(pos > 0.5);
+
+        player.reset_stream();
+        assert_eq!(player.stream_device_name(), None);
+        assert!(player.stream_is_none());
+        assert!((player.position() - pos).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_player_is_device_stalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stall.wav");
+        std::fs::write(&path, test_wav(5)).unwrap();
+        let input = AudioInput {
+            path: path.clone(),
+            hint: "wav".into(),
+            stream: None,
+        };
+        let audio = input
+            .prepare(
+                &Track::local(&path).unwrap(),
+                0.,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .unwrap();
+        let (mut player, mut output) = Player::test_output(audio);
+        assert!(!player.is_device_stalled());
+
+        for _ in 0..8000 {
+            output.next();
+        }
+        assert!(!player.is_device_stalled());
+
+        player.last_samples_time = Instant::now() - Duration::from_millis(2600);
+        assert!(player.is_device_stalled());
+
+        player.pause(true);
+        assert!(!player.is_device_stalled());
     }
 }

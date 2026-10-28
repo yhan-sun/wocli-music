@@ -76,6 +76,7 @@ pub struct Status {
     pub buffering: bool,
     pub buffered_seconds: f64,
     pub buffer_underruns: u64,
+    pub audio_device: String,
 }
 #[derive(Serialize, Deserialize, Default)]
 struct Queue {
@@ -92,6 +93,7 @@ enum Event {
     StreamReady(u64, Result<(String, String, crate::stream::StreamHandle)>),
     StreamFinished(u64, Result<u64>),
     Loaded(u64, Result<PreparedAudio>),
+    Reattached(u64, bool, Result<PreparedAudio>),
     SeekReady(u64, u64, Result<PreparedAudio>),
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
@@ -150,6 +152,7 @@ struct Service {
     boss: bool,
     boss_previous_phase: Option<String>,
     buffering_since: Option<Instant>,
+    last_device_check: Instant,
 }
 impl Service {
     fn new(paths: Paths, tx: Sender<Event>, quit: Arc<AtomicBool>) -> Result<Self> {
@@ -210,6 +213,7 @@ impl Service {
             boss: false,
             boss_previous_phase: None,
             buffering_since: None,
+            last_device_check: Instant::now(),
         })
     }
     fn current(&self) -> Option<&Track> {
@@ -243,6 +247,11 @@ impl Service {
             buffering: self.phase == "playing" && self.player.buffering(),
             buffered_seconds: self.player.buffered_seconds(),
             buffer_underruns: self.player.underruns(),
+            audio_device: self
+                .player
+                .stream_device_name()
+                .unwrap_or_default()
+                .to_string(),
             error: self
                 .error
                 .as_ref()
@@ -531,6 +540,28 @@ impl Service {
             let _ = tx.send(Event::Loaded(generation, result));
         });
     }
+    fn reattach_player(&mut self, target_paused: bool) -> Result<()> {
+        let position = self.player.position();
+        let input = self
+            .audio_input
+            .clone()
+            .ok_or_else(|| Error::new("当前没有可播放的音频"))?;
+        let track = self
+            .current()
+            .cloned()
+            .ok_or_else(|| Error::new("当前没有可播放的音频"))?;
+        self.prepare_cancelled.store(true, Ordering::Relaxed);
+        self.prepare_cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = self.prepare_cancelled.clone();
+        let generation = self.generation;
+        let null = self.player.null;
+        let tx = self.tx.clone();
+        self.pool.execute(move || {
+            let result = input.prepare(&track, position, cancelled, null);
+            let _ = tx.send(Event::Reattached(generation, target_paused, result));
+        });
+        Ok(())
+    }
     fn cancel_seek(&mut self, message: &str) {
         if let Some((_, reply)) = self.pending_seek.take() {
             self.seek_cancelled.store(true, Ordering::Relaxed);
@@ -645,6 +676,27 @@ impl Service {
             .is_some_and(|(deadline, _)| Instant::now() >= *deadline)
         {
             self.cancel_seek("等待跳转位置缓冲超时，请稍后重试");
+        }
+        if !self.player.null
+            && self.phase == "playing"
+            && self.last_device_check.elapsed() >= Duration::from_millis(500)
+        {
+            self.last_device_check = Instant::now();
+            let current_dev = crate::player::current_default_device_name();
+            let dev_changed = self.player.stream_device_name().is_some()
+                && self.player.stream_device_name() != current_dev.as_deref();
+            let dev_stalled = self.player.is_device_stalled();
+            if dev_changed || dev_stalled {
+                eprintln!(
+                    "音频输出设备已变动或中断（{} -> {}），自动暂停播放",
+                    self.player.stream_device_name().unwrap_or("未知"),
+                    current_dev.as_deref().unwrap_or("无可用设备")
+                );
+                self.player.pause(true);
+                self.player.reset_stream();
+                self.phase = "paused".into();
+                return;
+            }
         }
         if self.phase == "playing" && self.player.buffering() {
             let since = self.buffering_since.get_or_insert_with(|| {
@@ -1005,8 +1057,25 @@ impl Service {
                     self.stop();
                 } else if ["playing", "paused"].contains(&self.phase.as_str()) {
                     let paused = op == "pause" || (op == "toggle" && self.phase == "playing");
-                    self.player.pause(paused);
-                    self.phase = if paused { "paused" } else { "playing" }.into();
+                    if paused {
+                        self.player.pause(true);
+                        self.phase = "paused".into();
+                    } else {
+                        let need_reattach = if self.player.null {
+                            false
+                        } else {
+                            let current_dev = crate::player::current_default_device_name();
+                            let dev_changed = self.player.stream_device_name().is_some()
+                                && self.player.stream_device_name() != current_dev.as_deref();
+                            self.player.stream_is_none() || dev_changed
+                        };
+                        if need_reattach && self.audio_input.is_some() && self.current().is_some() {
+                            self.reattach_player(false)?;
+                        } else {
+                            self.player.pause(false);
+                            self.phase = "playing".into();
+                        }
+                    }
                 } else if op == "pause" && self.phase == "stopped" {
                     // 已经处于停止状态，无需重复报错
                 } else if (op == "toggle" || op == "resume") && self.phase == "stopped" {
@@ -1224,13 +1293,43 @@ impl Service {
                 } else if let Some(prev) = self.boss_previous_phase.take() {
                     if prev == "playing" {
                         if self.phase == "paused" {
-                            self.player.pause(false);
-                            self.phase = "playing".into();
+                            let need_reattach = if self.player.null {
+                                false
+                            } else {
+                                let current_dev = crate::player::current_default_device_name();
+                                let dev_changed = self.player.stream_device_name().is_some()
+                                    && self.player.stream_device_name() != current_dev.as_deref();
+                                self.player.stream_is_none() || dev_changed
+                            };
+                            if need_reattach
+                                && self.audio_input.is_some()
+                                && self.current().is_some()
+                            {
+                                self.reattach_player(false)?;
+                            } else {
+                                self.player.pause(false);
+                                self.phase = "playing".into();
+                            }
                         }
                     } else if prev == "loading" {
                         if self.phase == "paused" {
-                            self.player.pause(false);
-                            self.phase = "playing".into();
+                            let need_reattach = if self.player.null {
+                                false
+                            } else {
+                                let current_dev = crate::player::current_default_device_name();
+                                let dev_changed = self.player.stream_device_name().is_some()
+                                    && self.player.stream_device_name() != current_dev.as_deref();
+                                self.player.stream_is_none() || dev_changed
+                            };
+                            if need_reattach
+                                && self.audio_input.is_some()
+                                && self.current().is_some()
+                            {
+                                self.reattach_player(false)?;
+                            } else {
+                                self.player.pause(false);
+                                self.phase = "playing".into();
+                            }
                         } else if self.phase == "stopped" && !self.queue.is_empty() {
                             self.begin(self.index, self.requested_quality.clone())?;
                         }
@@ -1336,6 +1435,21 @@ impl Service {
                             let _ = self.store.played(track);
                         }
                         self.phase = if self.boss { "paused" } else { "playing" }.into();
+                        self.error = None;
+                    }
+                    Err(error) => self.playback_failed(error),
+                }
+            }
+            Event::Reattached(generation, target_paused, result) => {
+                if generation != self.generation {
+                    return;
+                }
+                let paused = target_paused || self.boss;
+                let result =
+                    result.and_then(|audio| self.player.load(audio, self.settings.volume, paused));
+                match result {
+                    Ok(()) => {
+                        self.phase = if paused { "paused" } else { "playing" }.into();
                         self.error = None;
                     }
                     Err(error) => self.playback_failed(error),
@@ -2108,6 +2222,42 @@ mod playback_tests {
         h.service
             .dispatch(json!({"op":"boss","active":false}))
             .unwrap();
+        assert_eq!(h.service.phase, "playing");
+    }
+
+    #[test]
+    fn audio_device_change_and_reattach_flow() {
+        if std::env::var("CI").is_ok()
+            || std::env::var("GITHUB_ACTIONS").is_ok()
+            || crate::player::current_default_device_name().is_none()
+        {
+            return;
+        }
+        let mut h = Harness::new("list");
+        h.service.queue = vec![h.track("one", true)];
+        h.service.dispatch(json!({"op":"play"})).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.phase, "playing");
+
+        h.service.player.null = false;
+        h.service
+            .player
+            .set_stream_device_name_for_test(Some("Mock Bluetooth".into()));
+        assert_eq!(
+            h.service.player.stream_device_name(),
+            Some("Mock Bluetooth")
+        );
+
+        h.service.last_device_check = Instant::now() - Duration::from_secs(1);
+        h.service.tick();
+
+        assert_eq!(h.service.phase, "paused");
+        assert!(h.service.player.stream_is_none());
+        assert_eq!(h.service.player.stream_device_name(), None);
+
+        h.service.player.null = true;
+        h.service.reattach_player(false).unwrap();
+        h.pump("playing");
         assert_eq!(h.service.phase, "playing");
     }
 }
