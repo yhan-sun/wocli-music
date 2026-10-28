@@ -68,12 +68,7 @@ fn daily_error_notice(message: &str) {
         .chain(std::iter::once(0))
         .collect();
     unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONWARNING,
-        );
+        MessageBoxW(0, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONWARNING);
     }
 }
 
