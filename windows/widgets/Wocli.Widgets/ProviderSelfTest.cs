@@ -43,6 +43,12 @@ internal static class ProviderSelfTest
             Report(stage = "register temporary COM class");
             using var server = new ComServer(provider, classId, Report);
             var iid = typeof(IWidgetProvider).GUID;
+            if (verifyPackagedProxy)
+            {
+                Report(stage = "inspect registered IWidgetProvider proxy");
+                int proxyStatus = CoGetPSClsid(ref iid, out var proxyClassId);
+                Report($"CoGetPSClsid HRESULT=0x{proxyStatus:X8}, CLSID={proxyClassId:D}; diagnostic only, real activation below determines success.");
+            }
             // REGCLS_MULTIPLEUSE + CLSCTX_LOCAL_SERVER also registers the factory
             // in-process. The basic test validates the CCW without assuming SDK
             // proxy registration; packaged mode verifies the actual SDK proxy.
@@ -181,4 +187,7 @@ internal static class ProviderSelfTest
     [DllImport("ole32.dll", ExactSpelling = true)]
     private static extern int CoCreateInstance(
         ref Guid classId, nint outer, uint context, ref Guid iid, out nint result);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern int CoGetPSClsid(ref Guid iid, out Guid classId);
 }
