@@ -6,6 +6,13 @@
 
 卡片由 Windows Widgets Host 渲染：布局使用 Adaptive Card 标准元素，字体、颜色、按钮及主题由系统处理。歌曲和歌词作为纯文本交给控件，不解释为网页或 Markdown 链接。支持系统提供的小、中、大尺寸。
 
+| 卡片尺寸 | 内容与播放控制 |
+| --- | --- |
+| 小 | 歌曲名、当前歌词，以及暂停／继续按钮 |
+| 中、大 | 歌曲名、歌手、当前歌词，以及上一首、暂停／继续、下一首按钮 |
+
+过长文本会省略，以给按钮保留空间；大卡片显示更多歌词文字。实际换行和字体缩放效果仍需目标 Windows 宿主验收。
+
 此方案采用普通 Adaptive Card Provider，不依赖 Feed Provider 或 HTML/Web Widget 的 EEA 地区能力；清单没有排除中国地区，也不要求修改系统地区。仍需目标 Windows 11 设备具备可用的 Widgets 面板。参考：[普通 Widget Provider](https://learn.microsoft.com/en-us/windows/apps/develop/widgets/widget-providers)、[官方 C# 实现](https://learn.microsoft.com/en-us/windows/apps/develop/widgets/implement-widget-provider-cs)、[注册清单](https://learn.microsoft.com/en-us/windows/apps/develop/widgets/widget-provider-manifest)。
 
 它不会替换任务栏天气文字；关闭面板后不会提供任务栏常驻歌词。这里没有 Explorer Hook、注入、GDI 自绘歌词条或 HTML 页面。旧版自绘任务栏歌词的说明保留在下方供旧版本使用。
@@ -32,6 +39,8 @@ python .\scripts\build_native.py --platform windows-x86_64
 ```
 
 输出位于 `artifacts/system-widgets-preview/x64`，含匹配的 `wocli.exe`、自包含 .NET 的 `Layout`、未签名 MSIX、微软签名的 Windows App Runtime 框架依赖、校验和与第三方许可。版本为 `0.4.11-alpha.2`，MSIX 版本为 `0.4.11.1`；实际源码提交和部署信息见 `build-info.json`。
+
+组件使用 .NET 8 和 Windows App SDK `2.6.4`。配套框架包为 `Microsoft.WindowsAppRuntime.2`、版本 `2.6.4.0`；构建从实际还原的微软 MSIX 读取依赖身份并校验签名，不沿用 alpha.1 的 1.8 框架包。选择器里的浅色／深色预览图是标明用途的卡片示意，不是实机截图。
 
 这是开发预览注册包，**不能直接双击未签名 MSIX 安装**。先完整解压到固定目录，按产物 `PREVIEW.txt` 安装微软依赖，并在已有开发者模式的环境开发注册 `Layout/AppxManifest.xml`。注册后须保留整个 `Layout` 在该路径。构建脚本不会安装证书、开启开发者模式或修改系统地区。正式签名／商店分发尚未完成。
 
@@ -82,7 +91,7 @@ wocli tray status --json
 - 托盘菜单可分别增加或降低音量，到达 100% 后继续增加会保持 100%。连续调整音量、模式或歌词开关按后台最新状态依次执行。
 - 当前覆盖主任务栏的横向布局；竖向任务栏暂时隐藏，多任务栏选择尚未提供。
 
-## 参考 TaskbarLyrics 的方法
+## 旧自绘实现参考 TaskbarLyrics 的方法
 
 核对版本：[ANYNC/TaskbarLyrics `71262b4`](https://github.com/ANYNC/TaskbarLyrics/tree/71262b42aaf0879d2a805b424107a95fbfd50e5a)。
 
@@ -92,7 +101,7 @@ wocli tray status --json
 
 wocli 参考了挂接、后台检测、快照失效和空白区域布局的思路，使用自己的 Rust/Win32 实现。参考项目主版本使用 WPF/WebView2 绘制内容；wocli 保留 Win32/GDI 绘制，不增加 .NET 或 WebView2 运行依赖。它们均不是由 Windows 接收歌词并自动生成歌词控件。参考项目的 [MIT 许可证](licenses/TaskbarLyrics-MIT.txt) 随 Windows 发行包附带。
 
-## wocli 的具体处理
+## 旧自绘实现的具体处理
 
 - 创建隐藏分层窗口，先设置 `WS_CHILD` 并剥离 `WS_POPUP` / `WS_EX_TOOLWINDOW`，再调用 `SetParent` 挂接并核对父窗口，使用 `SWP_FRAMECHANGED` 应用样式变化。只有挂接和定位成功后才显示，失败时销毁或隐藏，不创建桌面置顶回退。
 - 经典任务栏识别 `ReBarWindow32` / `WorkerW` 与任务按钮容器，暂时缩小按钮容器以预留空间，并回读实际矩形，确认 Explorer 接受调整。若只接受部分尺寸变化，先尝试回滚再隐藏；隐藏和退出时也恢复空间。如果 Explorer 或其他应用已再次修改布局，不覆盖它们的新布局。
@@ -103,9 +112,9 @@ wocli 参考了挂接、后台检测、快照失效和空白区域布局的思�
 - 右键菜单打开期间不持有共享状态借用，避免嵌套消息循环导致崩溃。“退出播放器”先请求后台退出，成功后正常销毁窗口并恢复任务栏；请求失败保留托盘供重试，不在托盘进程里强杀自身。
 - Windows 可执行文件携带 Windows 10/11 兼容性与 PerMonitorV2 DPI 声明，以支持透明分层子窗口。
 
-## 兼容性与验证边界
+## 旧自绘实现的兼容性与验证边界
 
-现行自绘实现依赖 Explorer 窗口结构及 UI Automation；Windows 更新、第三方任务栏或安全软件可能影响挂接，失败原因见 `tray status`。当前分支的 Adaptive Card 小组件是另一条集成路径，显示在展开的 Widgets 面板内，不使用窗口挂接。
+旧自绘实现依赖 Explorer 窗口结构及 UI Automation；Windows 更新、第三方任务栏或安全软件可能影响挂接，失败原因见 `tray status`。当前分支的 Adaptive Card 小组件是另一条集成路径，显示在展开的 Widgets 面板内，不使用窗口挂接。
 
 自动测试覆盖空白区域避让、图标占满、窄窗口、DPI、负坐标、迟到快照，以及 Windows 原生隔离窗口的父子关系、窗口替换、无置顶状态和空间恢复。隔离窗口测试不能替代真实 Windows 10/11 Explorer、多屏及混合 DPI 的实机验收；不据此宣称所有任务栏版本都已验证。
 
@@ -113,7 +122,7 @@ wocli 参考了挂接、后台检测、快照失效和空白区域布局的思�
 
 官方依据：[SetParent](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent)、[子窗口与透明分层窗口](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)、[Windows 11 任务栏扩展限制](https://www.microsoft.com/en-us/windows/windows-11-specifications)。
 
-## Windows 实机验收
+## 旧自绘实现的 Windows 实机验收
 
 在 Windows 10 经典任务栏和 Windows 11 默认任务栏分别执行以下检查；Windows 交叉编译和隔离窗口测试不能替代这些步骤。
 
