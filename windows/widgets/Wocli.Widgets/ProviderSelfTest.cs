@@ -47,15 +47,17 @@ internal static class ProviderSelfTest
             {
                 Report(stage = "inspect registered IWidgetProvider proxy");
                 int proxyStatus = CoGetPSClsid(ref iid, out var proxyClassId);
-                Report($"CoGetPSClsid HRESULT=0x{proxyStatus:X8}, CLSID={proxyClassId:D}; diagnostic only, real activation below determines success.");
+                Report($"CoGetPSClsid HRESULT=0x{proxyStatus:X8}, CLSID={proxyClassId:D}; diagnostic only. Same-process activation below does not verify cross-process marshaling.");
             }
             // REGCLS_MULTIPLEUSE + CLSCTX_LOCAL_SERVER also registers the factory
-            // in-process. The basic test validates the CCW without assuming SDK
-            // proxy registration; packaged mode verifies the actual SDK proxy.
+            // in-process. Both modes activate a temporary class registered in
+            // this same process; LOCAL_SERVER does not by itself prove that COM
+            // marshaled the interface across a process boundary. Packaged mode
+            // verifies package identity and LOCAL_SERVER activation only.
             // https://learn.microsoft.com/windows/win32/api/combaseapi/ne-combaseapi-regcls
             Report(verifyPackagedProxy
-                ? "Scope: packaged local-server proxy activation for a temporary IWidgetProvider class; no Widgets host or display test."
-                : "Scope: in-process COM factory/CCW and IWidgetProvider; SDK proxies, packaged activation and Widgets display require separate integration verification.");
+                ? "Scope: package identity and LOCAL_SERVER COM activation of a same-process temporary IWidgetProvider class. Cross-process proxy marshaling and Widgets host/display integration are not verified."
+                : "Scope: in-process COM factory/CCW and IWidgetProvider. Cross-process proxy marshaling, packaged activation and Widgets host/display integration require separate verification.");
             Report(stage = verifyPackagedProxy ? "CoCreateInstance packaged local-server IWidgetProvider" : "CoCreateInstance in-process IWidgetProvider");
             Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, verifyPackagedProxy ? 4u : 1u, ref iid, out var instance));
             try

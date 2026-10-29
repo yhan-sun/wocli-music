@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ProviderPath,
+    # Legacy switch name retained for compatibility; this is an activation test.
     [switch]$PackagedProxy,
     [string]$LogDirectory = ''
 )
@@ -22,8 +23,8 @@ $stderr = Join-Path $logDirectory 'stderr.log'
 $process = $null
 try {
     $argument = if ($PackagedProxy) { '--self-test-packaged-proxy' } else { '--self-test' }
-    $scope = if ($PackagedProxy) { 'package identity and LOCAL_SERVER proxy activation' } else { 'in-process COM factory and interfaces' }
-    Write-Host "Provider self-test scope: $scope. No Widgets host/display test."
+    $scope = if ($PackagedProxy) { 'package identity and LOCAL_SERVER COM activation of a same-process temporary class' } else { 'in-process COM factory and interfaces' }
+    Write-Host "Provider self-test scope: $scope. Cross-process proxy marshaling and Widgets host/display integration are not verified."
     $process = Start-Process -FilePath $provider -ArgumentList $argument -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     if (-not $process.WaitForExit(60000)) {

@@ -34,7 +34,7 @@ $msix = @(Get-ChildItem -LiteralPath $preview -File -Filter 'wocli-system-widget
 if ($msix.Count -ne 1 -or (Get-FileHash -LiteralPath $msix[0].FullName -Algorithm SHA256).Hash -ne $buildInfo.sha256) {
     throw 'The MakeAppx-validated MSIX is missing or does not match build-info.json.'
 }
-$buildInfo | Add-Member -NotePropertyName providerPackagedProxySelfTestPassed -NotePropertyValue $false -Force
+$buildInfo | Add-Member -NotePropertyName providerPackagedActivationSelfTestPassed -NotePropertyValue $false -Force
 function Save-BuildInfo {
     [IO.File]::WriteAllText($buildInfoPath, ($buildInfo | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
@@ -138,7 +138,8 @@ try {
     $packages = @(Get-AppxPackage -Name $packageName | Where-Object { $_.InstallLocation -eq $layout })
     if ($packages.Count -ne 1) { throw 'The expected development Layout was not registered.' }
     $package = $packages[0]
-    Write-Host "Testing package identity and LOCAL_SERVER proxy activation: $($package.PackageFullName)"
+    Write-Host "Testing package identity and LOCAL_SERVER COM activation of a same-process temporary class: $($package.PackageFullName)"
+    Write-Host 'This does not verify cross-process proxy marshaling or Widgets host/display integration.'
     # https://learn.microsoft.com/powershell/module/appx/invoke-commandindesktoppackage
     # PreventBreakaway is required so the helper's provider child also has identity.
     $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -148,14 +149,14 @@ try {
     while (-not (Test-Path -LiteralPath $resultPath -PathType Leaf) -and $timer.Elapsed.TotalSeconds -lt 60) {
         Start-Sleep -Milliseconds 200
     }
-    if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Packaged proxy test produced no result within 60 seconds.' }
+    if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Packaged activation test produced no result within 60 seconds.' }
     $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    if ($result.token -ne $runToken -or $result.exitCode -ne 0) { throw "Packaged proxy self-test failed: $($result | ConvertTo-Json -Compress)" }
+    if ($result.token -ne $runToken -or $result.exitCode -ne 0) { throw "Packaged activation self-test failed: $($result | ConvertTo-Json -Compress)" }
     $testPassed = $true
 } finally {
     try { Stop-TestProcess } catch { $cleanupErrors.Add("Process cleanup: $_") }
     foreach ($log in @($wrapperLog, (Join-Path $providerLogDirectory 'stdout.log'), (Join-Path $providerLogDirectory 'stderr.log'))) {
-        Write-Host "Packaged proxy test log: $log"
+        Write-Host "Packaged activation test log: $log"
         if (Test-Path -LiteralPath $log -PathType Leaf) {
             try { Get-Content -LiteralPath $log -Raw | Write-Host } catch { Write-Warning "Could not read log: $_" }
         } else { Write-Host '(not created)' }
@@ -184,11 +185,11 @@ try {
     foreach ($errorText in $cleanupErrors) { Write-Warning $errorText }
 }
 if ($cleanupErrors.Count) { throw 'Package test cleanup failed; see warnings.' }
-if (-not $testPassed) { throw 'Packaged proxy test did not complete.' }
-$buildInfo.providerPackagedProxySelfTestPassed = $true
+if (-not $testPassed) { throw 'Packaged activation test did not complete.' }
+$buildInfo.providerPackagedActivationSelfTestPassed = $true
 Save-BuildInfo
-Write-Host 'Package identity and LOCAL_SERVER proxy activation passed. No Widgets host/display test was performed.'
+Write-Host 'Package identity and LOCAL_SERVER COM activation passed for a same-process temporary class. Cross-process proxy marshaling and Widgets host/display integration were not verified.'
 if ($env:GITHUB_STEP_SUMMARY) {
-    '- Package identity and LOCAL_SERVER proxy activation passed on the temporary runner; preview unregistered and Developer Mode restored. No Widgets host/display test.' |
+    '- Package identity and LOCAL_SERVER COM activation passed for a same-process temporary class on the runner; preview unregistered and Developer Mode restored. Cross-process proxy marshaling and Widgets host/display integration were not verified.' |
         Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }
