@@ -16,6 +16,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("privacy clears, recovery, shell retries and private diagnostics", BoardPrivacy),
     ("guarded actions reject replay and stale library/track controls", BoardActions),
     ("server rejects a raced action and refreshes without reporting offline", BoardStaleActions),
+    ("click after config read survives cancellation until the next request", BoardConfigCancellation),
     ("late responses and lifecycle callbacks cannot resurrect content", BoardRaces),
 };
 var failures = 0;
@@ -61,6 +62,16 @@ static async Task Protocol()
     var result = await client.ReadAsync(endpoint, CancellationToken.None);
     Check(result.Line.EnumerateRunes().Count() == 240, "Unicode scalar boundary rejected");
     Check(daemon.Requests.All(value => value == "{\"op\":\"lyrics_snapshot\"}"), "wrong operation or auth framing");
+    const string opaqueTrack = "  song:\u0001\t🎵 \r\n ";
+    daemon.GuardActions = true;
+    daemon.Reply = Reply(track: opaqueTrack);
+    result = await client.ReadAsync(endpoint, CancellationToken.None);
+    Check(result.TrackId == opaqueTrack, "opaque track identifier was normalized");
+    await client.ActionAsync(endpoint, "next", result.TrackId, result.State, CancellationToken.None);
+    Check(daemon.ExecutedActions == 1, "opaque track identifier did not round trip through guarded action");
+    daemon.GuardActions = false;
+    daemon.Reply = Reply(track: new string('x', 321));
+    await Throws<ProtocolException>(() => client.ReadAsync(endpoint, CancellationToken.None), "oversized guard identifier accepted");
     daemon.Reply = Reply(new string('x', 241));
     await Throws<ProtocolException>(() => client.ReadAsync(endpoint, CancellationToken.None), "oversized lyric accepted");
     daemon.Reply = new string('x', DaemonClient.MaxReplyBytes + 1);
@@ -329,6 +340,38 @@ static async Task BoardStaleActions()
     daemon.BeforeAction = null;
     await runtime.HandleActionAsync("widget", "resume", Nonce(sink.Latest["widget"]));
     await Until(() => daemon.ExecutedActions == 1, "fresh control did not work after stale-action recovery");
+}
+
+static async Task BoardConfigCancellation()
+{
+    await using var daemon = new FakeDaemon { Reply = Reply("点击竞态"), GuardActions = true };
+    using var directory = new TemporaryDirectory();
+    var endpoint = directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
+    Configure(directory, endpoint);
+    var sink = new RecordingWidgetSink();
+    BoardRuntime? runtime = null;
+    JsonElement nonce = default;
+    var armed = 0;
+    async Task<WidgetConfig> ReadConfig(string path, CancellationToken token)
+    {
+        var config = await DaemonClient.ReadConfigAsync(path, token);
+        // Deterministically deliver the click after file I/O succeeded but
+        // before the worker consumes pending actions under its state lock.
+        if (Interlocked.Exchange(ref armed, 0) == 1)
+            await runtime!.HandleActionAsync("widget", "next", nonce);
+        return config;
+    }
+    await using var owned = new BoardRuntime(sink, directory.File("widgets.json"), directory.File("status.json"),
+        new BoardOptions { PollInterval = TimeSpan.FromMilliseconds(20), IoTimeout = TimeSpan.FromMilliseconds(450) }, ReadConfig);
+    runtime = owned;
+    runtime.Upsert("widget", CardSize.Medium, true); runtime.Start();
+    await Until(() => HasLine(sink, "点击竞态"), "initial controls missing");
+    nonce = Nonce(sink.Latest["widget"]);
+    var states = new ConcurrentQueue<string>();
+    sink.OnUpdate = (_, _) => states.Enqueue(runtime.GetSnapshot().State);
+    Volatile.Write(ref armed, 1);
+    await Until(() => daemon.ExecutedActions == 1, "cancelled config iteration consumed and lost the queued click");
+    Check(ActionCount(daemon) == 1 && !states.Contains("offline"), "click was duplicated or cancellation was reported offline");
 }
 
 static async Task BoardRaces()

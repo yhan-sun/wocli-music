@@ -79,7 +79,7 @@ public sealed class DaemonClient
             throw new ProtocolException("reply_format");
         return new LyricsSnapshot(
             Boolean(data, "enabled"), Boolean(data, "boss"), Text(data, "state", 32),
-            Text(data, "track_id", 320), Text(data, "title", 240), Text(data, "artist", 240), Text(data, "line", 240));
+            Identifier(data, "track_id", 320), Text(data, "title", 240), Text(data, "artist", 240), Text(data, "line", 240));
     }
 
     private static bool Boolean(JsonElement element, string name)
@@ -91,11 +91,19 @@ public sealed class DaemonClient
 
     private static string Text(JsonElement element, string name, int maxRunes)
     {
+        var text = Identifier(element, name, maxRunes);
+        return string.Concat(text.EnumerateRunes().Select(rune => Rune.IsControl(rune) ? " " : rune.ToString())).Trim();
+    }
+
+    // Guard identifiers are opaque. Normalizing whitespace or control runes
+    // changes their identity and makes legitimate actions look stale.
+    private static string Identifier(JsonElement element, string name, int maxRunes)
+    {
         if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String)
             throw new ProtocolException("reply_format");
         var text = value.GetString()!;
         if (text.EnumerateRunes().Count() > maxRunes) throw new ProtocolException("text_limit");
-        return string.Concat(text.EnumerateRunes().Select(rune => Rune.IsControl(rune) ? " " : rune.ToString())).Trim();
+        return text;
     }
 
     private static bool IsLocalPath(string path)

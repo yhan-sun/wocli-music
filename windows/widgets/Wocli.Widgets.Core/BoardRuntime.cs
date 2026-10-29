@@ -24,6 +24,7 @@ public sealed class BoardRuntime : IAsyncDisposable
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly IWidgetSink _sink;
     private readonly DaemonClient _client;
+    private readonly Func<string, CancellationToken, Task<WidgetConfig>> _readConfig;
     private readonly BoardOptions _options;
     private readonly string _configPath;
     private readonly string _statusPath;
@@ -46,8 +47,13 @@ public sealed class BoardRuntime : IAsyncDisposable
     private long? _statusTick;
 
     public BoardRuntime(IWidgetSink sink, string? configPath = null, string? statusPath = null, BoardOptions? options = null)
+        : this(sink, configPath, statusPath, options, DaemonClient.ReadConfigAsync) { }
+
+    internal BoardRuntime(IWidgetSink sink, string? configPath, string? statusPath, BoardOptions? options,
+        Func<string, CancellationToken, Task<WidgetConfig>> readConfig)
     {
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
+        _readConfig = readConfig;
         _options = options ?? new BoardOptions();
         if (_options.PollInterval <= TimeSpan.Zero || _options.IoTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options));
         _client = new DaemonClient(_options.IoTimeout);
@@ -185,11 +191,15 @@ public sealed class BoardRuntime : IAsyncDisposable
                 lock (_gate) { _request = request; generation = _generation; }
                 try
                 {
-                    var config = await DaemonClient.ReadConfigAsync(_configPath, request.Token).ConfigureAwait(false);
+                    var config = await _readConfig(_configPath, request.Token).ConfigureAwait(false);
                     bool active;
                     PendingAction? action;
                     lock (_gate)
                     {
+                        // A click can cancel this read after it completed but
+                        // before this lock. Leave its queued action untouched
+                        // for the next iteration with a fresh request token.
+                        request.Token.ThrowIfCancellationRequested();
                         if (_endpoint != config.EndpointPath)
                         {
                             _endpoint = config.EndpointPath;
@@ -218,7 +228,7 @@ public sealed class BoardRuntime : IAsyncDisposable
                         else lyrics = await _client.ReadAsync(config.EndpointPath, request.Token).ConfigureAwait(false);
                         // A source can be changed while a server is responding. Do not
                         // publish that response under the newly-selected library.
-                        var current = await DaemonClient.ReadConfigAsync(_configPath, request.Token).ConfigureAwait(false);
+                        var current = await _readConfig(_configPath, request.Token).ConfigureAwait(false);
                         request.Token.ThrowIfCancellationRequested();
                         lock (_gate)
                         {
