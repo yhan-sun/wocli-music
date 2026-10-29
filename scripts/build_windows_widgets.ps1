@@ -80,6 +80,85 @@ function Export-MusicMark {
     }
 }
 
+function Export-WidgetPickerPreview {
+    param([string]$Path, [bool]$Dark)
+    # The picker requires a 300x304 medium-card preview with transparent corners.
+    # This deterministic illustrative asset is NOT a captured Windows UI test.
+    # Runtime card text, colors and layout are rendered by the Windows host.
+    $bitmap = [Drawing.Bitmap]::new(300, 304, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $resources = [Collections.Generic.List[IDisposable]]::new()
+    try {
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $resources.Add($graphics)
+        $graphics.Clear([Drawing.Color]::Transparent)
+        $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.TextRenderingHint = [Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        $background = [Drawing.SolidBrush]::new($(if ($Dark) { [Drawing.Color]::FromArgb(255, 32, 32, 32) } else { [Drawing.Color]::FromArgb(255, 250, 250, 250) }))
+        $foreground = [Drawing.SolidBrush]::new($(if ($Dark) { [Drawing.Color]::FromArgb(255, 245, 245, 245) } else { [Drawing.Color]::FromArgb(255, 30, 30, 30) }))
+        $subtle = [Drawing.SolidBrush]::new($(if ($Dark) { [Drawing.Color]::FromArgb(255, 192, 192, 192) } else { [Drawing.Color]::FromArgb(255, 95, 95, 95) }))
+        $resources.Add($background); $resources.Add($foreground); $resources.Add($subtle)
+        $rounded = [Drawing.Drawing2D.GraphicsPath]::new()
+        $resources.Add($rounded)
+        $rounded.AddArc(0, 0, 24, 24, 180, 90)
+        $rounded.AddArc(275, 0, 24, 24, 270, 90)
+        $rounded.AddArc(275, 279, 24, 24, 0, 90)
+        $rounded.AddArc(0, 279, 24, 24, 90, 90)
+        $rounded.CloseFigure()
+        $graphics.FillPath($background, $rounded)
+        $normal = [Drawing.Font]::new('Microsoft YaHei UI', 14, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
+        $heading = [Drawing.Font]::new('Microsoft YaHei UI', 19, [Drawing.FontStyle]::Bold, [Drawing.GraphicsUnit]::Pixel)
+        $lyric = [Drawing.Font]::new('Microsoft YaHei UI', 20, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
+        $caption = [Drawing.Font]::new('Microsoft YaHei UI', 11, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
+        $resources.Add($normal); $resources.Add($heading); $resources.Add($lyric); $resources.Add($caption)
+        $graphics.DrawString('wocli 歌词', $normal, $foreground, [single]20, [single]18)
+        $graphics.DrawString('示例歌曲', $heading, $foreground, [single]20, [single]64)
+        $graphics.DrawString('示例歌手', $normal, $subtle, [single]20, [single]96)
+        $graphics.DrawString('此处显示当前歌词', $lyric, $foreground, [Drawing.RectangleF]::new(20, 142, 260, 72))
+        $graphics.DrawString('正在播放', $normal, $subtle, [single]20, [single]226)
+        $graphics.DrawString('卡片示意 · 实际样式由 Windows 决定', $caption, $subtle, [single]20, [single]273)
+        $bitmap.Save($Path, [Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        foreach ($resource in $resources) { $resource.Dispose() }
+        $bitmap.Dispose()
+    }
+}
+
+function Test-WidgetManifestResources {
+    param([xml]$Manifest, [string]$Layout)
+    # MakeAppx only checks that app-extension properties are well-formed XML.
+    # Validate the actual widget-host contract and every picker resource too.
+    $extension = @($Manifest.SelectNodes('//*[local-name()="AppExtension" and @Name="com.microsoft.windows.widgets"]'))
+    if ($extension.Count -ne 1) { throw 'Expected exactly one ordinary Windows Widgets extension.' }
+    $provider = $extension[0].SelectSingleNode('*[local-name()="Properties"]/*[local-name()="WidgetProvider"]')
+    if (-not $provider -or $provider.Activation.CreateInstance.ClassId -ne '8B3EF0C4-86E8-4D42-A154-76492840B5EB') {
+        throw 'Missing WidgetProvider COM activation.'
+    }
+    $definition = $provider.Definitions.Definition
+    if ($definition.Id -ne 'Wocli_Lyrics' -or $definition.AllowMultiple -ne 'false') { throw 'Incorrect lyrics widget definition.' }
+    foreach ($attribute in @('ExclusiveRegions', 'ExcludedRegions', 'ContentUri', 'WebRequestFilter')) {
+        if ($definition.HasAttribute($attribute)) { throw "Unexpected Feed/web/region field in Adaptive Card registration: $attribute" }
+    }
+    $sizes = @($definition.Capabilities.Capability | ForEach-Object { $_.Size.Name } | Sort-Object)
+    if (($sizes -join ',') -ne 'large,medium,small') { throw 'All three widget sizes must be registered exactly once.' }
+    $screenshots = @($definition.SelectNodes('*[local-name()="ThemeResources"]//*[local-name()="Screenshot"]'))
+    if ($screenshots.Count -ne 3) { throw 'Default, light and dark picker previews are required.' }
+    foreach ($resource in @($provider.SelectNodes('.//*[local-name()="Icon" or local-name()="Screenshot"]'))) {
+        $path = [string]$resource.Path
+        if ($path -notmatch '^Assets\\[A-Za-z0-9]+\.png$') { throw "Invalid widget resource path: $path" }
+        $fullPath = Join-Path $Layout $path
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Missing widget resource: $path" }
+        if ($resource.LocalName -eq 'Screenshot') {
+            $preview = [Drawing.Bitmap]::new($fullPath)
+            try {
+                if ($preview.Width -ne 300 -or $preview.Height -ne 304 -or
+                    $preview.GetPixel(0, 0).A -ne 0 -or $preview.GetPixel(299, 303).A -ne 0) {
+                    throw "Picker preview must be 300x304 with transparent rounded corners: $path"
+                }
+            } finally { $preview.Dispose() }
+        }
+    }
+}
+
 function Read-PackageManifest {
     param([string]$Path)
     $archive = [IO.Compression.ZipFile]::OpenRead($Path)
@@ -151,9 +230,10 @@ function Export-DotnetNotices {
 }
 
 if (-not $PackageVersion) {
-    $versionLine = Get-Content (Join-Path $repo 'Cargo.toml') | Select-String '^version = "([0-9]+\.[0-9]+\.[0-9]+)(?:-[^"]+)?"' | Select-Object -First 1
-    if (-not $versionLine) { throw 'Cannot read the player version from Cargo.toml.' }
-    $PackageVersion = "$($versionLine.Matches[0].Groups[1].Value).0"
+    # Preview revisions need distinct package identities for upgrades even when
+    # their Cargo major/minor/patch is unchanged (alpha.1 => .0, alpha.2 => .1).
+    [xml]$versionManifest = Get-Content -LiteralPath $sourceManifest -Raw
+    $PackageVersion = [string]$versionManifest.Package.Identity.Version
 }
 if ($PackageVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or
     @($PackageVersion.Split('.') | Where-Object { [uint64]$_ -gt 65535 }).Count) {
@@ -195,8 +275,10 @@ try {
     }
     $restoreAssets = Get-Content -LiteralPath (Join-Path (Split-Path $project -Parent) 'obj/project.assets.json') -Raw | ConvertFrom-Json
     $runtimePackage = Find-RestoredPackage $restoreAssets 'Microsoft.WindowsAppSDK.Runtime'
-    $runtimeMsix = Join-Path $runtimePackage "tools/MSIX/win10-$Architecture/Microsoft.WindowsAppRuntime.1.8.msix"
-    if (-not (Test-Path -LiteralPath $runtimeMsix -PathType Leaf)) { throw "Missing official runtime framework MSIX: $runtimeMsix" }
+    $runtimeCandidates = @(Get-ChildItem -LiteralPath (Join-Path $runtimePackage "tools/MSIX/win10-$Architecture") -Filter '*.msix' -File |
+        Where-Object { (Read-PackageManifest $_.FullName).SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Properties"]/*[local-name()="Framework" and text()="true"]') })
+    if ($runtimeCandidates.Count -ne 1) { throw 'Expected exactly one official Windows App Runtime framework for the target architecture.' }
+    $runtimeMsix = $runtimeCandidates[0].FullName
     $runtimeManifest = Read-PackageManifest $runtimeMsix
     $runtimeIdentity = $runtimeManifest.Package.Identity
     if ($runtimeIdentity.ProcessorArchitecture -ne $Architecture -or $runtimeManifest.Package.Properties.Framework -ne 'true') {
@@ -234,12 +316,14 @@ try {
     Export-MusicMark (Join-Path $assets 'StoreLogo.png') 50 ([Drawing.Color]::FromArgb(255, 255, 215, 0))
     Export-MusicMark (Join-Path $assets 'Square44x44Logo.png') 44 ([Drawing.Color]::FromArgb(255, 255, 215, 0))
     Export-MusicMark (Join-Path $assets 'Square150x150Logo.png') 150 ([Drawing.Color]::FromArgb(255, 255, 215, 0))
-    Export-MusicMark (Join-Path $assets 'AnnouncementLight.png') 64 ([Drawing.Color]::FromArgb(255, 32, 32, 32))
-    Export-MusicMark (Join-Path $assets 'AnnouncementDark.png') 64 ([Drawing.Color]::FromArgb(255, 240, 240, 240))
+    Export-MusicMark (Join-Path $assets 'WidgetLight.png') 64 ([Drawing.Color]::FromArgb(255, 32, 32, 32))
+    Export-MusicMark (Join-Path $assets 'WidgetDark.png') 64 ([Drawing.Color]::FromArgb(255, 240, 240, 240))
+    Export-WidgetPickerPreview (Join-Path $assets 'WidgetPreviewLight.png') $false
+    Export-WidgetPickerPreview (Join-Path $assets 'WidgetPreviewDark.png') $true
     Copy-Item -LiteralPath (Join-Path $repo 'windows/widgets/Assets/README.txt') -Destination $assets
     $public = Join-Path $layout 'Public'
     New-Item -ItemType Directory -Path $public -Force | Out-Null
-    'Feed resources are supplied locally by IFeedResourceProvider; this folder contains no remote content.' |
+    'The Widgets host renders local Adaptive Card data; this provider supplies no HTML or web resources.' |
         Set-Content -LiteralPath (Join-Path $public 'README.txt') -Encoding utf8
 
     [xml]$manifest = Get-Content -LiteralPath $sourceManifest -Raw
@@ -252,6 +336,7 @@ try {
     $dependency.SetAttribute('Publisher', [string]$runtimeIdentity.Publisher)
     $dependency.SetAttribute('MinVersion', [string]$runtimeIdentity.Version)
     [void]$manifest.Package.Dependencies.AppendChild($dependency)
+    Test-WidgetManifestResources $manifest $layout
     $manifest.Save((Join-Path $layout 'AppxManifest.xml'))
     $packageName = "wocli-system-widgets-preview-$PackageVersion-$Architecture.msix"
     $packagePath = Join-Path $staging $packageName
@@ -283,7 +368,11 @@ try {
         configuration = $Configuration
         sourceCommit = $env:GITHUB_SHA
         dotnetSdk = (& $dotnet --version | Out-String).Trim()
-        windowsAppSdk = '1.8.260921001'
+        windowsAppSdk = ($restoreAssets.libraries.PSObject.Properties.Name | Where-Object { $_ -like 'Microsoft.WindowsAppSDK/*' }).Split('/')[1]
+        displaySurface = 'Windows Widgets board Adaptive Card; no taskbar announcements'
+        regionRestricted = $false
+        pickerPreviewIsIllustration = $true
+        widgetsHostUiVerified = $false
         selfContainedDotnet = $true
         selfContainedWindowsAppSdk = $false
         windowsAppSdkDeployment = 'framework-dependent'
@@ -313,13 +402,21 @@ wocli system Widgets preview ($Architecture)
 
 This is an unsigned development preview, not a stable release or an installer.
 Core tests, provider publication and MakeAppx validation passed. This does not
-prove that the Widgets host permits or displays taskbar announcements on a PC.
+prove that the Widgets host discovers or renders the card on the target PC.
+This provider implements Microsoft's ordinary IWidgetProvider Adaptive Card API.
+Open the Windows 11 Widgets board and add "wocli 歌词" to view current lyrics.
+Windows renders the card's typography, colors and controls. There is no Feed,
+HTML/web widget, taskbar announcement, Explorer hook or taskbar painting here.
+The card manifest has no region restriction, including for China. Feed-only EEA
+restrictions do not apply to this route. A supported, enabled and updated Windows
+Widgets host is still required; the user's China-region device is not UI-tested.
+Picker preview images are illustrative assets, not captured host screenshots.
 The basic COM self-test checks the in-process factory and interfaces only.
 See providerPackagedProxySelfTestPassed in build-info.json for the separate
 CI-only package-identity and LOCAL_SERVER proxy-activation test result.
 The matching player must come from this same development branch. Stable 0.4.10
 does not implement the required lyrics_snapshot IPC or wocli widgets commands.
-The included player reports 0.4.11-alpha.1, an explicitly experimental build.
+The included player reports 0.4.11-alpha.2, an explicitly experimental build.
 It is not the published stable binary. See sourceCommit in build-info.json.
 
 MSIX: $packageName
@@ -344,9 +441,12 @@ To remove that development registration:
 
 Do not install the unsigned MSIX by double-clicking it. Signed distribution
 requires a separate review and matching publisher certificate. This build did
-not create/trust certificates, enable Developer Mode, change region, select a
-Widgets feed, or replace the weather entry. The feed preview requires a
-compatible EEA Widgets host and explicit selection in Windows Widgets settings.
+not create/trust certificates, enable Developer Mode, change region, pin a widget
+or replace the weather entry. After registration, start the matching player,
+run "wocli widgets on", open Widgets (Win+W), and add "wocli 歌词" in its picker.
+The lyrics appear inside the expanded board, not on the collapsed weather entry.
+If upgrading from alpha.1, remove its development registration first, keep this
+new Layout in a permanent directory, then register it using the commands above.
 The shared LocalAppData\wocli-music configuration and diagnostics are excluded
 from MSIX write virtualization so the unpackaged player can read them. These
 shared files remain after removing the package; other app folders are unaffected.
@@ -363,7 +463,8 @@ CI also includes the matching player dependency -sources.zip archive.
         @"
 ### System Widgets preview ($Architecture)
 
-- Core tests and MakeAppx validation passed; no installation or host UI test was performed.
+- Core tests, widget manifest/resources and MakeAppx validation passed; no host UI test was performed.
+- Official Adaptive Card in the expanded Widgets board; no Feed/web widget or taskbar hook.
 - Unsigned MSIX: $packageBytes bytes; expanded Layout: $payloadBytes bytes.
 - SHA256: $sha256
 - .NET is self-contained; the signed Windows App SDK framework MSIX is bundled separately.

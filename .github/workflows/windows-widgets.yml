@@ -1,4 +1,4 @@
-name: Build system Widgets preview
+name: Build system Widgets Adaptive Card preview
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/build_native.py --platform windows-x86_64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test core, publish provider and validate unsigned MSIX with signed runtime dependency
+      - name: Test cards and picker assets, publish provider and validate unsigned MSIX
         shell: pwsh
         run: |
           $nativeBundle = Get-ChildItem ./build/native -Directory | Where-Object Name -Match 'windows-x86_64$' | Select-Object -First 1
