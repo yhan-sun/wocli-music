@@ -1,5 +1,5 @@
-//! Configuration shared with the optional, MSIX-packaged Windows Feed provider.
-//! The provider owns system announcements; the CLI never draws a substitute.
+//! Configuration shared with the optional, MSIX-packaged Adaptive Card provider.
+//! Windows renders lyrics in the Widgets Board after the user opens the panel.
 use crate::{
     model::{Error, Result},
     store::Paths,
@@ -115,11 +115,11 @@ fn configure_at(dir: &Path, paths: &Paths, enabled: bool) -> Result<()> {
     let config_path = dir.join("widgets.json");
     let endpoint = endpoint_path(paths)?;
     fs::create_dir_all(&paths.home)?;
-    fs::write(paths.home.join(SYSTEM_MODE_MARKER), "system-feed-preview\n")?;
+    fs::write(paths.home.join(SYSTEM_MODE_MARKER), "system-widget-card\n")?;
     if !enabled && read_config(&config_path)?.is_some_and(|config| config.endpoint_path != endpoint)
     {
         // The CLI also disables this home's lyrics setting. Do not disable or
-        // steal another home's currently selected system feed.
+        // steal another home's currently selected system widget.
         return Ok(());
     }
     let config = Config {
@@ -143,7 +143,10 @@ pub fn configure(paths: &Paths, enabled: bool) -> Result<()> {
 }
 
 pub fn status(paths: &Paths) -> Result<Value> {
-    let dir = directory()?;
+    status_at(&directory()?, paths)
+}
+
+fn status_at(dir: &Path, paths: &Paths) -> Result<Value> {
     let config_path = dir.join("widgets.json");
     let config = read_config(&config_path)?;
     let endpoint = endpoint_path(paths)?;
@@ -159,10 +162,13 @@ pub fn status(paths: &Paths) -> Result<Value> {
         let age = diagnostics["updated_at_unix_ms"]
             .as_i64()
             .and_then(|stamp| chrono::Utc::now().timestamp_millis().checked_sub(stamp));
-        same_endpoint && age.is_some_and(|age| (0..=5000).contains(&age))
+        diagnostics["mode"] == "system-widget-card"
+            && same_endpoint
+            && age.is_some_and(|age| (0..=5000).contains(&age))
     });
     Ok(json!({
-        "mode": "system-feed-preview",
+        "mode": "system-widget-card",
+        "surface": "widgets-board",
         "selected": selected,
         "enabled": enabled,
         "system_mode": paths.home.join(SYSTEM_MODE_MARKER).try_exists()? || selected,
@@ -173,9 +179,9 @@ pub fn status(paths: &Paths) -> Result<Value> {
         "note": if !selected && config.is_some() {
             "系统组件当前连接另一曲库。此曲库不会因切换目标自动恢复自绘；使用对应 --home 执行 widgets on 可重新选择。"
         } else if fresh {
-            "系统公告预览：请求成功不等于已显示；Shown 回调也不保证当前仍可见，显示时长及次数由 Windows 决定。"
+            "官方 Adaptive Card 小组件：展开 Windows 小组件面板后查看歌词；组件心跳和更新成功不代表屏幕上当前可见。"
         } else {
-            "尚无此曲库的有效组件心跳。请安装系统组件预览包并在 Widgets 面板启用 wocli；此状态不代表已经显示歌词。"
+            "尚无此曲库的卡片组件心跳。请安装 0.4.11-alpha.2 或更新的组件，在 Windows 小组件面板添加并打开 wocli 歌词卡片。旧 Feed 组件不适用。"
         }
     }))
 }
@@ -183,6 +189,53 @@ pub fn status(paths: &Paths) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_rejects_old_feed_other_library_and_expired_heartbeats() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: temp.path().join("home"),
+            runtime: temp.path().join("run"),
+        };
+        configure_at(temp.path(), &paths, true).unwrap();
+        let mut diagnostics = json!({
+            "mode":"system-widget-card", "endpoint_path":endpoint_path(&paths).unwrap(),
+            "updated_at_unix_ms":chrono::Utc::now().timestamp_millis(),
+        });
+        let write_status = |value: &Value| {
+            fs::write(
+                temp.path().join("widgets-status.json"),
+                serde_json::to_vec(value).unwrap(),
+            )
+            .unwrap()
+        };
+        write_status(&diagnostics);
+        assert_eq!(
+            status_at(temp.path(), &paths).unwrap()["provider_responding"],
+            true
+        );
+        diagnostics["mode"] = json!("system-feed-preview");
+        write_status(&diagnostics);
+        let old = status_at(temp.path(), &paths).unwrap();
+        assert_eq!(old["provider_responding"], false);
+        assert!(old["diagnostics"].is_null());
+        diagnostics["mode"] = json!("system-widget-card");
+        diagnostics["endpoint_path"] = json!(temp.path().join("another-endpoint"));
+        write_status(&diagnostics);
+        assert_eq!(
+            status_at(temp.path(), &paths).unwrap()["provider_responding"],
+            false
+        );
+        diagnostics["endpoint_path"] = json!(endpoint_path(&paths).unwrap());
+        for age in [10_000, -10_000] {
+            diagnostics["updated_at_unix_ms"] = json!(chrono::Utc::now().timestamp_millis() - age);
+            write_status(&diagnostics);
+            assert_eq!(
+                status_at(temp.path(), &paths).unwrap()["provider_responding"],
+                false
+            );
+        }
+    }
 
     #[test]
     fn system_mode_stays_selected_when_disabled_and_is_scoped_to_home() {

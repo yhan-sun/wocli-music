@@ -34,7 +34,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
-  widgets on|off|status             Windows 系统任务栏公告组件（预览）
+  widgets on|off|status             Windows 小组件面板歌词卡片（预览）
   boss [on|off|toggle]               老板模式（暂停并隐藏歌词、歌曲信息）
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
@@ -614,7 +614,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             let value = crate::widgets::status(&paths)?;
             if !args.flag("--json") {
                 println!(
-                    "Windows 系统公告组件（预览）：{}",
+                    "Windows 系统歌词卡片（预览）：{}",
                     if value["enabled"] == true {
                         "已启用配置"
                     } else {
@@ -623,7 +623,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 );
                 println!("{}", value["note"].as_str().unwrap_or_default());
                 if action == "on" {
-                    println!("需另行安装 MSIX 组件并在 Widgets 面板启用 wocli。此模式由系统渲染，不保证常驻或逐句显示；不会回退为自绘歌词条。");
+                    println!("安装配套 MSIX 组件后，按 Win+W，在小组件面板添加 wocli 歌词卡片。歌词和按钮由 Windows 渲染，仅在展开的面板内显示；关闭面板后停止实时同步。");
                 }
             }
             value

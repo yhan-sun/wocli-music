@@ -148,7 +148,7 @@ fn record_hotkeys(paths: &Paths, keys: Vec<serde_json::Value>) {
 pub fn lyrics_surface(paths: &Paths) -> serde_json::Value {
     if crate::widgets::system_selected(paths) {
         return crate::widgets::status(paths).unwrap_or_else(|error| {
-            serde_json::json!({"mode":"system-feed-preview","enabled":false,"note":error.to_string()})
+            serde_json::json!({"mode":"system-widget-card","surface":"widgets-board","enabled":false,"note":error.to_string()})
         });
     }
     let pid = fs::read_to_string(pid_path(paths)).unwrap_or_default();

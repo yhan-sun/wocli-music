@@ -131,7 +131,7 @@ wocli daily undo --id 123     # 恢复推荐资格
 
 ### 3. 原生桌面伴侣
 - **macOS**：顶部菜单栏逐句滚动歌词，无缝联动系统 Control Center 与硬件媒体键。
-- **Windows**：稳定版通过 Win32 子窗口和 GDI 自绘嵌入任务栏空白区，后台检测按钮位置并避让；它不是天气／Widgets 系统组件。窄空间优先显示歌词，空间不足时隐藏。`wocli tray status` 查看挂接及显隐原因。开发分支另提供系统渲染的 Feed 公告预览，需单独安装组件，**仅供具备相关能力的欧洲经济区设备评估，不适用于中国地区**；受 Windows 显示策略限制，不保证常驻或逐句同步。[实现、试用与兼容范围](docs/windows-taskbar-lyrics.md)。
+- **Windows**：稳定版通过 Win32/GDI 在任务栏空白区显示歌词。`0.4.11-alpha.2` 开发预览另提供微软官方 Adaptive Card 歌词小组件，字体、颜色和按钮由 Windows 渲染；按 `Win+W` 展开面板后查看歌词并控制播放。普通卡片不依赖 Feed 的 EEA 地区限制，需要安装配套组件；不会替换任务栏天气文字。[安装与兼容范围](docs/windows-taskbar-lyrics.md)。
 - 运行 `wocli lyrics-bar on` 开启，`wocli lyrics-bar off` 关闭。
 
 ### 4. 原生 AI MCP 智能体驱动

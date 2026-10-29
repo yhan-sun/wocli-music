@@ -1140,7 +1140,34 @@ impl Service {
         }
     }
     fn dispatch(&mut self, request: Value) -> Result<Value> {
-        let op = request["op"].as_str().unwrap_or_default();
+        let from_widget = request["op"] == "widget_action";
+        let op = if from_widget {
+            let action = request["action"].as_str().unwrap_or_default();
+            if !["prev", "next", "pause", "resume"].contains(&action) {
+                return Err(Error::coded("invalid_widget_action", "不支持的小组件操作"));
+            }
+            // Validate and execute in this same service event. A card can remain
+            // cached by Windows after the track, playback state or privacy mode
+            // changes; its old buttons must not control the new playback.
+            let snapshot = self.lyrics_snapshot();
+            if !self.settings.lyrics_bar
+                || self.boss
+                || !matches!(self.phase.as_str(), "playing" | "paused")
+                || snapshot["track_id"].as_str().unwrap_or_default().is_empty()
+                || request["track_id"] != snapshot["track_id"]
+                || request["state"].as_str() != Some(self.phase.as_str())
+                || (action == "pause" && self.phase != "playing")
+                || (action == "resume" && self.phase != "paused")
+            {
+                return Err(Error::coded(
+                    "stale_widget_action",
+                    "播放或隐私状态已变化，请等待小组件刷新",
+                ));
+            }
+            action
+        } else {
+            request["op"].as_str().unwrap_or_default()
+        };
         if op == "prepare_play" {
             let token = format!("{:032x}", rand::random::<u128>());
             self.play_token = Some(token.clone());
@@ -1598,7 +1625,11 @@ impl Service {
             }
             _ => return Err(Error::new("未知后台操作")),
         }
-        Ok(serde_json::to_value(self.status())?)
+        if from_widget {
+            Ok(self.lyrics_snapshot())
+        } else {
+            Ok(serde_json::to_value(self.status())?)
+        }
     }
     fn event(&mut self, event: Event) {
         match event {
@@ -2136,6 +2167,120 @@ mod playback_tests {
             *lock.lock().unwrap() = true;
             wake.notify_all();
         }
+    }
+
+    #[test]
+    fn widget_buttons_apply_once_to_the_displayed_track_and_state() {
+        let mut h = Harness::new("list");
+        let tracks = [
+            h.track("widget-first", true),
+            h.track("widget-second", true),
+        ];
+        h.service
+            .dispatch(json!({"op":"play", "tracks":tracks}))
+            .unwrap();
+        h.pump("playing");
+        let action = |snapshot: &Value, action: &str| {
+            json!({
+                "op":"widget_action", "action":action,
+                "track_id":snapshot["track_id"], "state":snapshot["state"],
+            })
+        };
+        let first = h.service.lyrics_snapshot();
+        let paused = h.service.dispatch(action(&first, "pause")).unwrap();
+        assert_eq!(paused["state"], "paused");
+        assert!(paused.get("queue").is_none());
+        assert!(paused.get("lyrics").is_none());
+        assert_eq!(
+            h.service
+                .dispatch(action(&first, "pause"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+        let resumed = h.service.dispatch(action(&paused, "resume")).unwrap();
+        assert_eq!(resumed["state"], "playing");
+        h.service.dispatch(action(&resumed, "next")).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.index, 1);
+        assert_eq!(
+            h.service
+                .dispatch(action(&resumed, "next"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+        assert_eq!(h.service.index, 1);
+        let second = h.service.lyrics_snapshot();
+        h.service.dispatch(action(&second, "prev")).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.index, 0);
+        // Returning to the same song does not revalidate an old card.
+        assert_eq!(
+            h.service
+                .dispatch(action(&first, "pause"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+    }
+
+    #[test]
+    fn widget_buttons_cannot_bypass_privacy_or_execute_arbitrary_operations() {
+        let mut h = Harness::new("list");
+        let track = h.track("widget-private", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let snapshot = h.service.lyrics_snapshot();
+        for action in ["toggle", "shutdown", "play", "boss", "config", ""] {
+            let error = h
+                .service
+                .dispatch(json!({"op":"widget_action", "action":action,
+                "track_id":snapshot["track_id"], "state":snapshot["state"]}))
+                .unwrap_err();
+            assert_eq!(error.code, "invalid_widget_action");
+        }
+        assert!(!h.service.quit.load(Ordering::Relaxed));
+        assert_eq!(h.service.phase, "playing");
+        for change in [
+            json!({"op":"boss", "active":true}),
+            json!({"op":"config", "key":"lyrics_bar", "value":false}),
+            json!({"op":"stop"}),
+        ] {
+            h.service
+                .dispatch(json!({"op":"boss", "active":false}))
+                .unwrap();
+            h.service
+                .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":true}))
+                .unwrap();
+            h.service.dispatch(change).unwrap();
+            let state = h.service.phase.clone();
+            let boss = h.service.boss;
+            let play_token = h.service.dispatch(json!({"op":"prepare_play"})).unwrap();
+            for action in ["prev", "next", "pause", "resume"] {
+                let error = h
+                    .service
+                    .dispatch(json!({"op":"widget_action", "action":action,
+                    "track_id":snapshot["track_id"], "state":snapshot["state"]}))
+                    .unwrap_err();
+                assert_eq!(error.code, "stale_widget_action");
+            }
+            assert_eq!(h.service.phase, state);
+            assert_eq!(h.service.boss, boss);
+            assert_eq!(
+                h.service.play_token.as_deref(),
+                play_token["play_token"].as_str()
+            );
+        }
+        assert_eq!(
+            h.service
+                .dispatch(json!({"op":"widget_action", "action":"next"}))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
     }
 
     #[test]
