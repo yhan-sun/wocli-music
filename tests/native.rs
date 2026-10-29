@@ -98,7 +98,8 @@ fn native_service_preserves_pause_seek_lyrics_collections_and_queue() {
     // `seek 5` is relative to the paused position. Launching a separate CLI
     // process can take over a second on Windows, so playback need not still
     // be within the first second when the pause command reaches the daemon.
-    let expected_position = before_seek["position"].as_f64().unwrap() + 5.;
+    let expected_position = (before_seek["position"].as_f64().unwrap() + 5.)
+        .min(before_seek["duration"].as_f64().unwrap());
     app.cli(&["seek", "5"]);
     let paused = app.cli(&["status"]);
     assert_eq!(paused["phase"], "paused");
@@ -106,7 +107,7 @@ fn native_service_preserves_pause_seek_lyrics_collections_and_queue() {
         (paused["position"].as_f64().unwrap() - expected_position).abs() < 0.001,
         "relative seek did not preserve the paused position: {before_seek} -> {paused}"
     );
-    app.socket(json!({"op":"seek_to","position":15,"track_id":"stale-track"}));
+    app.socket(json!({"op":"seek_to","position":0,"track_id":"stale-track"}));
     let after_stale = app.cli(&["status"]);
     assert_eq!(after_stale["phase"], "paused");
     assert!(

@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build_windows_widgets.ps1 -Architecture x64 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight')
-      - name: Validate package identity and COM proxy registration on the temporary runner
+      - name: Validate package identity and COM activation on the temporary runner
         shell: powershell
         run: ./scripts/test_windows_widgets_package.ps1 -PreviewDirectory (Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight/x64')
       - name: Build matching development player

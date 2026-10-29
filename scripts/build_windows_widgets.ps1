@@ -389,7 +389,9 @@ try {
         developmentPlayerIncluded = [bool]$PlayerBinary
         providerComSelfTestPassed = $selfTestPassed
         providerComSelfTestScope = 'in-process COM factory and interfaces; no packaged proxy or Widgets host test'
-        providerPackagedProxySelfTestPassed = $false
+        providerPackagedActivationSelfTestPassed = $false
+        providerPackagedActivationSelfTestScope = 'package identity and LOCAL_SERVER activation of a same-process temporary class; no cross-process proxy or Widgets host test'
+        providerCrossProcessProxyVerified = $false
         packageBytes = $packageBytes
         layoutBytes = $payloadBytes
         layoutFileCount = $payload.Count
@@ -412,8 +414,10 @@ restrictions do not apply to this route. A supported, enabled and updated Window
 Widgets host is still required; the user's China-region device is not UI-tested.
 Picker preview images are illustrative assets, not captured host screenshots.
 The basic COM self-test checks the in-process factory and interfaces only.
-See providerPackagedProxySelfTestPassed in build-info.json for the separate
-CI-only package-identity and LOCAL_SERVER proxy-activation test result.
+See providerPackagedActivationSelfTestPassed in build-info.json for the separate
+CI-only package-identity and LOCAL_SERVER COM activation test result. That test
+uses a same-process temporary class; cross-process proxy marshaling and the
+actual Widgets host remain unverified (providerCrossProcessProxyVerified=false).
 The matching player must come from this same development branch. Stable 0.4.10
 does not implement the required lyrics_snapshot IPC or wocli widgets commands.
 The included player reports 0.4.11-alpha.2, an explicitly experimental build.

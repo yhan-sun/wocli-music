@@ -60,7 +60,7 @@ python .\scripts\build_native.py --platform windows-x86_64
 
 ## 验证范围
 
-自动验证包括卡片数据和动作白名单、暂停／停播／老板模式、配置切换、迟到通信、取消、尺寸与实例生命周期、Rust 原子动作守卫，以及 COM 接口和 MSIX 清单。Windows CI 在临时 runner 上实际开发注册包，再以包身份检查本地服务器 COM 代理；测试不调用真实 Widgets 面板。
+自动验证包括卡片数据和动作白名单、暂停／停播／老板模式、配置切换、迟到通信、取消、尺寸与实例生命周期、Rust 原子动作守卫，以及 COM 接口和 MSIX 清单。Windows CI 在临时 runner 上实际开发注册包，再以包身份检查 LOCAL_SERVER COM 激活。该测试使用同进程临时类，不能证明跨进程代理通信已通过，也不调用真实 Widgets 面板。构建记录分别标明包激活结果、`providerCrossProcessProxyVerified: false` 和 `widgetsHostUiVerified: false`。
 
 真实 Windows 11 Widgets 宿主的添加／移除、浅深主题、高对比度、中文长歌词、DPI、面板反复开关、休眠、组件重启和长时间内存占用仍须实机验收。CI 的编译、包注册和 COM 自测不能替代屏幕显示验收，因此本次以开发预览发布，不声称所有 Windows 环境已验证。
 
