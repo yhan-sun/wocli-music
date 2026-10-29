@@ -18,7 +18,7 @@ public interface IClassFactory
 [ComVisible(true)]
 [ClassInterface(ClassInterfaceType.None)]
 [ComDefaultInterface(typeof(IClassFactory))]
-public sealed class FeedClassFactory(FeedProvider provider) : IClassFactory
+public sealed class FeedClassFactory(FeedProvider provider, Action<string>? diagnostics = null) : IClassFactory
 {
     public int CreateInstance(nint outer, ref Guid iid, out nint result)
     {
@@ -28,12 +28,17 @@ public sealed class FeedClassFactory(FeedProvider provider) : IClassFactory
         nint inspectable = 0;
         try
         {
+            diagnostics?.Invoke($"factory.CreateInstance requested IID={iid:D}");
             inspectable = MarshalInspectable<IFeedProvider>.FromManaged(provider);
+            diagnostics?.Invoke("factory.FromManaged succeeded");
             // Return the requested interface, rather than treating a CLSID as an IID.
-            return Marshal.QueryInterface(inspectable, ref iid, out result);
+            int status = Marshal.QueryInterface(inspectable, ref iid, out result);
+            diagnostics?.Invoke($"factory.QueryInterface HRESULT=0x{status:X8}, nonNull={result != 0}");
+            return status;
         }
         catch (Exception error)
         {
+            diagnostics?.Invoke($"factory exception: {error.GetType().FullName}, HRESULT=0x{error.HResult:X8}: {error}");
             return error.HResult;
         }
         finally
@@ -53,9 +58,9 @@ internal sealed class ComServer : IDisposable
     private readonly FeedClassFactory _factory;
     private uint _cookie;
 
-    public ComServer(FeedProvider provider, Guid? classId = null)
+    public ComServer(FeedProvider provider, Guid? classId = null, Action<string>? diagnostics = null)
     {
-        _factory = new FeedClassFactory(provider);
+        _factory = new FeedClassFactory(provider, diagnostics);
         Marshal.ThrowExceptionForHR(CoRegisterClassObject(
             classId ?? new Guid(ProviderIdentity.ClassId), _factory, 4, 1, out _cookie));
     }

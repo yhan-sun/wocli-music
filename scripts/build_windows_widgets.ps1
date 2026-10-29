@@ -223,16 +223,7 @@ try {
     $nativeArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
     $selfTestPassed = $false
     if ($nativeArchitecture -eq $Architecture) {
-        $selfTest = Start-Process -FilePath (Join-Path $layout 'Wocli.Widgets.exe') -ArgumentList '--self-test' -PassThru
-        try {
-            if (-not $selfTest.WaitForExit(60000)) {
-                $selfTest.Kill()
-                throw 'Provider COM self-test timed out.'
-            }
-            if ($selfTest.ExitCode -ne 0) { throw "Provider COM self-test failed ($($selfTest.ExitCode))." }
-        } finally {
-            $selfTest.Dispose()
-        }
+        & (Join-Path $PSScriptRoot 'test_windows_widgets.ps1') -ProviderPath (Join-Path $layout 'Wocli.Widgets.exe')
         $selfTestPassed = $true
     } else {
         Write-Warning "Provider self-test requires a native $Architecture runner; this build only type-checks it."

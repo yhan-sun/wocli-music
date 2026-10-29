@@ -10,6 +10,7 @@ on:
       - Cargo.lock
       - build.rs
       - scripts/build_windows_widgets.ps1
+      - scripts/test_windows_widgets.ps1
       - .github/workflows/windows-widgets.yml
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - Cargo.lock
       - build.rs
       - scripts/build_windows_widgets.ps1
+      - scripts/test_windows_widgets.ps1
       - .github/workflows/windows-widgets.yml
   workflow_dispatch:
 
@@ -40,6 +42,13 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '8.0.x'
+      - name: Check provider COM activation before the full player build
+        shell: pwsh
+        run: |
+          $providerDirectory = Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight'
+          dotnet publish ./windows/widgets/Wocli.Widgets/Wocli.Widgets.csproj --configuration Release --runtime win-x64 --self-contained true --output $providerDirectory -p:Platform=x64 -p:WindowsAppSDKSelfContained=false -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/test_windows_widgets.ps1 -ProviderPath (Join-Path $providerDirectory 'Wocli.Widgets.exe')
       - name: Build matching development player
         shell: pwsh
         run: |
