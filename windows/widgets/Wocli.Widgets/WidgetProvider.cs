@@ -23,6 +23,7 @@ public sealed class WidgetProvider : IWidgetProvider
     private readonly HashSet<string> _deletedDuringRestore = new(StringComparer.Ordinal);
     private readonly HashSet<string> _inactiveDuringRestore = new(StringComparer.Ordinal);
     private bool _restoring = true;
+    private bool _restoreOverflow;
     private bool _stopping;
 
     internal WidgetProvider(BoardRuntime runtime) => _runtime = runtime;
@@ -49,7 +50,7 @@ public sealed class WidgetProvider : IWidgetProvider
         lock (_gate)
         {
             if (_stopping) return;
-            if (_restoring) _inactiveDuringRestore.Add(widgetId);
+            RecordRestoreChange(_inactiveDuringRestore, widgetId);
             if (_widgets.TryGetValue(widgetId, out var widget))
                 _widgets[widgetId] = widget with { Active = false };
             _runtime.Deactivate(widgetId);
@@ -62,7 +63,7 @@ public sealed class WidgetProvider : IWidgetProvider
         lock (_gate)
         {
             if (_stopping) return;
-            if (_restoring) _deletedDuringRestore.Add(widgetId);
+            RecordRestoreChange(_deletedDuringRestore, widgetId);
             _widgets.Remove(widgetId);
             _runtime.Delete(widgetId);
         }
@@ -103,6 +104,8 @@ public sealed class WidgetProvider : IWidgetProvider
             lock (_gate)
             {
                 if (_stopping) return false;
+                if (_restoreOverflow)
+                    throw new InvalidOperationException("Too many widget changes during restoration.");
                 foreach (var context in restored)
                 {
                     if (!ValidId(context.Id) || _deletedDuringRestore.Contains(context.Id) ||
@@ -126,6 +129,7 @@ public sealed class WidgetProvider : IWidgetProvider
             lock (_gate)
             {
                 _restoring = false;
+                _restoreOverflow = false;
                 _deletedDuringRestore.Clear();
                 _inactiveDuringRestore.Clear();
             }
@@ -136,7 +140,11 @@ public sealed class WidgetProvider : IWidgetProvider
     {
         var result = new List<WidgetRegistration>();
         foreach (var info in WidgetManager.GetDefault().GetWidgetInfos())
-            if (CopyContext(info.WidgetContext) is { } context) result.Add(context);
+        {
+            if (CopyContext(info.WidgetContext) is not { } context) continue;
+            result.Add(context);
+            if (result.Count >= MaximumWidgets) break;
+        }
         return result;
     }
 
@@ -146,6 +154,10 @@ public sealed class WidgetProvider : IWidgetProvider
         lock (_gate)
         {
             if (_stopping) return;
+            // A resize cannot recreate a widget whose deletion won the race.
+            // Unknown sizes can be restored only during the initial host query.
+            if (preserveActive && (_deletedDuringRestore.Contains(context.Id) ||
+                (!_restoring && !_widgets.ContainsKey(context.Id)))) return;
             if (!_widgets.ContainsKey(context.Id) && _widgets.Count >= MaximumWidgets) return;
             if (preserveActive && _widgets.TryGetValue(context.Id, out var current))
                 context = context with { Active = current.Active };
@@ -156,6 +168,16 @@ public sealed class WidgetProvider : IWidgetProvider
             _widgets[context.Id] = context;
             _runtime.Upsert(context.Id, context.Size, context.Active);
         }
+    }
+
+    // Callback IDs are bounded even if the host stalls during enumeration. On
+    // overflow restoration fails closed instead of reviving an untracked delete.
+    // All callers hold _gate.
+    private void RecordRestoreChange(HashSet<string> changes, string id)
+    {
+        if (!_restoring || changes.Contains(id)) return;
+        if (changes.Count >= MaximumWidgets * 4) { _restoreOverflow = true; return; }
+        changes.Add(id);
     }
 
     internal void BeginShutdown()

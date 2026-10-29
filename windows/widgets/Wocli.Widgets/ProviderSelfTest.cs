@@ -75,7 +75,11 @@ internal static class ProviderSelfTest
             {
                 provider.ObserveContext(new WidgetRegistration("newer", CardSize.Large, true));
                 provider.Deactivate("inactive");
+                // Resize may carry the older IsActive value while the startup
+                // query is in flight. Only Activate may reverse Deactivate.
+                provider.ObserveContext(new WidgetRegistration("inactive", CardSize.Large, true), preserveActive: true);
                 provider.DeleteWidget("deleted", "");
+                provider.ObserveContext(new WidgetRegistration("deleted", CardSize.Large, true), preserveActive: true);
                 return new[]
                 {
                     new WidgetRegistration("newer", CardSize.Small, false),
@@ -91,6 +95,7 @@ internal static class ProviderSelfTest
             CheckCounts(runtime, 3, 0);
             provider.ObserveContext(new WidgetRegistration("newer", CardSize.Large, true));
             provider.DeleteWidget("inactive", "");
+            provider.ObserveContext(new WidgetRegistration("inactive", CardSize.Small, true), preserveActive: true);
             CheckCounts(runtime, 2, 1);
             provider.BeginShutdown();
             provider.ObserveContext(new WidgetRegistration("after-shutdown", CardSize.Large, true));
