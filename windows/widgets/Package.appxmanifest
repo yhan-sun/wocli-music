@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 com virtualization rescap">
+  <Identity Name="Wocli.Music.WidgetsPreview"
+    Publisher="CN=wocli-music.WidgetsPreview"
+    Version="0.4.11.1" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>wocli 系统歌词预览</DisplayName>
+    <PublisherDisplayName>wocli-music</PublisherDisplayName>
+    <Description>Local lyrics in a system-rendered Windows Widgets Adaptive Card.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <!-- Share config, endpoint and diagnostics with the unpackaged Rust player.
+         Without this exclusion, newly created AppData files can be virtualized.
+         This narrow Windows 11 exclusion does not change other app directories. -->
+    <virtualization:FileSystemWriteVirtualization>
+      <virtualization:ExcludedDirectories>
+        <virtualization:ExcludedDirectory>$(KnownFolder:LocalAppData)\wocli-music</virtualization:ExcludedDirectory>
+      </virtualization:ExcludedDirectories>
+    </virtualization:FileSystemWriteVirtualization>
+  </Properties>
+  <Dependencies>
+    <!-- Windows 11 prerequisite; MaxVersionTested is a compatibility declaration,
+         not evidence that this preview has passed UI tests on that Windows build. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22631.2787" MaxVersionTested="10.0.26100.0" />
+    <!-- build_windows_widgets.ps1 adds PackageDependency using the exact identity
+         parsed from the restored, Microsoft-signed Windows App Runtime MSIX. -->
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="zh-cn" />
+  </Resources>
+  <Applications>
+    <Application Id="WocliWidgets" Executable="Wocli.Widgets.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="wocli 系统歌词预览"
+        Description="Local lyrics Adaptive Card; add it to the Windows Widgets board."
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        BackgroundColor="transparent" AppListEntry="none" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="Wocli.Widgets.exe"
+              Arguments="-RegisterProcessAsComServer" DisplayName="wocli lyrics widget provider">
+              <com:Class Id="8B3EF0C4-86E8-4D42-A154-76492840B5EB" DisplayName="wocli lyrics widget provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension Name="com.microsoft.windows.widgets"
+            Id="com.wocli.music.lyrics" DisplayName="wocli 歌词" PublicFolder="Public">
+            <uap3:Properties>
+              <WidgetProvider>
+                <ProviderIcons>
+                  <Icon Path="Assets\StoreLogo.png" />
+                </ProviderIcons>
+                <Activation>
+                  <CreateInstance ClassId="8B3EF0C4-86E8-4D42-A154-76492840B5EB" />
+                </Activation>
+                <Definitions>
+                  <Definition Id="Wocli_Lyrics" DisplayName="wocli 歌词"
+                    Description="在小组件面板查看本机正在播放的歌曲和歌词。"
+                    AllowMultiple="false" IsCustomizable="false">
+                    <Capabilities>
+                      <Capability><Size Name="small" /></Capability>
+                      <Capability><Size Name="medium" /></Capability>
+                      <Capability><Size Name="large" /></Capability>
+                    </Capabilities>
+                    <ThemeResources>
+                      <Icons><Icon Path="Assets\WidgetLight.png" /></Icons>
+                      <Screenshots>
+                        <Screenshot Path="Assets\WidgetPreviewLight.png" DisplayAltText="歌词卡片示意：歌曲、歌手和当前歌词。实际样式由 Windows 决定。" />
+                      </Screenshots>
+                      <DarkMode>
+                        <Icons><Icon Path="Assets\WidgetDark.png" /></Icons>
+                        <Screenshots>
+                          <Screenshot Path="Assets\WidgetPreviewDark.png" DisplayAltText="深色歌词卡片示意；实际样式由 Windows 决定。" />
+                        </Screenshots>
+                      </DarkMode>
+                      <LightMode>
+                        <Icons><Icon Path="Assets\WidgetLight.png" /></Icons>
+                        <Screenshots>
+                          <Screenshot Path="Assets\WidgetPreviewLight.png" DisplayAltText="浅色歌词卡片示意；实际样式由 Windows 决定。" />
+                        </Screenshots>
+                      </LightMode>
+                    </ThemeResources>
+                  </Definition>
+                </Definitions>
+              </WidgetProvider>
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>

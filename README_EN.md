@@ -116,8 +116,9 @@ Foreign IDs stay separate from playable Kuwo/local IDs. Unmatched entries and am
 
 ### 3. Native Desktop Companion
 - **macOS**: Menu bar scrolling lyrics with native Control Center and hardware media key integration.
-- **Windows**: A real taskbar child window, with background Explorer button detection and available-space placement. Narrow gaps show lyrics only; insufficient or unknown space hides the surface. Wider layouts include playback buttons. Use `wocli tray status` for attachment diagnostics; see [implementation and compatibility scope](docs/windows-taskbar-lyrics.md).
-- Run `wocli lyrics-bar on` to enable, `wocli lyrics-bar off` to disable.
+- **Windows**: The stable version uses a Win32/GDI surface in taskbar free space. The `0.4.11-alpha.2` development preview adds an official Adaptive Card lyrics widget, with text, theme and buttons rendered by Windows. Open the Widgets Board with `Win+W` to see lyrics and control playback. This regular widget does not depend on the EEA-only Feed capability; install the matching component separately. It does not replace taskbar weather text. See [setup and compatibility](docs/windows-taskbar-lyrics.md).
+- After installing the Windows card preview, run `wocli widgets on` or `wocli widgets off`, and add **wocli 歌词** in the board. Small cards provide pause/resume; medium and large cards also provide previous/next.
+- Use `wocli lyrics-bar on` / `wocli lyrics-bar off` for the macOS menu bar or the stable version's legacy taskbar lyrics.
 
 ### 4. AI MCP Integration
 Connect to Claude Desktop, Cursor, or OpenCode via local standard stdio, without a listening MCP port. Online music still accesses sources, and AI clients handle data according to their own settings:

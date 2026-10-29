@@ -137,9 +137,12 @@ struct Service {
     rejected_sources: HashSet<String>,
     source_failures: Vec<String>,
     lyric_text: String,
+    lyric_lines: Vec<lyrics::Line>,
     lyric_status: String,
     lyric_error: String,
     lyric_serial: u64,
+    lyric_session: u128,
+    widget_config_path: Option<PathBuf>,
     lyric_cancelled: Arc<AtomicBool>,
     generation: u64,
     direct_override: bool,
@@ -204,9 +207,12 @@ impl Service {
             rejected_sources: HashSet::new(),
             source_failures: vec![],
             lyric_text: String::new(),
+            lyric_lines: vec![],
             lyric_status: "idle".into(),
             lyric_error: String::new(),
             lyric_serial: 0,
+            lyric_session: rand::random(),
+            widget_config_path: crate::widgets::config_path().ok(),
             lyric_cancelled: Arc::new(AtomicBool::new(false)),
             generation: 0,
             direct_override: false,
@@ -307,6 +313,37 @@ impl Service {
             source_failures: self.source_failures.clone(),
             downloads: self.jobs.clone(),
         }
+    }
+    // The system component needs one current line, not the queue, download
+    // history or full LRC on every poll. Keep concealed/stopped metadata out of
+    // this response, even if a provider has a stale display request in flight.
+    fn lyrics_snapshot(&self) -> Value {
+        let visible = self.settings.lyrics_bar
+            && !self.boss
+            && matches!(self.phase.as_str(), "playing" | "paused");
+        let track = self.current().filter(|_| visible);
+        let clip = |text: &str| text.chars().take(240).collect::<String>();
+        let line = if track.is_some() {
+            lyrics::current(
+                &self.lyric_lines,
+                self.player.position(),
+                self.settings.lyric_offset,
+            )
+            .and_then(|index| self.lyric_lines.get(index))
+            .map(|line| clip(line.text.trim()))
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        json!({
+            "enabled": self.settings.lyrics_bar,
+            "boss": self.boss,
+            "state": self.phase,
+            "track_id": track.map(|track| format!("{:032x}:{}:{}", self.lyric_session, self.generation, track.id.chars().take(256).collect::<String>())).unwrap_or_default(),
+            "title": track.map(|track| clip(&track.title)).unwrap_or_default(),
+            "artist": track.map(|track| clip(&track.artist)).unwrap_or_default(),
+            "line": line,
+        })
     }
     fn persist(&self) -> Result<()> {
         self.store.save(
@@ -417,7 +454,8 @@ impl Service {
             self.paths.home.clone(),
         );
         self.lyric_text = self.store.lyric(&track.id)?;
-        if lyrics::parse(&self.lyric_text).is_empty() {
+        self.lyric_lines = lyrics::parse(&self.lyric_text);
+        if self.lyric_lines.is_empty() {
             self.lyric_text.clear();
             self.start_lyrics();
         } else {
@@ -1106,7 +1144,36 @@ impl Service {
         }
     }
     fn dispatch(&mut self, request: Value) -> Result<Value> {
-        let op = request["op"].as_str().unwrap_or_default();
+        let from_widget = request["op"] == "widget_action";
+        let op = if from_widget {
+            let action = request["action"].as_str().unwrap_or_default();
+            if !["prev", "next", "pause", "resume"].contains(&action) {
+                return Err(Error::coded("invalid_widget_action", "不支持的小组件操作"));
+            }
+            // Validate and execute in this same service event. A card can remain
+            // cached by Windows after the track, playback state or privacy mode
+            // changes; its old buttons must not control the new playback.
+            let snapshot = self.lyrics_snapshot();
+            if !self.widget_config_path.as_ref().is_some_and(|path| {
+                crate::widgets::action_allowed_at(path, &self.paths).unwrap_or(false)
+            }) || !self.settings.lyrics_bar
+                || self.boss
+                || !matches!(self.phase.as_str(), "playing" | "paused")
+                || snapshot["track_id"].as_str().unwrap_or_default().is_empty()
+                || request["track_id"] != snapshot["track_id"]
+                || request["state"].as_str() != Some(self.phase.as_str())
+                || (action == "pause" && self.phase != "playing")
+                || (action == "resume" && self.phase != "paused")
+            {
+                return Err(Error::coded(
+                    "stale_widget_action",
+                    "播放或隐私状态已变化，请等待小组件刷新",
+                ));
+            }
+            action
+        } else {
+            request["op"].as_str().unwrap_or_default()
+        };
         if op == "prepare_play" {
             let token = format!("{:032x}", rand::random::<u128>());
             self.play_token = Some(token.clone());
@@ -1152,6 +1219,7 @@ impl Service {
             self.failed_indices.clear();
         }
         match op {
+            "lyrics_snapshot" => return Ok(self.lyrics_snapshot()),
             "status" => {
                 if request["visualizer"].as_bool() == Some(true) {
                     self.player.set_visualizer(true);
@@ -1412,6 +1480,7 @@ impl Service {
                 }
                 if current && self.phase == "stopped" {
                     self.lyric_text.clear();
+                    self.lyric_lines.clear();
                     self.lyric_status = "idle".into();
                     self.lyric_error.clear();
                     self.quality.clear();
@@ -1424,6 +1493,7 @@ impl Service {
                 self.stop();
                 self.queue.clear();
                 self.lyric_text.clear();
+                self.lyric_lines.clear();
                 self.lyric_status = "idle".into();
                 self.lyric_error.clear();
                 self.index = 0;
@@ -1561,7 +1631,11 @@ impl Service {
             }
             _ => return Err(Error::new("未知后台操作")),
         }
-        Ok(serde_json::to_value(self.status())?)
+        if from_widget {
+            Ok(self.lyrics_snapshot())
+        } else {
+            Ok(serde_json::to_value(self.status())?)
+        }
     }
     fn event(&mut self, event: Event) {
         match event {
@@ -1721,6 +1795,7 @@ impl Service {
                             let _ = self.store.save_lyric(&track.id, &text);
                         }
                         self.lyric_text = text;
+                        self.lyric_lines = lyrics::parse(&self.lyric_text);
                         self.lyric_status = "ready".into();
                         self.lyric_error.clear();
                     }
@@ -2013,6 +2088,17 @@ mod playback_tests {
             .unwrap();
             service.player.null = true;
             service.settings.mode = mode.into();
+            let config_path = dir.path().join("widgets.json");
+            fs::write(
+                &config_path,
+                serde_json::to_vec(&json!({
+                    "schema": 1, "mode": "system", "enabled": true,
+                    "endpoint_path": std::path::absolute(service.paths.socket()).unwrap(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            service.widget_config_path = Some(config_path);
             Self { service, rx, dir }
         }
         fn track(&self, name: &str, good: bool) -> Track {
@@ -2098,6 +2184,263 @@ mod playback_tests {
             *lock.lock().unwrap() = true;
             wake.notify_all();
         }
+    }
+
+    #[test]
+    fn widget_buttons_from_a_previous_daemon_session_are_rejected() {
+        let mut first = Harness::new("list");
+        let mut restarted = Harness::new("list");
+        let mut track = first.track("widget-restart", true);
+        track.id = "歌".repeat(256);
+        for harness in [&mut first, &mut restarted] {
+            harness.service.queue = vec![track.clone()];
+            harness.service.phase = "playing".into();
+            // Keep the widest counter representation while leaving room for
+            // Harness::drop to advance the generation when it stops playback.
+            harness.service.generation = u64::MAX - 1;
+        }
+        let old = first.service.lyrics_snapshot();
+        let current = restarted.service.lyrics_snapshot();
+        assert_ne!(old["track_id"], current["track_id"]);
+        assert!(current["track_id"].as_str().unwrap().chars().count() <= 320);
+        let error = restarted.service.dispatch(json!({
+            "op":"widget_action", "action":"pause", "track_id":old["track_id"], "state":"playing",
+        })).unwrap_err();
+        assert_eq!(error.code, "stale_widget_action");
+        assert_eq!(restarted.service.phase, "playing");
+    }
+
+    #[test]
+    fn widget_buttons_apply_once_to_the_displayed_track_and_state() {
+        let mut h = Harness::new("list");
+        let tracks = [
+            h.track("widget-first", true),
+            h.track("widget-second", true),
+        ];
+        h.service
+            .dispatch(json!({"op":"play", "tracks":tracks}))
+            .unwrap();
+        h.pump("playing");
+        let action = |snapshot: &Value, action: &str| {
+            json!({
+                "op":"widget_action", "action":action,
+                "track_id":snapshot["track_id"], "state":snapshot["state"],
+            })
+        };
+        let first = h.service.lyrics_snapshot();
+        let paused = h.service.dispatch(action(&first, "pause")).unwrap();
+        assert_eq!(paused["state"], "paused");
+        assert!(paused.get("queue").is_none());
+        assert!(paused.get("lyrics").is_none());
+        assert_eq!(
+            h.service
+                .dispatch(action(&first, "pause"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+        let resumed = h.service.dispatch(action(&paused, "resume")).unwrap();
+        assert_eq!(resumed["state"], "playing");
+        h.service.dispatch(action(&resumed, "next")).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.index, 1);
+        assert_eq!(
+            h.service
+                .dispatch(action(&resumed, "next"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+        assert_eq!(h.service.index, 1);
+        let second = h.service.lyrics_snapshot();
+        h.service.dispatch(action(&second, "prev")).unwrap();
+        h.pump("playing");
+        assert_eq!(h.service.index, 0);
+        // Returning to the same song does not revalidate an old card.
+        assert_eq!(
+            h.service
+                .dispatch(action(&first, "pause"))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+    }
+
+    #[test]
+    fn widget_buttons_cannot_bypass_privacy_or_execute_arbitrary_operations() {
+        let mut h = Harness::new("list");
+        let track = h.track("widget-private", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let snapshot = h.service.lyrics_snapshot();
+        for action in ["toggle", "shutdown", "play", "boss", "config", ""] {
+            let error = h
+                .service
+                .dispatch(json!({"op":"widget_action", "action":action,
+                "track_id":snapshot["track_id"], "state":snapshot["state"]}))
+                .unwrap_err();
+            assert_eq!(error.code, "invalid_widget_action");
+        }
+        assert!(!h.service.quit.load(Ordering::Relaxed));
+        assert_eq!(h.service.phase, "playing");
+        for change in [
+            json!({"op":"boss", "active":true}),
+            json!({"op":"config", "key":"lyrics_bar", "value":false}),
+            json!({"op":"stop"}),
+        ] {
+            h.service
+                .dispatch(json!({"op":"boss", "active":false}))
+                .unwrap();
+            h.service
+                .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":true}))
+                .unwrap();
+            h.service.dispatch(change).unwrap();
+            let state = h.service.phase.clone();
+            let boss = h.service.boss;
+            let play_token = h.service.dispatch(json!({"op":"prepare_play"})).unwrap();
+            for action in ["prev", "next", "pause", "resume"] {
+                let error = h
+                    .service
+                    .dispatch(json!({"op":"widget_action", "action":action,
+                    "track_id":snapshot["track_id"], "state":snapshot["state"]}))
+                    .unwrap_err();
+                assert_eq!(error.code, "stale_widget_action");
+            }
+            assert_eq!(h.service.phase, state);
+            assert_eq!(h.service.boss, boss);
+            assert_eq!(
+                h.service.play_token.as_deref(),
+                play_token["play_token"].as_str()
+            );
+        }
+        assert_eq!(
+            h.service
+                .dispatch(json!({"op":"widget_action", "action":"next"}))
+                .unwrap_err()
+                .code,
+            "stale_widget_action"
+        );
+    }
+
+    #[test]
+    fn widget_buttons_recheck_configuration_when_the_request_reaches_the_daemon() {
+        let mut h = Harness::new("list");
+        let track = h.track("widget-config-race", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let snapshot = h.service.lyrics_snapshot();
+        let request = json!({"op":"widget_action", "action":"pause",
+            "track_id":snapshot["track_id"], "state":snapshot["state"]});
+        let config_path = h.service.widget_config_path.clone().unwrap();
+        let enabled = fs::read(&config_path).unwrap();
+        // The provider may have validated a button before another process
+        // disables Widgets or selects a different library. Check again here.
+        for changed in [
+            json!({"schema":1, "mode":"system", "enabled":false,
+                "endpoint_path":std::path::absolute(h.service.paths.socket()).unwrap()}),
+            json!({"schema":1, "mode":"system", "enabled":true,
+                "endpoint_path":h.dir.path().join("other-library-endpoint")}),
+            json!({"corrupt":true}),
+        ] {
+            fs::write(&config_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert_eq!(
+                h.service.dispatch(request.clone()).unwrap_err().code,
+                "stale_widget_action"
+            );
+            assert_eq!(h.service.phase, "playing");
+        }
+        fs::remove_file(&config_path).unwrap();
+        assert_eq!(
+            h.service.dispatch(request.clone()).unwrap_err().code,
+            "stale_widget_action"
+        );
+        assert_eq!(h.service.phase, "playing");
+        fs::write(&config_path, enabled).unwrap();
+        assert_eq!(h.service.dispatch(request).unwrap()["state"], "paused");
+    }
+
+    #[test]
+    fn system_lyrics_snapshot_tracks_offsets_and_conceals_inactive_metadata() {
+        let mut h = Harness::new("list");
+        let mut track = h.track("system-widget", true);
+        track.title = "歌".repeat(400);
+        h.service
+            .store
+            .save_lyric(&track.id, "[00:00]第一句\n[00:10]第二句")
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track.clone()]}))
+            .unwrap();
+        h.pump("playing");
+        let first = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(first["line"], "第一句");
+        assert_eq!(first["title"].as_str().unwrap().chars().count(), 240);
+        assert!(first.get("queue").is_none());
+        assert!(first.get("lyrics").is_none());
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyric_offset", "value":10000}))
+            .unwrap();
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        let paused = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(paused["line"], "第二句");
+        assert_eq!(paused["state"], "paused");
+        h.service
+            .dispatch(json!({"op":"boss", "active":true}))
+            .unwrap();
+        let concealed = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(concealed["boss"], true);
+        for field in ["track_id", "title", "artist", "line"] {
+            assert_eq!(concealed[field], "");
+        }
+        h.service
+            .dispatch(json!({"op":"boss", "active":false}))
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":false}))
+            .unwrap();
+        assert_eq!(h.service.lyrics_snapshot()["line"], "");
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":true}))
+            .unwrap();
+        h.service.dispatch(json!({"op":"stop"})).unwrap();
+        assert_eq!(h.service.lyrics_snapshot()["title"], "");
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        assert_ne!(h.service.lyrics_snapshot()["track_id"], first["track_id"]);
+    }
+
+    #[test]
+    fn system_lyrics_cache_accepts_current_results_and_rejects_old_tracks() {
+        let mut h = Harness::new("list");
+        let track = h.track("system-widget-cache", true);
+        h.service
+            .store
+            .save_lyric(&track.id, "[00:00]cached")
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let generation = h.service.generation;
+        let serial = h.service.lyric_serial;
+        h.service
+            .event(Event::Lyrics(generation, serial, Ok("[00:00]fresh".into())));
+        assert_eq!(h.service.lyrics_snapshot()["line"], "fresh");
+        h.service.event(Event::Lyrics(
+            generation.wrapping_sub(1),
+            serial,
+            Ok("[00:00]stale".into()),
+        ));
+        assert_eq!(h.service.lyrics_snapshot()["line"], "fresh");
+        h.service.dispatch(json!({"op":"queue_clear"})).unwrap();
+        assert!(h.service.lyric_lines.is_empty());
+        assert_eq!(h.service.lyrics_snapshot()["line"], "");
     }
 
     #[test]

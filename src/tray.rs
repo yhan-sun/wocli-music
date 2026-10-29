@@ -146,6 +146,11 @@ fn record_hotkeys(paths: &Paths, keys: Vec<serde_json::Value>) {
 }
 
 pub fn lyrics_surface(paths: &Paths) -> serde_json::Value {
+    if crate::widgets::system_selected(paths) {
+        return crate::widgets::status(paths).unwrap_or_else(|error| {
+            serde_json::json!({"mode":"system-widget-card","surface":"widgets-board","enabled":false,"note":error.to_string()})
+        });
+    }
     let pid = fs::read_to_string(pid_path(paths)).unwrap_or_default();
     if status(paths).unwrap_or(false) {
         if let Ok(bytes) = fs::read(paths.runtime.join("taskbar.json")) {
@@ -1947,6 +1952,7 @@ mod windows {
 
         let visible = !state.boss
             && state.lyrics_bar_enabled
+            && !crate::widgets::system_selected(&state.paths)
             && matches!(state.phase.as_str(), "playing" | "paused");
         PAINT_STATE.with(|snapshot| {
             *snapshot.borrow_mut() = (state.current_text.clone(), state.phase.clone());
