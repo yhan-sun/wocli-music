@@ -120,7 +120,9 @@ impl App {
                 playlists::write(
                     &list,
                     &dialog.name,
-                    &crate::cli::expand_path(dialog.path.trim()),
+                    &crate::cli::expand_path(
+                        dialog.path.trim().trim_matches('"').trim_matches('\''),
+                    ),
                     false,
                 )
             });
@@ -174,6 +176,7 @@ impl App {
         let cancel = Arc::new(AtomicBool::new(false));
         self.transfer_cancel = Some(cancel.clone());
         let paths = self.paths.clone();
+        let direct = paths.settings()?.direct;
         let events = self.events.clone();
         let offline = dialog.offline;
         let retry = dialog.existing;
@@ -185,7 +188,7 @@ impl App {
                 &paths,
                 playlists::ResolveOptions {
                     offline,
-                    direct: false,
+                    direct,
                     retry,
                 },
                 &cancel,

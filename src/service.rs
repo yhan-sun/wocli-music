@@ -94,7 +94,7 @@ enum Event {
     StreamReady(u64, Result<(String, String, crate::stream::StreamHandle)>),
     StreamFinished(u64, Result<u64>),
     Loaded(u64, Result<PreparedAudio>),
-    Reattached(u64, bool, Result<PreparedAudio>),
+    Reattached(u64, u64, bool, Result<PreparedAudio>),
     SeekReady(u64, u64, Result<PreparedAudio>),
     Lyrics(u64, u64, Result<String>),
     Buffer(u64, u64, u64),
@@ -117,6 +117,7 @@ struct Service {
     queue: Vec<Track>,
     index: usize,
     phase: String,
+    pause_after_load: bool,
     quality: String,
     requested_quality: String,
     error: Option<Error>,
@@ -138,6 +139,8 @@ struct Service {
     cache: Option<PathBuf>,
     audio_input: Option<AudioInput>,
     prepare_cancelled: Arc<AtomicBool>,
+    reattach_serial: u64,
+    reattach_pending: bool,
     seek_cancelled: Arc<AtomicBool>,
     seek_serial: u64,
     pending_seek: Option<(Instant, Sender<Result<Value>>)>,
@@ -180,6 +183,7 @@ impl Service {
             queue: saved.tracks,
             index,
             phase: "stopped".into(),
+            pause_after_load: false,
             quality: String::new(),
             error: None,
             received: 0,
@@ -200,6 +204,8 @@ impl Service {
             cache: None,
             audio_input: None,
             prepare_cancelled: Arc::new(AtomicBool::new(false)),
+            reattach_serial: 0,
+            reattach_pending: false,
             seek_cancelled: Arc::new(AtomicBool::new(false)),
             seek_serial: 0,
             pending_seek: None,
@@ -301,6 +307,7 @@ impl Service {
     fn stop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
         self.prepare_cancelled.store(true, Ordering::Relaxed);
+        self.cancel_reattach();
         self.cancel_seek("播放已变化，已取消跳转");
         if let Some(coord) = self
             .audio_input
@@ -314,7 +321,17 @@ impl Service {
         self.generation += 1;
         self.player.stop();
         self.phase = "stopped".into();
+        self.pause_after_load = false;
         self.error = None;
+        if self.lyric_status == "loading" {
+            self.lyric_status = if self.lyric_text.is_empty() {
+                "idle"
+            } else {
+                "ready"
+            }
+            .into();
+            self.lyric_error.clear();
+        }
         if let Some(path) = self.cache.take() {
             let _ = fs::remove_file(path);
         }
@@ -336,14 +353,18 @@ impl Service {
         });
     }
     fn begin(&mut self, index: usize, quality: String) -> Result<()> {
+        self.begin_paused(index, quality, false)
+    }
+    fn begin_paused(&mut self, index: usize, quality: String, paused: bool) -> Result<()> {
         self.source_failures.clear();
-        self.begin_attempt(index, quality, HashSet::new())
+        self.begin_attempt(index, quality, HashSet::new(), paused)
     }
     fn begin_attempt(
         &mut self,
         index: usize,
         quality: String,
         rejected: HashSet<String>,
+        paused: bool,
     ) -> Result<()> {
         if index >= self.queue.len() {
             return Err(Error::new("队列序号无效"));
@@ -358,6 +379,7 @@ impl Service {
         self.index = index;
         self.requested_quality = quality.clone();
         self.phase = "loading".into();
+        self.pause_after_load = paused;
         self.quality.clear();
         self.received = 0;
         self.total = 0;
@@ -509,6 +531,7 @@ impl Service {
             if !favs.is_empty() {
                 self.queue = favs;
                 self.index = 0;
+                self.shuffle.reset(self.queue.len(), self.index);
                 return self.begin(0, self.settings.quality.clone());
             }
             return Ok(());
@@ -518,9 +541,13 @@ impl Service {
         }
         let index = if self.settings.mode == "shuffle" {
             if previous {
-                self.shuffle
-                    .previous()
-                    .unwrap_or_else(|| (self.index + self.queue.len() - 1) % self.queue.len())
+                if let Some(index) = self.shuffle.previous() {
+                    index
+                } else {
+                    let index = (self.index + self.queue.len() - 1) % self.queue.len();
+                    self.shuffle.reset(self.queue.len(), index);
+                    index
+                }
             } else {
                 self.shuffle.next(self.queue.len(), self.index)
             }
@@ -560,17 +587,28 @@ impl Service {
             .current()
             .cloned()
             .ok_or_else(|| Error::new("当前没有可播放的音频"))?;
-        self.prepare_cancelled.store(true, Ordering::Relaxed);
+        self.cancel_reattach();
+        self.cancel_seek("音频设备已变化，已取消跳转");
         self.prepare_cancelled = Arc::new(AtomicBool::new(false));
         let cancelled = self.prepare_cancelled.clone();
+        self.reattach_serial += 1;
+        self.reattach_pending = true;
+        let serial = self.reattach_serial;
         let generation = self.generation;
         let null = self.player.null;
         let tx = self.tx.clone();
         self.pool.execute(move || {
             let result = input.prepare(&track, position, cancelled, null);
-            let _ = tx.send(Event::Reattached(generation, target_paused, result));
+            let _ = tx.send(Event::Reattached(generation, serial, target_paused, result));
         });
         Ok(())
+    }
+    fn cancel_reattach(&mut self) {
+        if self.reattach_pending {
+            self.prepare_cancelled.store(true, Ordering::Relaxed);
+            self.reattach_serial += 1;
+            self.reattach_pending = false;
+        }
     }
     fn cancel_seek(&mut self, message: &str) {
         if let Some((_, reply)) = self.pending_seek.take() {
@@ -605,6 +643,7 @@ impl Service {
                 .clone()
                 .ok_or_else(|| Error::new("当前没有可跳转的音频"))?;
             let track = self.current().unwrap().clone();
+            self.cancel_reattach();
             self.cancel_seek("已取消上一次跳转");
             self.seek_cancelled = Arc::new(AtomicBool::new(false));
             let cancelled = self.seek_cancelled.clone();
@@ -625,6 +664,7 @@ impl Service {
         }
     }
     fn playback_failed(&mut self, mut error: Error) {
+        let paused = self.phase == "paused" || self.pause_after_load;
         if error.code != "audio_device"
             && error.code != "cancelled"
             && self.current().is_some_and(|t| t.path.is_empty())
@@ -635,7 +675,7 @@ impl Service {
                 .push(format!("{}: {}", self.current_source, error));
             let excluded = self.rejected_sources.clone();
             if self
-                .begin_attempt(self.index, self.requested_quality.clone(), excluded)
+                .begin_attempt(self.index, self.requested_quality.clone(), excluded, paused)
                 .is_ok()
             {
                 return;
@@ -664,7 +704,7 @@ impl Service {
                 .find(|i| !self.failed_indices.contains(i))
         };
         if let Some(index) = next {
-            match self.begin(index, self.settings.quality.clone()) {
+            match self.begin_paused(index, self.settings.quality.clone(), paused) {
                 Ok(()) => return,
                 Err(next_error) => error = next_error,
             }
@@ -1018,34 +1058,45 @@ impl Service {
                 }
             }
             "play" => {
+                // Validate the entire replacement before changing the current
+                // queue: the old audio and its metadata must stay together.
+                let tracks: Option<Vec<Track>> = request
+                    .get("tracks")
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()?;
+                let index = match request.get("index") {
+                    Some(value) => value
+                        .as_u64()
+                        .and_then(|v| usize::try_from(v).ok())
+                        .ok_or_else(|| Error::new("队列序号无效"))?,
+                    None => {
+                        if tracks.is_some() {
+                            0
+                        } else {
+                            self.index
+                        }
+                    }
+                };
+                if index >= tracks.as_ref().unwrap_or(&self.queue).len() {
+                    return Err(Error::new("队列序号无效"));
+                }
+                let quality = match request.get("quality").filter(|value| !value.is_null()) {
+                    Some(value) => value.as_str().ok_or_else(|| Error::new("音质无效"))?,
+                    None => &self.settings.quality,
+                }
+                .to_string();
+                if !QUALITIES.contains(&quality.as_str()) {
+                    return Err(Error::new("音质无效"));
+                }
+                if let Some(tracks) = tracks {
+                    self.store.remember(&tracks)?;
+                    self.queue = tracks;
+                }
                 self.boss = false;
                 self.boss_previous_phase = None;
                 self.direct_override = request["direct"].as_bool().unwrap_or(false);
-                if let Some(values) = request["tracks"].as_array().filter(|v| !v.is_empty()) {
-                    let tracks: Vec<Track> = values
-                        .iter()
-                        .map(|v| serde_json::from_value(v.clone()).map_err(Into::into))
-                        .collect::<Result<_>>()?;
-                    self.store.remember(&tracks)?;
-                    self.queue = tracks;
-                    self.index = 0;
-                    self.shuffle.reset(self.queue.len(), 0);
-                }
-                let index = request["index"]
-                    .as_u64()
-                    .map(|v| v as usize)
-                    .unwrap_or(self.index);
-                if index >= self.queue.len() {
-                    return Err(Error::new("队列序号无效"));
-                }
                 self.shuffle.reset(self.queue.len(), index);
-                self.begin(
-                    index,
-                    request["quality"]
-                        .as_str()
-                        .unwrap_or(&self.settings.quality)
-                        .to_string(),
-                )?;
+                self.begin(index, quality)?;
             }
             "retry" => {
                 if self.phase != "loading" {
@@ -1075,11 +1126,16 @@ impl Service {
                     }
                     return Ok(serde_json::to_value(self.status())?);
                 }
-                if self.phase == "loading" && (op == "toggle" || op == "pause") {
+                if self.phase == "loading" && op == "resume" {
+                    // Resume may arrive while a paused track is being retried
+                    // or replaced. Apply it to the pending load as well.
+                    self.pause_after_load = false;
+                } else if self.phase == "loading" && (op == "toggle" || op == "pause") {
                     self.stop();
                 } else if ["playing", "paused"].contains(&self.phase.as_str()) {
                     let paused = op == "pause" || (op == "toggle" && self.phase == "playing");
                     if paused {
+                        self.cancel_reattach();
                         self.player.pause(true);
                         self.phase = "paused".into();
                     } else {
@@ -1109,6 +1165,7 @@ impl Service {
                         if !favs.is_empty() {
                             self.queue = favs;
                             self.index = 0;
+                            self.shuffle.reset(self.queue.len(), self.index);
                             self.begin(0, self.settings.quality.clone())?;
                         } else {
                             return Err(Error::new("当前没有可暂停或继续的音频"));
@@ -1235,6 +1292,8 @@ impl Service {
                     return Err(Error::new("队列已变化，请重新选择歌曲"));
                 }
                 let current = index == self.index;
+                let active = ["playing", "paused", "loading"].contains(&self.phase.as_str());
+                let paused = self.phase == "paused" || self.pause_after_load;
                 self.queue.remove(index);
                 if index < self.index {
                     self.index -= 1;
@@ -1243,10 +1302,18 @@ impl Service {
                     self.index = 0;
                     self.stop();
                 } else if current {
-                    self.begin(
-                        self.index.min(self.queue.len() - 1),
-                        self.settings.quality.clone(),
-                    )?;
+                    self.index = self.index.min(self.queue.len() - 1);
+                    if active {
+                        self.begin_paused(self.index, self.settings.quality.clone(), paused)?;
+                    } else {
+                        self.stop();
+                    }
+                }
+                if current && self.phase == "stopped" {
+                    self.lyric_text.clear();
+                    self.lyric_status = "idle".into();
+                    self.lyric_error.clear();
+                    self.quality.clear();
                 }
                 self.shuffle.reset(self.queue.len(), self.index);
                 self.persist()?;
@@ -1255,6 +1322,9 @@ impl Service {
                 self.boss_previous_phase = None;
                 self.stop();
                 self.queue.clear();
+                self.lyric_text.clear();
+                self.lyric_status = "idle".into();
+                self.lyric_error.clear();
                 self.index = 0;
                 self.shuffle.reset(0, 0);
                 self.persist()?;
@@ -1302,12 +1372,22 @@ impl Service {
                 }
                 self.boss = target;
                 if self.boss {
+                    self.cancel_reattach();
                     if self.phase == "playing" {
                         self.boss_previous_phase = Some("playing".into());
                         self.player.pause(true);
                         self.phase = "paused".into();
                     } else if self.phase == "loading" {
-                        self.boss_previous_phase = Some("loading".into());
+                        // A background retry can be preparing audio that must
+                        // stay paused. Preserve that intent across stop().
+                        self.boss_previous_phase = Some(
+                            if self.pause_after_load {
+                                "paused_loading"
+                            } else {
+                                "loading"
+                            }
+                            .into(),
+                        );
                         self.stop();
                     } else {
                         self.boss_previous_phase = Some(self.phase.clone());
@@ -1355,6 +1435,11 @@ impl Service {
                         } else if self.phase == "stopped" && !self.queue.is_empty() {
                             self.begin(self.index, self.requested_quality.clone())?;
                         }
+                    } else if prev == "paused_loading"
+                        && self.phase == "stopped"
+                        && !self.queue.is_empty()
+                    {
+                        self.begin_paused(self.index, self.requested_quality.clone(), true)?;
                     }
                 }
             }
@@ -1404,9 +1489,13 @@ impl Service {
                 if let Err(error) = result {
                     if error.code == "network" && self.stream_retries == 0 {
                         let quality = self.requested_quality.clone();
-                        if let Err(error) =
-                            self.begin_attempt(self.index, quality, self.rejected_sources.clone())
-                        {
+                        let paused = self.phase == "paused" || self.pause_after_load;
+                        if let Err(error) = self.begin_attempt(
+                            self.index,
+                            quality,
+                            self.rejected_sources.clone(),
+                            paused,
+                        ) {
                             self.playback_failed(error);
                         } else {
                             self.stream_retries = 1;
@@ -1449,23 +1538,31 @@ impl Service {
                 if generation != self.generation {
                     return;
                 }
-                let result = result
-                    .and_then(|audio| self.player.load(audio, self.settings.volume, self.boss));
+                let paused = self.boss || self.pause_after_load;
+                let result =
+                    result.and_then(|audio| self.player.load(audio, self.settings.volume, paused));
+                self.prepare_cancelled = Arc::new(AtomicBool::new(false));
                 match result {
                     Ok(()) => {
                         if let Some(track) = self.current() {
                             let _ = self.store.played(track);
                         }
-                        self.phase = if self.boss { "paused" } else { "playing" }.into();
+                        self.phase = if paused { "paused" } else { "playing" }.into();
+                        self.pause_after_load = false;
                         self.error = None;
                     }
                     Err(error) => self.playback_failed(error),
                 }
             }
-            Event::Reattached(generation, target_paused, result) => {
-                if generation != self.generation {
+            Event::Reattached(generation, serial, target_paused, result) => {
+                if generation != self.generation
+                    || serial != self.reattach_serial
+                    || !self.reattach_pending
+                {
                     return;
                 }
+                self.reattach_pending = false;
+                self.prepare_cancelled = Arc::new(AtomicBool::new(false));
                 let paused = target_paused || self.boss;
                 let result =
                     result.and_then(|audio| self.player.load(audio, self.settings.volume, paused));
@@ -1489,8 +1586,15 @@ impl Service {
                 self.seek_cancelled = Arc::new(AtomicBool::new(false));
                 let result = result
                     .and_then(|audio| {
-                        self.player
-                            .load(audio, self.settings.volume, self.phase == "paused")
+                        if let Err(error) = self.player.load(
+                            audio,
+                            self.settings.volume,
+                            self.phase == "paused" || self.boss,
+                        ) {
+                            self.playback_failed(error.clone());
+                            return Err(error);
+                        }
+                        Ok(())
                     })
                     .and_then(|()| Ok(serde_json::to_value(self.status())?));
                 let _ = reply.send(result);
@@ -1823,6 +1927,18 @@ mod playback_tests {
                 self.service.tick();
             }
         }
+        fn reattach_event(&mut self) -> Event {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            loop {
+                assert!(Instant::now() < deadline, "audio reattach timed out");
+                if let Ok(event) = self.rx.recv_timeout(Duration::from_millis(20)) {
+                    if matches!(event, Event::Reattached(..)) {
+                        return event;
+                    }
+                    self.service.event(event);
+                }
+            }
+        }
     }
     impl Drop for Harness {
         fn drop(&mut self) {
@@ -2147,6 +2263,234 @@ mod playback_tests {
         h.service.shuffle.reset(2, 0);
         h.service.dispatch(json!({"op":"prev"})).unwrap();
         assert_eq!(h.service.phase, "loading");
+        assert_eq!(h.service.index, 1);
+        h.service.dispatch(json!({"op":"next"})).unwrap();
+        assert_eq!(h.service.index, 0);
+    }
+    #[test]
+    fn invalid_play_requests_preserve_the_current_queue_audio_and_boss_state() {
+        let mut h = Harness::new("list");
+        let first = h.track("first", true);
+        let second = h.track("second", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[first, second], "index":1}))
+            .unwrap();
+        h.pump("playing");
+        h.service
+            .dispatch(json!({"op":"boss", "active":true}))
+            .unwrap();
+        let before = serde_json::to_value(h.service.status()).unwrap();
+        let generation = h.service.generation;
+        let replacement = h.track("replacement", true);
+        for request in [
+            json!({"op":"play", "tracks":[replacement], "index":5}),
+            json!({"op":"play", "tracks":[replacement], "quality":"invalid"}),
+            json!({"op":"play", "tracks":[replacement], "quality":100}),
+            json!({"op":"play", "tracks":[]}),
+            json!({"op":"play", "tracks":{}}),
+            json!({"op":"play", "index":-1}),
+            json!({"op":"play", "index":"1"}),
+        ] {
+            assert!(h.service.dispatch(request).is_err());
+            assert_eq!(serde_json::to_value(h.service.status()).unwrap(), before);
+            assert_eq!(h.service.generation, generation);
+        }
+    }
+    #[test]
+    fn play_accepts_missing_or_null_quality_from_cli_and_uses_the_configured_default() {
+        for quality in [None, Some(Value::Null)] {
+            let mut h = Harness::new("list");
+            h.service.settings.quality = "320k".into();
+            let track = h.track("song", true);
+            let mut request = json!({"op":"play", "tracks":[track]});
+            if let Some(quality) = quality {
+                request["quality"] = quality;
+            }
+            h.service.dispatch(request).unwrap();
+            assert_eq!(h.service.requested_quality, "320k");
+            h.pump("playing");
+        }
+    }
+    #[test]
+    fn removing_the_current_track_preserves_paused_or_stopped_playback() {
+        for op in ["pause", "stop"] {
+            let mut h = Harness::new("list");
+            let first = h.track("first", true);
+            let second = h.track("second", true);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[first, second.clone()]}))
+                .unwrap();
+            h.pump("playing");
+            h.service.dispatch(json!({"op":op})).unwrap();
+            h.service
+                .dispatch(json!({"op":"queue_remove", "index":0}))
+                .unwrap();
+            if op == "pause" {
+                assert!(h.service.pause_after_load);
+                h.pump("paused");
+            } else {
+                assert_eq!(h.service.phase, "stopped");
+                assert!(h.service.lyric_text.is_empty());
+                assert_eq!(h.service.lyric_status, "idle");
+            }
+            assert_eq!(h.service.current(), Some(&second));
+            h.service.dispatch(json!({"op":"queue_clear"})).unwrap();
+            assert_eq!(h.service.phase, "stopped");
+            assert!(h.service.lyric_text.is_empty());
+            assert_eq!(h.service.lyric_status, "idle");
+        }
+    }
+    #[test]
+    fn background_stream_retry_and_failure_skip_do_not_resume_paused_audio() {
+        let mut h = Harness::new("repeat");
+        let first = h.track("first", true);
+        let second = h.track("second", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[first, second]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        for expected_index in [0, 1] {
+            h.service.event(Event::StreamFinished(
+                h.service.generation,
+                Err(Error::coded("network", "connection closed")),
+            ));
+            assert!(h.service.pause_after_load);
+            h.pump("paused");
+            assert_eq!(h.service.index, expected_index);
+        }
+    }
+    #[test]
+    fn boss_roundtrip_during_a_paused_reload_preserves_pause_intent() {
+        for replace_current in [false, true] {
+            let mut h = Harness::new("repeat");
+            let first = h.track("first", true);
+            let second = h.track("second", true);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[first, second]}))
+                .unwrap();
+            h.pump("playing");
+            h.service.dispatch(json!({"op":"pause"})).unwrap();
+            if replace_current {
+                h.service
+                    .dispatch(json!({"op":"queue_remove", "index":0}))
+                    .unwrap();
+            } else {
+                h.service.event(Event::StreamFinished(
+                    h.service.generation,
+                    Err(Error::coded("network", "connection closed")),
+                ));
+            }
+            assert_eq!(h.service.phase, "loading");
+            assert!(h.service.pause_after_load);
+            h.service
+                .dispatch(json!({"op":"boss", "active":true}))
+                .unwrap();
+            assert_eq!(h.service.phase, "stopped");
+            h.service
+                .dispatch(json!({"op":"boss", "active":false}))
+                .unwrap();
+            assert!(h.service.pause_after_load);
+            h.pump("paused");
+            assert_eq!(h.service.phase, "paused");
+        }
+    }
+    #[test]
+    fn explicit_resume_during_a_paused_reload_starts_when_ready() {
+        let mut h = Harness::new("list");
+        let first = h.track("first", true);
+        let second = h.track("second", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[first, second]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        h.service
+            .dispatch(json!({"op":"queue_remove", "index":0}))
+            .unwrap();
+        assert_eq!(h.service.phase, "loading");
+        assert!(h.service.pause_after_load);
+        let generation = h.service.generation;
+        for _ in 0..2 {
+            h.service.dispatch(json!({"op":"resume"})).unwrap();
+            assert!(!h.service.pause_after_load);
+            assert_eq!(h.service.generation, generation);
+        }
+        h.pump("playing");
+    }
+    #[test]
+    fn stopping_a_pending_lyric_request_allows_retry_and_ignores_the_old_result() {
+        let mut h = Harness::new("list");
+        h.service.queue = vec![h.track("song", true)];
+        h.service.lyric_status = "loading".into();
+        let generation = h.service.generation;
+        let serial = h.service.lyric_serial;
+        h.service.dispatch(json!({"op":"stop"})).unwrap();
+        assert_eq!(h.service.lyric_status, "idle");
+        h.service
+            .event(Event::Lyrics(generation, serial, Ok("[00:00]stale".into())));
+        assert!(h.service.lyric_text.is_empty());
+        h.service.dispatch(json!({"op":"lyrics_retry"})).unwrap();
+        assert_eq!(h.service.lyric_status, "loading");
+        assert!(h.service.lyric_serial > serial);
+    }
+    #[test]
+    fn late_device_reattachment_respects_pause_and_boss_mode() {
+        for request in [json!({"op":"pause"}), json!({"op":"boss", "active":true})] {
+            let mut h = Harness::new("list");
+            let track = h.track("song", true);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[track]}))
+                .unwrap();
+            h.pump("playing");
+            h.service.dispatch(json!({"op":"pause"})).unwrap();
+            h.service.reattach_player(false).unwrap();
+            let completed = h.reattach_event();
+            h.service.dispatch(request).unwrap();
+            h.service.event(completed);
+            assert_eq!(h.service.phase, "paused");
+            assert!(!h.service.reattach_pending);
+        }
+    }
+    #[test]
+    fn stale_reattach_results_cannot_override_a_newer_seek_or_reattach() {
+        let mut h = Harness::new("list");
+        let track = h.track("song", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        h.service.reattach_player(false).unwrap();
+        let stale = h.reattach_event();
+        h.service.reattach_player(true).unwrap();
+        h.service.event(stale);
+        assert_eq!(h.service.phase, "paused");
+        assert!(h.service.reattach_pending);
+        let ready = h.reattach_event();
+        h.service.event(ready);
+        assert!(!h.service.reattach_pending);
+
+        h.service.reattach_player(false).unwrap();
+        let stale = h.reattach_event();
+        let (reply, rx) = mpsc::channel();
+        h.service
+            .seek_request(json!({"op":"seek_to", "position":12}), reply);
+        h.service.event(stale);
+        assert_eq!(h.service.phase, "paused");
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if let Ok(result) = rx.try_recv() {
+                let status = result.unwrap();
+                assert_eq!(status["phase"], "paused");
+                assert_eq!(status["position"], 12.);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            if let Ok(event) = h.rx.recv_timeout(Duration::from_millis(20)) {
+                h.service.event(event);
+            }
+        }
     }
     #[test]
     fn boss_mode_pauses_and_restores_playback() {

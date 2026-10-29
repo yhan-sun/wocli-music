@@ -14,16 +14,16 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND, POINT, RECT},
-    Graphics::Gdi::ScreenToClient,
+    Graphics::Gdi::MapWindowPoints,
     UI::{
         HiDpi::{GetDpiForWindow, GetWindowDpiAwarenessContext, SetThreadDpiAwarenessContext},
         WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, FindWindowExW, FindWindowW, GetParent,
             GetWindowLongPtrW, GetWindowRect, IsWindow, IsWindowVisible,
             SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            GWL_EXSTYLE, GWL_STYLE, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
-            SW_SHOWNOACTIVATE, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_POPUP,
+            GWL_EXSTYLE, GWL_STYLE, LWA_COLORKEY, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WS_CHILD, WS_EX_LAYERED,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
         },
     },
 };
@@ -47,22 +47,31 @@ unsafe fn child(parent: HWND, class: &str) -> HWND {
     FindWindowExW(parent, 0, wide(class).as_ptr(), null())
 }
 unsafe fn client_rect(parent: HWND, screen: Rect) -> Option<Rect> {
-    let mut point = POINT {
-        x: screen.left,
-        y: screen.top,
-    };
-    if ScreenToClient(parent, &mut point) == 0 {
+    if parent == 0 || IsWindow(parent) == 0 {
         return None;
     }
-    Some(Rect {
-        left: point.x,
-        top: point.y,
-        right: point.x + screen.width(),
-        bottom: point.y + screen.height(),
-    })
+    let mut bounds = RECT {
+        left: screen.left,
+        top: screen.top,
+        right: screen.right,
+        bottom: screen.bottom,
+    };
+    // Passing one RECT (two POINTs) also handles a mirrored Explorer parent. Mapping only
+    // the top-left corner and adding the width produces the wrong slot in RTL layouts.
+    SetLastError(0);
+    if MapWindowPoints(0, parent, &mut bounds as *mut RECT as *mut POINT, 2) == 0
+        && GetLastError() != 0
+    {
+        return None;
+    }
+    Some(rect(bounds))
 }
 unsafe fn move_window(hwnd: HWND, bounds: Rect) -> bool {
-    if window_rect(hwnd).and_then(|r| client_rect(GetParent(hwnd), r)) == Some(bounds) {
+    let parent = GetParent(hwnd);
+    if parent == 0 || bounds.width() <= 0 || bounds.height() <= 0 {
+        return false;
+    }
+    if window_rect(hwnd).and_then(|r| client_rect(parent, r)) == Some(bounds) {
         return true;
     }
     SetWindowPos(
@@ -74,6 +83,10 @@ unsafe fn move_window(hwnd: HWND, bounds: Rect) -> bool {
         bounds.height(),
         SWP_NOACTIVATE | SWP_NOZORDER,
     ) != 0
+        // Explorer can constrain a requested size in WM_WINDOWPOSCHANGING. Only claim
+        // the reserved area when its final rectangle actually leaves that area free.
+        && GetParent(hwnd) == parent
+        && window_rect(hwnd).and_then(|r| client_rect(parent, r)) == Some(bounds)
 }
 struct DpiGuard(isize);
 impl DpiGuard {
@@ -107,6 +120,34 @@ struct Reservation {
     applied: Rect,
 }
 impl Reservation {
+    unsafe fn apply(hwnd: HWND, parent: HWND, original: Rect, applied: Rect) -> Option<Self> {
+        if IsWindow(hwnd) == 0 || GetParent(hwnd) != parent {
+            return None;
+        }
+        if move_window(hwnd, applied) {
+            return Some(Self {
+                hwnd,
+                parent,
+                original,
+                applied,
+            });
+        }
+        // A constrained SetWindowPos can change the band without granting all
+        // the requested space. Roll back that partial change before hiding the
+        // lyrics, using the same equality guard as normal reservation cleanup.
+        if GetParent(hwnd) == parent {
+            if let Some(actual) = window_rect(hwnd).and_then(|r| client_rect(parent, r)) {
+                Self {
+                    hwnd,
+                    parent,
+                    original,
+                    applied: actual,
+                }
+                .restore();
+            }
+        }
+        None
+    }
     unsafe fn restore(&self) {
         let _dpi = DpiGuard::for_window(self.parent);
         if IsWindow(self.hwnd) != 0 && GetParent(self.hwnd) == self.parent {
@@ -372,8 +413,9 @@ impl TaskbarLyrics {
     }
     fn report(&mut self, visible: bool, note: &str) {
         let report=serde_json::json!({"pid":std::process::id(),"mode":"taskbar-child","attached":unsafe { self.hwnd!=0 && IsWindow(self.hwnd)!=0 && GetParent(self.hwnd)==self.parent },"visible":visible,"note":note}).to_string();
-        if report != self.last_report {
-            let _ = std::fs::write(self.paths.runtime.join("taskbar.json"), &report);
+        if report != self.last_report
+            && std::fs::write(self.paths.runtime.join("taskbar.json"), &report).is_ok()
+        {
             self.last_report = report;
         }
     }
@@ -392,6 +434,7 @@ impl TaskbarLyrics {
             return true;
         }
         self.reset();
+        let _dpi = DpiGuard::for_window(parent);
         // Create hidden; WS_VISIBLE and WS_EX_TOPMOST are intentionally never used.
         // WS_EX_TOOLWINDOW is omitted because Explorer child windows should not be tool windows.
         let hwnd = CreateWindowExW(
@@ -445,6 +488,21 @@ impl TaskbarLyrics {
                 false,
                 &format!("无法嵌入任务栏（错误 {error}），未启用桌面悬浮回退"),
             );
+            return false;
+        }
+        if SetWindowPos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
+        ) == 0
+        {
+            let error = GetLastError();
+            DestroyWindow(hwnd);
+            self.report(false, &format!("应用任务栏子窗口样式失败：{error}"));
             return false;
         }
         self.hwnd = hwnd;
@@ -501,17 +559,8 @@ impl TaskbarLyrics {
                 }
             };
             if let Some((slot, band)) = original.and_then(|r| classic_slot(r, dpi)) {
-                if move_window(tasklist, band) {
-                    self.reservation = Some(Reservation {
-                        hwnd: tasklist,
-                        parent,
-                        original: original.unwrap(),
-                        applied: band,
-                    });
-                    Some(slot)
-                } else {
-                    None
-                }
+                self.reservation = Reservation::apply(tasklist, parent, original.unwrap(), band);
+                self.reservation.as_ref().map(|_| slot)
             } else {
                 None
             }
@@ -587,8 +636,8 @@ mod tests {
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            DefWindowProcW, RegisterClassW, UnregisterClassW, GWL_EXSTYLE, WNDCLASSW,
-            WS_EX_TOPMOST, WS_VISIBLE,
+            DefWindowProcW, RegisterClassW, UnregisterClassW, GWL_EXSTYLE, WINDOWPOS,
+            WM_WINDOWPOSCHANGING, WNDCLASSW, WNDPROC, WS_EX_LAYOUTRTL, WS_EX_TOPMOST, WS_VISIBLE,
         },
     };
     struct Host {
@@ -597,6 +646,9 @@ mod tests {
     }
     impl Host {
         unsafe fn new() -> Self {
+            Self::with_style_and_proc(0, Some(DefWindowProcW))
+        }
+        unsafe fn with_style_and_proc(ex_style: u32, proc: WNDPROC) -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(1);
             let class = wide(&format!(
                 "wocli-test-host-{}-{}",
@@ -606,7 +658,7 @@ mod tests {
             let mut wc: WNDCLASSW = std::mem::zeroed();
             wc.hInstance = GetModuleHandleW(null());
             wc.lpszClassName = class.as_ptr();
-            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.lpfnWndProc = proc;
             assert_ne!(
                 RegisterClassW(&wc),
                 0,
@@ -614,7 +666,7 @@ mod tests {
                 GetLastError()
             );
             let hwnd = CreateWindowExW(
-                0,
+                ex_style,
                 class.as_ptr(),
                 class.as_ptr(),
                 WS_POPUP,
@@ -645,6 +697,110 @@ mod tests {
         Paths {
             home: root.path().into(),
             runtime: root.path().into(),
+        }
+    }
+    #[test]
+    fn failed_diagnostic_write_is_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let mut paths = paths(&root);
+        paths.runtime = root.path().join("temporarily-unavailable");
+        let mut surface = TaskbarLyrics::new(&paths, wide("unused-test-class"));
+        surface.report(false, "waiting");
+        std::fs::create_dir(&paths.runtime).unwrap();
+        surface.report(false, "waiting");
+        let report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(paths.runtime.join("taskbar.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["note"], "waiting");
+    }
+    #[test]
+    fn client_mapping_preserves_child_bounds_in_a_mirrored_parent() {
+        unsafe {
+            let host = Host::with_style_and_proc(WS_EX_LAYOUTRTL, Some(DefWindowProcW));
+            let child = CreateWindowExW(
+                0,
+                host.class.as_ptr(),
+                host.class.as_ptr(),
+                WS_CHILD,
+                100,
+                4,
+                200,
+                32,
+                host.hwnd,
+                0,
+                GetModuleHandleW(null()),
+                null(),
+            );
+            assert_ne!(child, 0);
+            let bounds = Rect {
+                left: 100,
+                top: 4,
+                right: 300,
+                bottom: 36,
+            };
+            assert_eq!(
+                window_rect(child).and_then(|r| client_rect(host.hwnd, r)),
+                Some(bounds)
+            );
+            assert!(move_window(
+                child,
+                Rect {
+                    left: 120,
+                    right: 320,
+                    ..bounds
+                }
+            ));
+        }
+    }
+    unsafe extern "system" fn minimum_width_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        if msg == WM_WINDOWPOSCHANGING && lparam != 0 {
+            let position = &mut *(lparam as *mut WINDOWPOS);
+            if position.flags & SWP_NOSIZE == 0 {
+                position.cx = position.cx.max(300);
+            }
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+    #[test]
+    fn a_constrained_task_band_rolls_back_without_claiming_unreserved_space() {
+        unsafe {
+            let host = Host::with_style_and_proc(0, Some(minimum_width_proc));
+            let band = CreateWindowExW(
+                0,
+                host.class.as_ptr(),
+                host.class.as_ptr(),
+                WS_CHILD,
+                0,
+                0,
+                600,
+                40,
+                host.hwnd,
+                0,
+                GetModuleHandleW(null()),
+                null(),
+            );
+            assert_ne!(band, 0);
+            let original = window_rect(band)
+                .and_then(|r| client_rect(host.hwnd, r))
+                .unwrap();
+            let applied = Rect {
+                right: original.left + 100,
+                ..original
+            };
+            assert!(!move_window(band, applied));
+            assert_eq!(window_rect(band).unwrap().width(), 300);
+            assert!(move_window(band, original));
+            assert!(Reservation::apply(band, host.hwnd, original, applied).is_none());
+            assert_eq!(
+                window_rect(band).and_then(|r| client_rect(host.hwnd, r)),
+                Some(original)
+            );
         }
     }
     #[test]

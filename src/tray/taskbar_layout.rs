@@ -8,13 +8,17 @@ pub struct Rect {
 }
 impl Rect {
     pub fn width(self) -> i32 {
-        self.right - self.left
+        self.right.saturating_sub(self.left)
     }
     pub fn height(self) -> i32 {
-        self.bottom - self.top
+        self.bottom.saturating_sub(self.top)
     }
     pub fn overlaps(self, other: Self) -> bool {
-        self.left < other.right
+        self.left < self.right
+            && self.top < self.bottom
+            && other.left < other.right
+            && other.top < other.bottom
+            && self.left < other.right
             && self.right > other.left
             && self.top < other.bottom
             && self.bottom > other.top
@@ -46,21 +50,42 @@ pub fn modern_slot_free(
         }
     }
     let margin = pixels(6, dpi);
-    let left = taskbar.left + margin;
-    let right = notify
-        .map(|n| (n.left - margin).min(taskbar.right - margin))
-        .unwrap_or(taskbar.right - margin);
+    // A mirrored taskbar may put the notification area on the left. Keep the lyrics
+    // beside that area without discarding the otherwise usable right-hand region.
+    let tray_on_left = notify.is_some_and(|n| n.right <= taskbar.left + taskbar.width() / 2);
+    let left = if tray_on_left {
+        (notify.unwrap().right + margin).max(taskbar.left + margin)
+    } else {
+        taskbar.left + margin
+    };
+    let right = if tray_on_left {
+        taskbar.right - margin
+    } else {
+        notify
+            .map(|n| (n.left - margin).min(taskbar.right - margin))
+            .unwrap_or(taskbar.right - margin)
+    };
     if right <= left {
         return None;
     }
     let mut intervals = occupied
         .iter()
         .filter(|r| r.overlaps(taskbar))
-        .map(|r| ((r.left - margin).max(left), (r.right + margin).min(right)))
+        .map(|r| {
+            (
+                r.left.saturating_sub(margin).max(left),
+                r.right.saturating_add(margin).min(right),
+            )
+        })
         .filter(|(l, r)| l < r)
         .collect::<Vec<_>>();
     // Seeing only notification-area controls does not establish that the app-button area is empty.
-    if intervals.is_empty() {
+    if intervals.is_empty()
+        || (notify.is_none()
+            && !occupied
+                .iter()
+                .any(|r| r.overlaps(taskbar) && r.left < taskbar.left + taskbar.width() / 2))
+    {
         return None;
     }
     intervals.sort_unstable();
@@ -74,6 +99,23 @@ pub fn modern_slot_free(
     }
     let minimum = pixels(100, dpi);
     let desired = pixels(400, dpi);
+    let height = pixels(32, dpi).min(taskbar.height() - pixels(4, dpi));
+    let top = taskbar.top + (taskbar.height() - height) / 2;
+    if tray_on_left {
+        let mut start = left;
+        for (next, stop) in merged.into_iter().chain(std::iter::once((right, right))) {
+            if next - start >= minimum {
+                return Some(Rect {
+                    left: start,
+                    top,
+                    right: start + desired.min(next - start),
+                    bottom: top + height,
+                });
+            }
+            start = start.max(stop);
+        }
+        return None;
+    }
     let mut end = right;
     for (start, stop) in merged
         .into_iter()
@@ -82,8 +124,6 @@ pub fn modern_slot_free(
     {
         if end - stop >= minimum {
             let width = desired.min(end - stop);
-            let height = pixels(32, dpi).min(taskbar.height() - pixels(4, dpi));
-            let top = taskbar.top + (taskbar.height() - height) / 2;
             return Some(Rect {
                 left: end - width,
                 top,
@@ -95,7 +135,8 @@ pub fn modern_slot_free(
     }
     None
 }
-pub fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> Option<Rect> {
+#[cfg(test)]
+fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> Option<Rect> {
     modern_slot_free(taskbar, Some(notify), occupied, dpi)
 }
 /// Reserve space in the classic task-button band, leaving its buttons a usable width.
@@ -201,6 +242,35 @@ mod tests {
         let apps = rect(0, 1032, 1580, 1080);
         let tray = rect(1620, 1032, 1920, 1080);
         assert!(modern_slot_free(bar, None, &[apps, tray], 96).is_none());
+    }
+    #[test]
+    fn incomplete_or_degenerate_controls_do_not_establish_free_space() {
+        let bar = rect(0, 1032, 1920, 1080);
+        let tray = rect(1650, 1032, 1910, 1080);
+        assert!(modern_slot_free(bar, None, &[tray], 96).is_none());
+        assert!(modern_slot_free(bar, Some(tray), &[rect(700, 1040, 700, 1072)], 96).is_none());
+        assert!(modern_slot_free(bar, None, &[rect(700, 1040, 750, 1040), tray], 96).is_none());
+        assert!(!rect(0, 0, 0, 40).overlaps(rect(-10, 0, 10, 40)));
+        assert!(!rect(10, 0, 0, 40).overlaps(rect(-10, 0, 20, 40)));
+        assert!(modern_slot_free(
+            bar,
+            None,
+            &[rect(i32::MIN, i32::MIN, i32::MAX, i32::MAX)],
+            96,
+        )
+        .is_none());
+    }
+    #[test]
+    fn a_left_hand_notification_area_uses_the_adjacent_right_hand_gap() {
+        let bar = rect(-1920, 0, 0, 48);
+        let tray = rect(-1920, 0, -1600, 48);
+        let buttons = rect(-900, 0, -400, 48);
+        let slot = modern_slot(bar, tray, &[tray, buttons], 96).unwrap();
+        assert_eq!(slot.left, -1594);
+        assert_eq!(slot.width(), 400);
+        assert!(!slot.overlaps(tray));
+        assert!(!slot.overlaps(buttons));
+        assert!(modern_slot(bar, tray, &[tray], 96).is_none());
     }
 }
 

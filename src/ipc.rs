@@ -243,6 +243,22 @@ pub fn spawn_detached(
     paths: &Paths,
     arguments: &[&str],
 ) -> Result<std::os::windows::io::OwnedHandle> {
+    spawn_windows_process(paths, arguments, false)
+}
+
+/// Open the same library in a fresh native console without `cmd /c start`
+/// interpreting executable or home paths as shell syntax.
+#[cfg(windows)]
+pub fn spawn_console(paths: &Paths) -> Result<std::os::windows::io::OwnedHandle> {
+    spawn_windows_process(paths, &["tui"], true)
+}
+
+#[cfg(windows)]
+fn spawn_windows_process(
+    paths: &Paths,
+    arguments: &[&str],
+    console: bool,
+) -> Result<std::os::windows::io::OwnedHandle> {
     use std::{
         os::windows::{ffi::OsStrExt, io::FromRawHandle},
         ptr,
@@ -250,8 +266,8 @@ pub fn spawn_detached(
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{
-            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
-            PROCESS_INFORMATION, STARTUPINFOW,
+            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_CONSOLE,
+            CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
         },
     };
     let executable = std::env::current_exe()?;
@@ -272,10 +288,12 @@ pub fn spawn_detached(
     let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     // Break away from a parent job when allowed; restricted hosts such as CI
     // still get a detached child in the same job, with no inherited handles.
-    for flags in [
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-    ] {
+    let base_flags = if console {
+        CREATE_NEW_CONSOLE
+    } else {
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    };
+    for flags in [base_flags | CREATE_BREAKAWAY_FROM_JOB, base_flags] {
         let mut command_line = command.clone();
         let created = unsafe {
             CreateProcessW(

@@ -71,6 +71,9 @@ impl AudioInput {
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::coded("cancelled", "已取消"));
         }
+        if !position.is_finite() {
+            return Err(Error::new("无效的跳转位置"));
+        }
         let file = File::open(&self.path)?;
         let complete = self
             .stream
@@ -135,8 +138,10 @@ impl AudioInput {
             position.max(0.)
         };
         if position > 0. {
+            let target =
+                Duration::try_from_secs_f64(position).map_err(|_| Error::new("无效的跳转位置"))?;
             decoder
-                .try_seek(Duration::from_secs_f64(position))
+                .try_seek(target)
                 .map_err(|_| Error::new("此音频暂不支持跳转"))?;
         }
         let first = decoder.next();
@@ -147,11 +152,22 @@ impl AudioInput {
         // Validate complete files in silent test mode, but never drain a live
         // network stream before reporting it ready.
         if null && complete && position == 0. {
-            let count = decoder.by_ref().count() + usize::from(first.is_some());
+            let count = decoder
+                .by_ref()
+                .try_fold(usize::from(first.is_some()), |count, _| {
+                    if count.is_multiple_of(4096) && cancelled.load(Ordering::Relaxed) {
+                        return Err(Error::coded("cancelled", "已取消"));
+                    }
+                    Ok(count + 1)
+                })?;
             if count == 0 {
                 return Err(Error::coded("decode_error", "音频中没有可解码的采样"));
             }
-            duration = count as f64 / samples_per_second;
+            let actual_duration = count as f64 / samples_per_second;
+            if duration > 0. && actual_duration + 0.25 < duration * 0.8 {
+                return Err(Error::coded("decode_error", "音频解码提前中断"));
+            }
+            duration = actual_duration;
         }
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::coded("cancelled", "已取消"));
@@ -182,18 +198,24 @@ impl AudioInput {
 
 pub fn current_default_device_name() -> Option<String> {
     #[cfg(windows)]
-    unsafe {
+    let initialized = unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CoInitializeEx(None, COINIT_MULTITHREADED).is_ok()
+    };
+    let device = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         use rodio::cpal::traits::{DeviceTrait, HostTrait};
         rodio::cpal::default_host()
             .default_output_device()
             .and_then(|d| d.name().ok())
     }))
     .ok()
-    .flatten()
+    .flatten();
+    #[cfg(windows)]
+    if initialized {
+        // S_FALSE also increments COM's per-thread initialization count.
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+    }
+    device
 }
 
 pub struct Player {
@@ -334,6 +356,7 @@ impl Player {
         }
         self.started = Instant::now();
         self.paused = paused;
+        self.last_samples_time = Instant::now();
     }
     pub fn volume(&self, volume: u8) {
         if let Some(sink) = &self.sink {
@@ -560,6 +583,51 @@ mod tests {
         output.take(80000).for_each(drop);
         assert!(player.finished());
         assert_eq!(player.end_error().unwrap().code, "decode_error");
+    }
+    #[test]
+    fn full_file_validation_rejects_truncated_audio_before_saving_a_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.wav");
+        let wav = test_wav(10);
+        std::fs::write(&path, &wav[..32044]).unwrap();
+        let input = AudioInput {
+            path,
+            hint: "wav".into(),
+            stream: None,
+        };
+        let error = input
+            .prepare(
+                &Track {
+                    duration: 10.,
+                    ..Track::default()
+                },
+                0.,
+                Arc::new(AtomicBool::new(false)),
+                true,
+            )
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "decode_error");
+    }
+    #[test]
+    fn nonfinite_seek_positions_are_rejected_before_decoding() {
+        let input = AudioInput {
+            path: PathBuf::from("not-needed.wav"),
+            hint: "wav".into(),
+            stream: None,
+        };
+        for position in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = input
+                .prepare(
+                    &Track::default(),
+                    position,
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                )
+                .err()
+                .unwrap();
+            assert_eq!(error.message, "无效的跳转位置");
+        }
     }
     #[test]
     fn streaming_duration_rejects_a_preview_and_null_output_does_not_drain_stream() {

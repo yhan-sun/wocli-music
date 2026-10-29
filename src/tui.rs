@@ -45,6 +45,7 @@ enum View {
 #[derive(Clone)]
 enum Action {
     View(View),
+    Library,
     Search,
     SearchGo,
     DailyRefresh,
@@ -155,7 +156,9 @@ struct App {
     pending_entries: usize,
     liked: HashSet<String>,
     nav_focus: bool,
+    sidebar_visible: bool,
     query: String,
+    search_query: String,
     editing: bool,
     search_rows: Vec<Track>,
     total: usize,
@@ -164,6 +167,7 @@ struct App {
     searching: bool,
     search_error: String,
     popup: Option<Popup>,
+    popup_area: Rect,
     download_serial: u64,
     download_pending: bool,
     daily_pending: bool,
@@ -212,7 +216,9 @@ impl App {
             pending_entries: 0,
             liked: HashSet::new(),
             nav_focus: false,
+            sidebar_visible: false,
             query: String::new(),
+            search_query: String::new(),
             editing: false,
             search_rows: vec![],
             total: 0,
@@ -221,6 +227,7 @@ impl App {
             searching: false,
             search_error: String::new(),
             popup: None,
+            popup_area: Rect::default(),
             download_serial: 0,
             download_pending: false,
             daily_pending: false,
@@ -317,19 +324,27 @@ impl App {
         self.editing = false;
         self.nav_focus = false;
         self.table = TableState::default();
+        self.last_click = None;
         self.reload()
     }
     fn search(&mut self) {
-        if self.query.trim().is_empty() {
+        if self.search_query.is_empty() {
             return;
         }
         self.serial += 1;
         self.searching = true;
         self.search_error.clear();
         self.editing = false;
+        // Results belong to one submitted query/page. Do not leave old songs
+        // playable under the next page's label while its request is pending.
+        self.search_rows.clear();
+        self.rows.clear();
+        self.selected = 0;
+        self.table = TableState::default();
+        self.last_click = None;
         let (serial, query, page, tx, direct) = (
             self.serial,
-            self.query.clone(),
+            self.search_query.clone(),
             self.page,
             self.events.clone(),
             self.paths.settings().map(|s| s.direct).unwrap_or(false),
@@ -374,6 +389,21 @@ impl App {
                 self.popup = None;
                 self.navigate(view)?;
             }
+            Action::Library => {
+                let mut items: Vec<_> = self
+                    .navigation()
+                    .into_iter()
+                    .map(|(label, view)| (label, Action::View(view)))
+                    .collect();
+                items.push(("导入歌单… (I)".into(), Action::ImportPlaylist));
+                if let View::Folder(name) = &self.view {
+                    items.push((
+                        "导出当前歌单… (E)".into(),
+                        Action::ExportPlaylist(name.clone()),
+                    ));
+                }
+                self.menu("音乐库", String::new(), items);
+            }
             Action::Search => {
                 if self.view != View::Search {
                     self.before_search = self.view.clone();
@@ -382,6 +412,7 @@ impl App {
                 self.full_lyrics = false;
                 self.editing = true;
                 self.nav_focus = false;
+                self.last_click = None;
                 self.reload()?;
             }
             Action::Visualizer => {
@@ -460,12 +491,27 @@ impl App {
                 }
             }
             Action::SearchGo => {
+                if self.query.trim().is_empty() {
+                    self.editing = true;
+                    self.notice("请输入搜索内容");
+                    return Ok(());
+                }
                 self.editing = false;
+                self.search_query = self.query.trim().to_string();
                 self.page = 1;
+                self.total = 0;
                 self.search();
             }
             Action::Page(delta) => {
-                let next = (self.page as i32 + delta).max(1) as usize;
+                if self.view != View::Search || self.searching || self.search_query.is_empty() {
+                    return Ok(());
+                }
+                if self.query.trim() != self.search_query {
+                    self.editing = true;
+                    self.notice("搜索内容已更改，请按 Enter 重新搜索");
+                    return Ok(());
+                }
+                let next = self.page.saturating_add_signed(delta as isize).max(1);
                 if next <= self.total.div_ceil(20).max(1) && next != self.page {
                     self.page = next;
                     self.search();
@@ -476,6 +522,7 @@ impl App {
                 self.popup = None;
                 self.full_lyrics = !self.full_lyrics;
                 self.nav_focus = false;
+                self.last_click = None;
             }
             Action::Jobs => self.popup = Some(Popup::Jobs(0)),
             Action::Help => self.popup = Some(Popup::Help),
@@ -892,16 +939,29 @@ impl App {
             return Ok(false);
         }
         if let KeyCode::Media(media) = key.code {
+            // Hardware controls must not discard a half-written search or dialog.
+            let popup = self.popup.clone();
+            let editing = self.editing;
             match media {
-                MediaKeyCode::PlayPause | MediaKeyCode::Play | MediaKeyCode::Pause => {
+                MediaKeyCode::PlayPause => {
                     self.act(Action::Toggle)?;
                 }
-                MediaKeyCode::TrackNext | MediaKeyCode::FastForward => {
+                MediaKeyCode::Play => {
+                    if self.state.track.is_none() {
+                        self.act(Action::Toggle)?;
+                    } else {
+                        self.send(json!({"op":"resume"}));
+                    }
+                }
+                MediaKeyCode::Pause => self.send(json!({"op":"pause"})),
+                MediaKeyCode::TrackNext => {
                     self.act(Action::Control(json!({"op":"next"})))?;
                 }
-                MediaKeyCode::TrackPrevious | MediaKeyCode::Rewind => {
+                MediaKeyCode::TrackPrevious => {
                     self.act(Action::Control(json!({"op":"prev"})))?;
                 }
+                MediaKeyCode::FastForward => self.send(json!({"op":"seek","seconds":5})),
+                MediaKeyCode::Rewind => self.send(json!({"op":"seek","seconds":-5})),
                 MediaKeyCode::Stop => {
                     self.act(Action::Control(json!({"op":"stop"})))?;
                 }
@@ -916,6 +976,8 @@ impl App {
                 }
                 _ => {}
             }
+            self.popup = popup;
+            self.editing = editing;
             return Ok(false);
         }
         if matches!(self.popup, Some(Popup::Transfer(_))) {
@@ -970,7 +1032,10 @@ impl App {
                     KeyCode::Backspace if *focus == 0 => {
                         directory.pop();
                     }
-                    KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if *focus == 1 => {
+                    KeyCode::Left if *focus == 1 => {
+                        *quality = (*quality + QUALITIES.len() - 1) % QUALITIES.len()
+                    }
+                    KeyCode::Right | KeyCode::Char(' ') if *focus == 1 => {
                         *quality = (*quality + 1) % QUALITIES.len()
                     }
                     KeyCode::Char(' ') if *focus == 2 => *lyrics = !*lyrics,
@@ -1042,22 +1107,7 @@ impl App {
             KeyCode::Char('?') => Some(Action::Help),
             KeyCode::Char('v') => Some(Action::Lyrics),
             KeyCode::Char('V') => Some(Action::Visualizer),
-            KeyCode::Char('b') => {
-                let mut items: Vec<_> = self
-                    .navigation()
-                    .into_iter()
-                    .map(|(label, view)| (label, Action::View(view)))
-                    .collect();
-                items.push(("导入歌单… (I)".into(), Action::ImportPlaylist));
-                if let View::Folder(name) = &self.view {
-                    items.push((
-                        "导出当前歌单… (E)".into(),
-                        Action::ExportPlaylist(name.clone()),
-                    ));
-                }
-                self.menu("音乐库", String::new(), items);
-                None
-            }
+            KeyCode::Char('b') => Some(Action::Library),
             KeyCode::Char('m') => {
                 let next = match self.state.mode.as_str() {
                     "list" => "repeat",
@@ -1148,11 +1198,20 @@ impl App {
                 None
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                self.nav_focus = !self.nav_focus;
-                if self.nav_focus {
-                    self.nav.select(Some(0));
+                if !self.sidebar_visible {
+                    Some(Action::Library)
+                } else {
+                    self.nav_focus = !self.nav_focus;
+                    if self.nav_focus {
+                        self.nav.select(Some(
+                            self.navigation()
+                                .iter()
+                                .position(|(_, view)| *view == self.view)
+                                .unwrap_or(0),
+                        ));
+                    }
+                    None
                 }
-                None
             }
             KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
                 let up = matches!(key.code, KeyCode::Up | KeyCode::Char('k'));
@@ -1179,8 +1238,11 @@ impl App {
                 .navigation()
                 .get(self.nav.selected().unwrap_or(0))
                 .map(|(_, v)| Action::View(v.clone())),
+            KeyCode::Enter if self.full_lyrics => Some(Action::Toggle),
             KeyCode::Enter => Some(Action::Play(self.selected)),
-            KeyCode::Delete | KeyCode::Backspace => self.current().map(Action::Remove),
+            KeyCode::Delete | KeyCode::Backspace if !self.full_lyrics => {
+                self.current().map(Action::Remove)
+            }
             KeyCode::Esc => {
                 if self.full_lyrics {
                     self.full_lyrics = false;
@@ -1297,8 +1359,12 @@ impl App {
                         self.store.remember(&tracks)?;
                         self.search_rows = tracks;
                         self.total = total;
-                        self.selected = 0;
-                        self.rows.clear();
+                        if self.view == View::Search {
+                            self.selected = 0;
+                            self.rows.clear();
+                            self.table = TableState::default();
+                            self.last_click = None;
+                        }
                         self.reload()?;
                     }
                     Err(error) => self.search_error = error,
@@ -1340,15 +1406,9 @@ impl App {
         }
         match kind {
             MouseEventKind::Down(event::MouseButton::Left) => {
-                if self.popup.is_some() {
-                    let inside_popup = self
-                        .hits
-                        .iter()
-                        .any(|h| h.rect.contains(Position::new(x, y)));
-                    if !inside_popup {
-                        self.popup = None;
-                        return Ok(());
-                    }
+                if self.popup.is_some() && !self.popup_area.contains(Position::new(x, y)) {
+                    self.close_transfer();
+                    return Ok(());
                 }
                 if self.popup.is_none()
                     && self.timeline.contains(Position::new(x, y))
@@ -1398,6 +1458,12 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         self.hits.clear();
+        self.popup_area = Rect::default();
+        self.sidebar_visible =
+            !self.full_lyrics && area.width.saturating_sub(4) >= 70 && area.height >= 16;
+        if !self.sidebar_visible {
+            self.nav_focus = false;
+        }
         self.timeline = Rect::default();
         if self.boss_mode {
             self.draw_camouflage(frame, area);
@@ -1432,22 +1498,36 @@ impl App {
             header,
         );
         let mut right = header.right();
-        let lyrics_label = if self.full_lyrics {
+        let compact = header.width < 60;
+        let action_y = header.y + u16::from(compact);
+        let lyrics_label = if compact && self.full_lyrics {
+            "收起"
+        } else if self.full_lyrics {
             " 关闭歌词 "
+        } else if compact {
+            "歌词"
         } else {
             " 歌词 "
         };
         for (label, action, primary) in [
             (" ? ", Action::Help, false),
-            (" 下载任务 ", Action::Jobs, false),
+            (
+                if compact { "下载" } else { " 下载任务 " },
+                Action::Jobs,
+                false,
+            ),
             (lyrics_label, Action::Lyrics, self.full_lyrics),
-            (" 搜索 / ", Action::Search, false),
+            (
+                if compact { "搜索 /" } else { " 搜索 / " },
+                Action::Search,
+                false,
+            ),
         ] {
             let width = label.width() as u16;
             right = right.saturating_sub(width);
             self.button(
                 frame,
-                Rect::new(right, header.y, width, 1),
+                Rect::new(right, action_y, width, 1),
                 label,
                 action,
                 primary,
@@ -1576,10 +1656,14 @@ impl App {
             .collect();
         let mut state = self.nav.clone();
         if !self.nav_focus {
-            state.select(None);
+            state.select(nav.iter().position(|(_, view)| *view == self.view));
         }
         frame.render_stateful_widget(
-            List::new(items).highlight_style(Style::default().fg(FG).bg(SELECTED)),
+            List::new(items).highlight_style(
+                Style::default()
+                    .fg(if self.nav_focus { FG } else { ACCENT })
+                    .bg(SELECTED),
+            ),
             list,
             &mut state,
         );
@@ -1598,6 +1682,7 @@ impl App {
         }
     }
     fn draw_list(&mut self, frame: &mut Frame, area: Rect) {
+        let compact = area.height < 12;
         let title = match &self.view {
             View::Likes => "我喜欢",
             View::Queue => "播放队列",
@@ -1631,7 +1716,7 @@ impl App {
                 Action::SearchGo,
                 true,
             );
-            top += 2;
+            top += if compact { 1 } else { 2 };
         }
         let count = if self.view == View::Search {
             self.total
@@ -1692,7 +1777,7 @@ impl App {
             }
             top += 1;
         } else {
-            top += 2;
+            top += if compact { 1 } else { 2 };
         }
         let mut x = area.x;
         self.button(
@@ -1769,13 +1854,14 @@ impl App {
                 false,
             );
         }
-        top += 2;
+        top += if compact { 1 } else { 2 };
         let tablearea = Rect::new(
             area.x,
             top,
             area.width,
-            area.bottom()
-                .saturating_sub(top + u16::from(self.view == View::Search) * 2),
+            area.bottom().saturating_sub(
+                top + u16::from(self.view == View::Search) * if compact { 1 } else { 2 },
+            ),
         );
         if self.view == View::Daily && self.rows.is_empty() {
             let message = if self.daily_pending {
@@ -2011,7 +2097,7 @@ impl App {
                         .unwrap_or(self.state.position)
                         + self.state.lyric_offset as f64 / 1000.;
                     let index = lyrics::current(&lines, position, 0);
-                    let visible = (content.height as usize / 2).max(1);
+                    let visible = (content.height as usize).div_ceil(2);
                     let start = index.unwrap_or(0).saturating_sub(visible / 2);
                     for (i, line) in lines.iter().enumerate().skip(start).take(visible) {
                         frame.render_widget(
@@ -2246,8 +2332,8 @@ impl App {
             Rect::new(area.x, y, 5, 1),
         );
         let suffix = if self.state.phase == "loading" {
-            if self.state.total > 0 {
-                format!("缓冲 {}%", self.state.received * 100 / self.state.total)
+            if let Some(percent) = progress_percent(self.state.received, self.state.total) {
+                format!("缓冲 {percent}%")
             } else {
                 "解析中".into()
             }
@@ -2326,6 +2412,7 @@ impl App {
             width,
             height,
         );
+        self.popup_area = rect;
         frame.render_widget(Clear, rect);
         frame.render_widget(
             Block::default()
@@ -2377,7 +2464,7 @@ impl App {
                 }
                 self.button(frame,Rect::new(body.x,body.bottom().saturating_sub(1),8.min(body.width),1),"新建 d",Action::DownloadCurrent,true);
                 let list=Rect::new(body.x,body.y,body.width,body.height.saturating_sub(4));
-                let items:Vec<ListItem>=jobs.iter().map(|j|ListItem::new(format!("{}  {}{}",job_phase(&j.phase),j.track.title,if j.total>0{format!("  {}%",j.received*100/j.total)}else{String::new()}))).collect();
+                let items:Vec<ListItem>=jobs.iter().map(|j|ListItem::new(format!("{}  {}{}",job_phase(&j.phase),j.track.title,if let Some(percent)=progress_percent(j.received,j.total){format!("  {percent}%")}else{String::new()}))).collect();
                 let mut state=ListState::default().with_selected(Some(index));if !jobs.is_empty() { frame.render_stateful_widget(List::new(items).highlight_style(Style::default().fg(ACCENT).bg(SELECTED)),list,&mut state); }
                 for i in state.offset()..jobs.len().min(state.offset()+list.height as usize){self.hit(Rect::new(list.x,list.y+(i-state.offset()) as u16,list.width,1),Action::JobSelect(i));}
                 if let Some(job)=jobs.get(index){
@@ -2411,6 +2498,11 @@ fn seek_position(rect: Rect, x: u16, duration: f64) -> f64 {
         f64::from(x.saturating_sub(rect.x).min(rect.width - 1)) / f64::from(rect.width - 1)
             * duration
     }
+}
+fn progress_percent(received: u64, total: u64) -> Option<u8> {
+    (u128::from(received) * 100)
+        .checked_div(u128::from(total))
+        .map(|percent| percent.min(100) as u8)
 }
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -2572,6 +2664,13 @@ mod tests {
         assert_eq!(seek_position(r, 0, 200.), 0.);
     }
     #[test]
+    fn download_percent_handles_unknown_totals_and_large_counters() {
+        assert_eq!(progress_percent(0, 0), None);
+        assert_eq!(progress_percent(5, 10), Some(50));
+        assert_eq!(progress_percent(u64::MAX, u64::MAX), Some(100));
+        assert_eq!(progress_percent(u64::MAX, 1), Some(100));
+    }
+    #[test]
     fn layouts_keep_collection_entry_and_render_small_sizes() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -2672,6 +2771,7 @@ mod screenshots {
             ("compact", 80, 26, false),
             ("boss", 140, 46, false),
             ("playlist-import", 100, 30, false),
+            ("narrow-search", 30, 16, false),
         ] {
             app.popup = None;
             app.boss_mode = name == "boss";
@@ -2684,6 +2784,13 @@ mod screenshots {
             }
             if collection {
                 app.collect(tracks[0].clone()).unwrap();
+            }
+            if name == "narrow-search" {
+                app.search_rows = tracks.clone();
+                app.query = "音乐".into();
+                app.search_query = app.query.clone();
+                app.total = app.search_rows.len();
+                app.navigate(View::Search).unwrap();
             }
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
@@ -2748,6 +2855,273 @@ mod screenshots {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+    #[test]
+    fn modal_blank_space_preserves_input_and_outside_click_cancels_transfer() {
+        let (_root, mut app, _rx) = setup();
+        app.act(Action::NewFolder(None)).unwrap();
+        draw_terminal(&mut app, 80, 26);
+        let body = app.popup_area.inner(Margin::new(2, 1));
+        // Labels, text fields and padding are part of the dialog even when
+        // they do not have an associated button action.
+        click(&mut app, Rect::new(body.x, body.y + 1, 1, 1));
+        assert!(matches!(app.popup, Some(Popup::Input { .. })));
+
+        app.open_transfer(None);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.transfer_cancel = Some(cancel.clone());
+        if let Some(Popup::Transfer(dialog)) = &mut app.popup {
+            dialog.stage = transfer::Stage::Working("正在匹配".into());
+        }
+        let serial = app.transfer_serial;
+        draw_terminal(&mut app, 80, 26);
+        click(&mut app, Rect::new(0, 0, 1, 1));
+        assert!(app.popup.is_none());
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(app.transfer_serial > serial);
+        app.message(Message::Transfer(
+            serial,
+            transfer::Update::Resolved(Ok(crate::playlists::Playlist::default())),
+        ))
+        .unwrap();
+        assert!(app.popup.is_none());
+    }
+
+    #[test]
+    fn background_search_preserves_current_list_selection_and_paging_stays_in_search() {
+        let (_root, mut app, _rx) = setup();
+        let tracks: Vec<_> = (0..3)
+            .map(|index| Track {
+                id: format!("queue:{index}"),
+                title: format!("歌曲 {index}"),
+                ..Track::default()
+            })
+            .collect();
+        app.state.queue = tracks.clone();
+        app.navigate(View::Queue).unwrap();
+        app.selected = 2;
+        app.table.select(Some(2));
+        app.serial = 7;
+        app.searching = true;
+        app.search_query = "查询".into();
+        app.query = app.search_query.clone();
+        app.message(Message::Search(7, Ok((40, vec![tracks[0].clone()]))))
+            .unwrap();
+        assert_eq!(app.view, View::Queue);
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.table.selected(), Some(2));
+        app.act(Action::Page(1)).unwrap();
+        assert_eq!(app.page, 1);
+        assert_eq!(app.serial, 7);
+        assert!(!app.searching);
+
+        app.navigate(View::Search).unwrap();
+        assert_eq!(app.rows[0].id, tracks[0].id);
+        app.query = "尚未提交的新查询".into();
+        app.act(Action::Page(1)).unwrap();
+        assert_eq!(app.page, 1);
+        assert_eq!(app.serial, 7);
+        assert!(app.editing);
+        app.query = app.search_query.clone();
+        app.searching = true;
+        app.act(Action::Page(1)).unwrap();
+        assert_eq!(app.serial, 7);
+    }
+
+    #[test]
+    fn lyrics_view_cannot_delete_a_song_from_the_hidden_list() {
+        let (_root, mut app, _rx) = setup();
+        let track = Track {
+            id: "liked:1".into(),
+            ..Track::default()
+        };
+        app.store.favorite(&track).unwrap();
+        app.reload().unwrap();
+        app.state.track = Some(track);
+        app.full_lyrics = true;
+        for key in [KeyCode::Delete, KeyCode::Backspace] {
+            app.key(KeyEvent::new(key, KeyModifiers::NONE)).unwrap();
+        }
+        assert_eq!(app.store.favorites().unwrap().len(), 1);
+        app.full_lyrics = false;
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.store.favorites().unwrap().is_empty());
+    }
+
+    #[test]
+    fn narrow_header_keeps_logo_and_each_button_visible_without_overlapping() {
+        let (_root, mut app, _rx) = setup();
+        for width in [30, 34, 50, 63, 64, 80] {
+            for full_lyrics in [false, true] {
+                app.full_lyrics = full_lyrics;
+                let rendered = screen(&draw_terminal(&mut app, width, 26));
+                // screen() normalizes whitespace, including spaces in labels.
+                assert!(rendered.contains("wocli/music"), "width {width}");
+                let hits: Vec<_> = app.hits.iter().filter(|hit| hit.rect.y < 3).collect();
+                assert_eq!(hits.len(), 4);
+                for (index, hit) in hits.iter().enumerate() {
+                    assert!(hit.rect.x >= 2 && hit.rect.right() <= width - 2);
+                    for other in &hits[index + 1..] {
+                        assert!(
+                            hit.rect.intersection(other.rect).is_empty(),
+                            "width {width}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn minimum_terminal_height_still_shows_clickable_search_results() {
+        let (_root, mut app, _rx) = setup();
+        app.query = "歌曲".into();
+        app.search_query = app.query.clone();
+        app.search_rows = (0..5)
+            .map(|i| Track {
+                id: format!("search:{i}"),
+                title: format!("结果 {i}"),
+                ..Track::default()
+            })
+            .collect();
+        app.total = 5;
+        app.navigate(View::Search).unwrap();
+        for width in [30, 60, 80, 120] {
+            let rendered = screen(&draw_terminal(&mut app, width, 16));
+            assert!(rendered.contains("结果0"), "width {width}: {rendered}");
+            let hit = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::Select(0)))
+                .unwrap();
+            assert!(hit.rect.y < 12);
+        }
+    }
+
+    #[test]
+    fn media_play_and_pause_are_explicit_and_keep_unsaved_dialog_text() {
+        let (_root, mut app, rx) = setup();
+        app.state.track = Some(Track {
+            id: "playing:1".into(),
+            ..Track::default()
+        });
+        app.state.phase = "playing".into();
+        app.popup = Some(Popup::Input {
+            title: "新建收藏夹".into(),
+            value: "未保存的名字".into(),
+            kind: InputKind::Folder(None),
+        });
+        for (key, op) in [
+            (MediaKeyCode::Play, "resume"),
+            (MediaKeyCode::Play, "resume"),
+            (MediaKeyCode::Pause, "pause"),
+            (MediaKeyCode::Pause, "pause"),
+            (MediaKeyCode::TrackNext, "next"),
+            (MediaKeyCode::TrackPrevious, "prev"),
+        ] {
+            app.key(KeyEvent::new(KeyCode::Media(key), KeyModifiers::NONE))
+                .unwrap();
+            assert_eq!(rx.try_recv().unwrap().value["op"], op);
+            assert!(
+                matches!(&app.popup, Some(Popup::Input { value, .. }) if value == "未保存的名字")
+            );
+        }
+        app.popup = None;
+        app.editing = true;
+        app.key(KeyEvent::new(
+            KeyCode::Media(MediaKeyCode::TrackNext),
+            KeyModifiers::NONE,
+        ))
+        .unwrap();
+        assert!(app.editing);
+    }
+
+    #[test]
+    fn download_quality_arrows_move_in_opposite_directions() {
+        let (_root, mut app, _rx) = setup();
+        app.popup = Some(Popup::Download {
+            track: Track::default(),
+            directory: String::new(),
+            quality: 0,
+            lyrics: true,
+            focus: 1,
+        });
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            matches!(app.popup, Some(Popup::Download { quality, .. }) if quality == QUALITIES.len() - 1)
+        );
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(
+            app.popup,
+            Some(Popup::Download { quality: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn clicking_same_row_in_a_different_view_is_not_a_double_click() {
+        let (_root, mut app, rx) = setup();
+        let track = Track {
+            id: "track:1".into(),
+            ..Track::default()
+        };
+        app.store.favorite(&track).unwrap();
+        app.state.queue = vec![track];
+        app.reload().unwrap();
+        app.act(Action::Select(0)).unwrap();
+        app.navigate(View::Queue).unwrap();
+        app.act(Action::Select(0)).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tab_opens_visible_navigation_and_tracks_the_current_folder() {
+        let (_root, mut app, _rx) = setup();
+        draw_terminal(&mut app, 30, 16);
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.nav_focus);
+        assert!(matches!(&app.popup, Some(Popup::Menu(menu)) if menu.title == "音乐库"));
+        app.act(Action::Close).unwrap();
+        for i in 0..30 {
+            app.store.create_folder(&format!("收藏夹 {i:02}")).unwrap();
+        }
+        app.navigate(View::Folder("收藏夹 29".into())).unwrap();
+        draw_terminal(&mut app, 80, 26);
+        assert!(app.nav.offset() > 0);
+        assert!(app.hits.iter().any(
+            |hit| matches!(&hit.action, Action::View(View::Folder(name)) if name == "收藏夹 29")
+        ));
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.nav_focus);
+        assert!(
+            matches!(&app.navigation()[app.nav.selected().unwrap()].1, View::Folder(name) if name == "收藏夹 29")
+        );
+        // Shrinking the terminal cannot leave navigation focused off-screen.
+        draw_terminal(&mut app, 30, 16);
+        assert!(!app.nav_focus);
+    }
+
+    #[test]
+    fn enter_in_lyrics_controls_the_current_track_without_replacing_the_queue() {
+        let (_root, mut app, rx) = setup();
+        app.rows = vec![Track {
+            id: "hidden:1".into(),
+            ..Track::default()
+        }];
+        app.state.track = Some(Track {
+            id: "current:1".into(),
+            ..Track::default()
+        });
+        app.state.phase = "playing".into();
+        app.full_lyrics = true;
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap().value["op"], "toggle");
+    }
+
     fn setup() -> (tempfile::TempDir, App, Receiver<Request>) {
         let root = tempfile::tempdir().unwrap();
         let (tx, rx) = mpsc::channel();

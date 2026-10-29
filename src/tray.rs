@@ -6,6 +6,9 @@ mod macos_hotkey;
 #[cfg(any(windows, test))]
 #[path = "tray/taskbar_layout.rs"]
 mod taskbar_layout;
+#[cfg(any(windows, test))]
+#[path = "tray/windows_backend.rs"]
+mod windows_backend;
 #[cfg(windows)]
 #[path = "tray/windows_taskbar.rs"]
 mod windows_taskbar;
@@ -129,6 +132,22 @@ pub fn active_lyric(lyrics_text: &str, position: f64, offset: i64) -> Option<Str
     }
 }
 
+#[cfg(any(windows, test))]
+fn tooltip_utf16<const N: usize>(text: &str) -> [u16; N] {
+    let mut result = [0; N];
+    let mut length = 0;
+    for character in text.chars().take_while(|c| *c != '\0') {
+        let mut encoded = [0; 2];
+        let units = character.encode_utf16(&mut encoded);
+        if length + units.len() >= N {
+            break;
+        }
+        result[length..length + units.len()].copy_from_slice(units);
+        length += units.len();
+    }
+    result
+}
+
 pub fn lock_path(paths: &Paths) -> PathBuf {
     paths.runtime.join("tray.lock")
 }
@@ -146,7 +165,8 @@ pub fn status(paths: &Paths) -> Result<bool> {
         return Ok(false);
     };
     if file.try_lock_exclusive().is_ok() {
-        let _ = fs::remove_file(&lock_file);
+        // Keep the inode stable: a concurrent starter may already have opened
+        // this file. Unlinking lets two processes lock different files at once.
         let _ = fs::remove_file(pid_path(paths));
         Ok(false)
     } else {
@@ -155,6 +175,9 @@ pub fn status(paths: &Paths) -> Result<bool> {
 }
 
 pub fn stop(paths: &Paths) -> Result<()> {
+    if !status(paths)? {
+        return Ok(());
+    }
     let pid_file = pid_path(paths);
     if pid_file.exists() {
         if let Ok(content) = fs::read_to_string(&pid_file) {
@@ -195,9 +218,7 @@ pub fn stop(paths: &Paths) -> Result<()> {
             }
         }
     }
-    let lock_file = lock_path(paths);
     let _ = fs::remove_file(pid_file);
-    let _ = fs::remove_file(lock_file);
     Ok(())
 }
 
@@ -1144,7 +1165,7 @@ mod windows {
     use super::*;
     use std::cell::RefCell;
     use std::ptr::null;
-    use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
     use windows_sys::Win32::Foundation::{
         GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
@@ -1165,15 +1186,15 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-        GetMessageW, LoadCursorW, LoadIconW, PostQuitMessage, RegisterClassW,
-        RegisterWindowMessageW, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
-        SetWindowTextW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS,
-        CS_HREDRAW, CS_VREDRAW, HICON, HTCLIENT, ICONINFO, IDC_HAND, IDI_APPLICATION,
-        MA_NOACTIVATE, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-        TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY,
-        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
-        WM_NCHITTEST, WM_NCRBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE,
-        WM_TIMER, WM_USER, WNDCLASSW,
+        GetMessageW, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW,
+        RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowTextW,
+        TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
+        HICON, HTCLIENT, ICONINFO, IDC_HAND, IDI_APPLICATION, MA_NOACTIVATE, MF_DISABLED,
+        MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_CLOSE,
+        WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCRBUTTONUP,
+        WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WM_USER,
+        WNDCLASSW,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -1207,6 +1228,9 @@ mod windows {
     const VK_KEY_B: u32 = 0x42;
 
     static HOVER_BTN: AtomicU8 = AtomicU8::new(0);
+    static RESET_PENDING: AtomicBool = AtomicBool::new(false);
+    static READD_PENDING: AtomicBool = AtomicBool::new(false);
+    static CLOSE_PENDING: AtomicBool = AtomicBool::new(false);
 
     struct TrayState {
         paths: Paths,
@@ -1221,10 +1245,16 @@ mod windows {
         boss: bool,
         boss_shortcut_label: String,
         phase: String,
+        backend: super::windows_backend::Backend,
+        status_checked: Option<std::time::Instant>,
+        quitting: bool,
     }
 
     thread_local! {
         static STATE: RefCell<Option<TrayState>> = const { RefCell::new(None) };
+        // Painting can be reentered by native layout calls while STATE is mutably
+        // borrowed. Publish a separate, small render snapshot before those calls.
+        static PAINT_STATE: RefCell<(String, String)> = const { RefCell::new((String::new(), String::new())) };
     }
 
     fn to_wide(s: &str) -> Vec<u16> {
@@ -1355,14 +1385,14 @@ mod windows {
             let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
             let dp = |v| super::taskbar_layout::pixels(v, dpi);
             let h = area.bottom - area.top;
-            if area.right < dp(180) || y < dp(2) || y > h - dp(2) {
+            if area.right < dp(180) || y < dp(4) || y >= h - dp(4) {
                 return 0;
             }
-            if (dp(4)..=dp(34)).contains(&x) {
+            if (dp(6)..dp(34)).contains(&x) {
                 1
-            } else if (dp(36)..=dp(64)).contains(&x) {
+            } else if (dp(36)..dp(64)).contains(&x) {
                 2
-            } else if (dp(66)..=dp(96)).contains(&x) {
+            } else if (dp(66)..dp(94)).contains(&x) {
                 3
             } else {
                 0
@@ -1377,9 +1407,26 @@ mod windows {
     ) -> LRESULT {
         match msg {
             WM_TIMER => {
-                STATE.with(|st| {
+                // Cross-thread Win32 calls can dispatch incoming synchronous
+                // messages before returning. Defer work until the outer update ends.
+                if !STATE.with(|st| st.try_borrow_mut().is_ok()) {
+                    return 0;
+                }
+                if CLOSE_PENDING.swap(false, Ordering::Relaxed) {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                let quit = STATE.with(|st| {
                     if let Some(state) = st.borrow_mut().as_mut() {
-                        update_status(state);
+                        if READD_PENDING.swap(false, Ordering::Relaxed) {
+                            Shell_NotifyIconW(NIM_ADD, &state.nid);
+                        }
+                        if RESET_PENDING.swap(false, Ordering::Relaxed) {
+                            state.taskbar.reset();
+                        }
+                        if update_status(state) {
+                            return true;
+                        }
 
                         // 检查鼠标是否已移出歌词窗口以重置悬停按钮状态
                         if state.taskbar.hwnd != 0 && HOVER_BTN.load(Ordering::Relaxed) != 0 {
@@ -1391,18 +1438,17 @@ mod windows {
                             }
                         }
                     }
+                    false
                 });
+                if quit {
+                    DestroyWindow(hwnd);
+                }
                 0
             }
             WM_TRAY => {
                 let event = lparam as u32;
                 if event == WM_LBUTTONUP {
-                    STATE.with(|st| {
-                        if let Some(state) = st.borrow().as_ref() {
-                            let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
-                        }
-                    });
-                    SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
+                    queue_command(json!({"op":"toggle"}));
                 } else if event == WM_RBUTTONUP {
                     show_menu(hwnd);
                 }
@@ -1411,42 +1457,30 @@ mod windows {
             WM_COMMAND => {
                 let cmd = wparam & 0xFFFF;
                 handle_command(hwnd, cmd);
-                SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
                 0
             }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow_mut().as_mut() {
-                        state.taskbar.reset();
-                    }
-                });
+                RESET_PENDING.store(true, Ordering::Relaxed);
+                0
+            }
+            WM_CLOSE => {
+                CLOSE_PENDING.store(true, Ordering::Relaxed);
+                PostMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
                 0
             }
             WM_HOTKEY => {
                 let id = wparam as i32;
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow().as_ref() {
-                        match id {
-                            HOTKEY_PLAY_PAUSE => {
-                                let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
-                            }
-                            HOTKEY_PREV => {
-                                let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
-                            }
-                            HOTKEY_NEXT => {
-                                let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
-                            }
-                            HOTKEY_STOP => {
-                                let _ = ipc::request(&state.paths, json!({"op":"stop"}), true);
-                            }
-                            HOTKEY_BOSS | HOTKEY_BOSS_ALT => {
-                                let _ = ipc::request(&state.paths, json!({"op":"boss"}), true);
-                            }
-                            _ => {}
-                        }
-                    }
-                });
-                SendMessageW(hwnd, WM_TIMER, TIMER_ID, 0);
+                let op = match id {
+                    HOTKEY_PLAY_PAUSE => Some("toggle"),
+                    HOTKEY_PREV => Some("prev"),
+                    HOTKEY_NEXT => Some("next"),
+                    HOTKEY_STOP => Some("stop"),
+                    HOTKEY_BOSS | HOTKEY_BOSS_ALT => Some("boss"),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    queue_command(json!({"op":op}));
+                }
                 0
             }
             WM_DESTROY => {
@@ -1456,26 +1490,21 @@ mod windows {
                 UnregisterHotKey(hwnd, HOTKEY_STOP);
                 UnregisterHotKey(hwnd, HOTKEY_BOSS);
                 UnregisterHotKey(hwnd, HOTKEY_BOSS_ALT);
-                STATE.with(|st| {
-                    if let Some(mut state) = st.borrow_mut().take() {
-                        Shell_NotifyIconW(NIM_DELETE, &state.nid);
-                        if state.nid.hIcon != 0 {
-                            DestroyIcon(state.nid.hIcon);
-                        }
-                        state.taskbar.shutdown();
+                let state = STATE.with(|st| st.borrow_mut().take());
+                if let Some(mut state) = state {
+                    Shell_NotifyIconW(NIM_DELETE, &state.nid);
+                    if state.nid.hIcon != 0 {
+                        DestroyIcon(state.nid.hIcon);
                     }
-                });
+                    state.taskbar.shutdown();
+                }
                 PostQuitMessage(0);
                 0
             }
             _ => {
                 if msg == taskbar_created_msg() {
-                    STATE.with(|st| {
-                        if let Some(state) = st.borrow_mut().as_mut() {
-                            Shell_NotifyIconW(NIM_ADD, &state.nid);
-                            state.taskbar.reset();
-                        }
-                    });
+                    READD_PENDING.store(true, Ordering::Relaxed);
+                    RESET_PENDING.store(true, Ordering::Relaxed);
                     0
                 } else {
                     DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1518,39 +1547,32 @@ mod windows {
             WM_LBUTTONDOWN => {
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow().as_ref() {
-                        let btn = button_at(hwnd, x, y);
-                        if btn == 1 {
-                            let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
-                        } else if btn == 2 {
-                            let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
-                        } else if btn == 3 {
-                            let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
-                        }
-                    }
-                });
+                let op = match button_at(hwnd, x, y) {
+                    1 => Some("prev"),
+                    2 => Some("toggle"),
+                    3 => Some("next"),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    queue_command(json!({"op":op}));
+                }
                 0
             }
             WM_NCRBUTTONUP | WM_RBUTTONUP => {
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow().as_ref() {
-                        show_menu(state.nid.hWnd);
-                    }
-                });
+                // TrackPopupMenuEx pumps timer and command messages. Do not keep
+                // a RefCell borrow alive across its nested message loop.
+                let owner = STATE.with(|st| st.borrow().as_ref().map(|state| state.nid.hWnd));
+                if let Some(owner) = owner {
+                    show_menu(owner);
+                }
                 0
             }
             WM_LBUTTONDBLCLK => {
-                STATE.with(|st| {
-                    if st.borrow().is_some() {
-                        let exe =
-                            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
-                        let exe_str = exe.to_string_lossy();
-                        let _ = Command::new("cmd")
-                            .args(["/c", "start", "wocli-music", &*exe_str])
-                            .spawn();
-                    }
-                });
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                if button_at(hwnd, x, y) == 0 {
+                    open_console();
+                }
                 0
             }
             WM_PAINT => {
@@ -1574,14 +1596,8 @@ mod windows {
 
                     SetBkMode(mem_dc, TRANSPARENT as i32);
 
-                    let (text, is_paused, phase) = STATE.with(|st| {
-                        let borrowed = st.borrow();
-                        let s = borrowed.as_ref();
-                        let txt = s.map(|x| x.current_text.clone()).unwrap_or_default();
-                        let paused = s.map(|x| x.phase.as_str() == "paused").unwrap_or(false);
-                        let ph = s.map(|x| x.phase.clone()).unwrap_or_default();
-                        (txt, paused, ph)
-                    });
+                    let (text, phase) = PAINT_STATE.with(|snapshot| snapshot.borrow().clone());
+                    let is_paused = phase == "paused";
 
                     let hover = HOVER_BTN.load(Ordering::Relaxed);
 
@@ -1593,33 +1609,28 @@ mod windows {
                     };
                     let controls = w >= dp(180);
                     if controls {
-                        // 1. 绘制控制按钮背景（悬停浅底）
-                        let hover_brush = CreateSolidBrush(0x00282828);
-                        if hover == 1 {
+                        // Color-key pixels pass mouse input through to Explorer.
+                        // Give each button a solid face matching its entire hitbox.
+                        let normal_brush = CreateSolidBrush(0x00202020);
+                        let hover_brush = CreateSolidBrush(0x00404040);
+                        for (button, left, right) in [(1, 6, 34), (2, 36, 64), (3, 66, 94)] {
                             let btn_rc = RECT {
-                                left: dp(6),
+                                left: dp(left),
                                 top: dp(4),
-                                right: dp(34),
+                                right: dp(right),
                                 bottom: h - dp(4),
                             };
-                            FillRect(mem_dc, &btn_rc, hover_brush);
-                        } else if hover == 2 {
-                            let btn_rc = RECT {
-                                left: dp(36),
-                                top: dp(4),
-                                right: dp(64),
-                                bottom: h - dp(4),
-                            };
-                            FillRect(mem_dc, &btn_rc, hover_brush);
-                        } else if hover == 3 {
-                            let btn_rc = RECT {
-                                left: dp(66),
-                                top: dp(4),
-                                right: dp(94),
-                                bottom: h - dp(4),
-                            };
-                            FillRect(mem_dc, &btn_rc, hover_brush);
+                            FillRect(
+                                mem_dc,
+                                &btn_rc,
+                                if hover == button {
+                                    hover_brush
+                                } else {
+                                    normal_brush
+                                },
+                            );
                         }
+                        DeleteObject(normal_brush);
                         DeleteObject(hover_brush);
 
                         // 2. 绘制上一首、播放/暂停、下一首矢量文字图标
@@ -1784,92 +1795,127 @@ mod windows {
         }
     }
 
-    unsafe fn update_status(state: &mut TrayState) {
-        if let Ok(Some(st)) = ipc::request(&state.paths, json!({"op":"status"}), false) {
-            state.phase = st["phase"].as_str().unwrap_or("stopped").to_string();
-            let track = &st["track"];
-            state.current_title = track["title"].as_str().unwrap_or("未知歌曲").to_string();
-            state.current_artist = track["artist"].as_str().unwrap_or("未知歌手").to_string();
-            let pos = st["position"].as_f64().unwrap_or(0.0);
-            let dur = st["duration"].as_f64().unwrap_or(0.0);
-            let lyrics_text = st["lyrics"].as_str().unwrap_or("");
-            let offset = st["lyric_offset"].as_i64().unwrap_or(0);
-            state.current_volume = st["volume"].as_u64().unwrap_or(60) as u8;
-            state.current_mode = st["mode"].as_str().unwrap_or("list").to_string();
-            state.lyrics_bar_enabled = st["lyrics_bar"].as_bool().unwrap_or(true);
-            state.boss = st["boss"].as_bool().unwrap_or(false);
-
-            let active_lyr = active_lyric(lyrics_text, pos, offset);
-            let display_text = if state.boss {
-                "wocli-music".to_string()
-            } else if state.phase == "playing" {
-                active_lyr.unwrap_or_else(|| {
-                    format!("{} · {}", state.current_title, state.current_artist)
-                })
-            } else if state.phase == "paused" {
-                if let Some(lyr) = active_lyr {
-                    format!("已暂停: {}", lyr)
-                } else {
-                    format!("已暂停: {} · {}", state.current_title, state.current_artist)
-                }
-            } else {
-                "wocli-music".to_string()
-            };
-
-            if display_text != state.current_text {
-                state.current_text = display_text;
-                if state.taskbar.hwnd != 0 {
-                    InvalidateRect(state.taskbar.hwnd, null(), 0);
-                }
+    unsafe fn update_status(state: &mut TrayState) -> bool {
+        let update = state.backend.take_update();
+        if let Some(update) = update.as_ref().filter(|update| update.quit) {
+            if update.result.is_ok() {
+                return true;
             }
-
-            // 更新托盘 Tooltip（严格保证尾部 \0 结尾）
-            let tip = if state.boss {
-                "wocli".to_string()
+            // Keep the controls available if the daemon failed to shut down.
+            state.quitting = false;
+        }
+        if let Some(update) = update {
+            state.status_checked = Some(update.started);
+            let status = if update.started.elapsed() < std::time::Duration::from_secs(2) {
+                update.result.ok().flatten()
             } else {
-                format!(
-                    "wocli: {} · {}\n{}  {} / {}\n{}",
-                    state.current_title,
-                    state.current_artist,
-                    match state.phase.as_str() {
-                        "playing" => "播放中",
-                        "paused" => "已暂停",
-                        "loading" => "加载中",
-                        _ => "已停止",
-                    },
-                    clock(pos),
-                    clock(dur),
-                    state.current_text
-                )
+                None
             };
-            let wide_tip = to_wide(&tip);
-            let buf_len = state.nid.szTip.len();
-            let copy_len = (buf_len - 1).min(wide_tip.len());
-            state.nid.szTip.fill(0);
-            state.nid.szTip[..copy_len].copy_from_slice(&wide_tip[..copy_len]);
-            state.nid.szTip[buf_len - 1] = 0;
-            Shell_NotifyIconW(NIM_MODIFY, &state.nid);
+            if let Some(st) = status {
+                state.phase = st["phase"].as_str().unwrap_or("stopped").to_string();
+                let track = &st["track"];
+                state.current_title = track["title"].as_str().unwrap_or("未知歌曲").to_string();
+                state.current_artist = track["artist"].as_str().unwrap_or("未知歌手").to_string();
+                let pos = st["position"].as_f64().unwrap_or(0.0);
+                let dur = st["duration"].as_f64().unwrap_or(0.0);
+                let lyrics_text = st["lyrics"].as_str().unwrap_or("");
+                let offset = st["lyric_offset"].as_i64().unwrap_or(0);
+                state.current_volume = st["volume"].as_u64().unwrap_or(60) as u8;
+                state.current_mode = st["mode"].as_str().unwrap_or("list").to_string();
+                state.lyrics_bar_enabled = st["lyrics_bar"].as_bool().unwrap_or(true);
+                state.boss = st["boss"].as_bool().unwrap_or(false);
 
-            let visible = !state.boss
-                && state.lyrics_bar_enabled
-                && matches!(state.phase.as_str(), "playing" | "paused");
-            state.taskbar.refresh(visible);
-            if state.taskbar.hwnd != 0 {
-                SetWindowTextW(
-                    state.taskbar.hwnd,
-                    to_wide(if visible {
-                        &state.current_text
-                    } else {
-                        "wocli"
+                let active_lyr = active_lyric(lyrics_text, pos, offset);
+                let display_text = if state.boss {
+                    "wocli-music".to_string()
+                } else if state.phase == "playing" {
+                    active_lyr.unwrap_or_else(|| {
+                        format!("{} · {}", state.current_title, state.current_artist)
                     })
-                    .as_ptr(),
-                );
+                } else if state.phase == "paused" {
+                    if let Some(lyr) = active_lyr {
+                        format!("已暂停: {}", lyr)
+                    } else {
+                        format!("已暂停: {} · {}", state.current_title, state.current_artist)
+                    }
+                } else {
+                    "wocli-music".to_string()
+                };
+
+                if display_text != state.current_text {
+                    state.current_text = display_text;
+                    if state.taskbar.hwnd != 0 {
+                        InvalidateRect(state.taskbar.hwnd, null(), 0);
+                    }
+                }
+
+                // 更新托盘 Tooltip（严格保证尾部 \0 结尾）
+                let tip = if state.boss {
+                    "wocli".to_string()
+                } else {
+                    format!(
+                        "wocli: {} · {}\n{}  {} / {}\n{}",
+                        state.current_title,
+                        state.current_artist,
+                        match state.phase.as_str() {
+                            "playing" => "播放中",
+                            "paused" => "已暂停",
+                            "loading" => "加载中",
+                            _ => "已停止",
+                        },
+                        clock(pos),
+                        clock(dur),
+                        state.current_text
+                    )
+                };
+                set_tooltip(state, &tip);
+            } else {
+                clear_playback(state);
             }
-        } else {
-            state.taskbar.refresh(false);
-            if state.taskbar.hwnd != 0 {
-                SetWindowTextW(state.taskbar.hwnd, to_wide("wocli").as_ptr());
-            }
+        }
+        if state
+            .status_checked
+            .is_some_and(|time| time.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            clear_playback(state);
+        }
+
+        let visible = !state.boss
+            && state.lyrics_bar_enabled
+            && matches!(state.phase.as_str(), "playing" | "paused");
+        PAINT_STATE.with(|snapshot| {
+            *snapshot.borrow_mut() = (state.current_text.clone(), state.phase.clone());
+        });
+        state.taskbar.refresh(visible);
+        if state.taskbar.hwnd != 0 {
+            SetWindowTextW(
+                state.taskbar.hwnd,
+                to_wide(if visible {
+                    &state.current_text
+                } else {
+                    "wocli"
+                })
+                .as_ptr(),
+            );
+        }
+        false
+    }
+
+    unsafe fn clear_playback(state: &mut TrayState) {
+        state.phase = "stopped".into();
+        state.current_title.clear();
+        state.current_artist.clear();
+        state.current_text = "wocli-music".into();
+        state.boss = false;
+        state.status_checked = None;
+        set_tooltip(state, "wocli-music · 后台未连接");
+    }
+
+    unsafe fn set_tooltip(state: &mut TrayState, text: &str) {
+        let tip = super::tooltip_utf16::<128>(text);
+        if state.nid.szTip != tip {
+            state.nid.szTip = tip;
+            Shell_NotifyIconW(NIM_MODIFY, &state.nid);
         }
     }
 
@@ -1917,8 +1963,14 @@ mod windows {
                 let mode_str = format!("模式: {}", mode_label(&state.current_mode));
                 AppendMenuW(hmenu, MF_STRING, CMD_MODE, to_wide(&mode_str).as_ptr());
 
-                let vol_str = format!("音量: {}% (点击 +10%)", state.current_volume);
+                let vol_str = format!("音量: {}%（增加 10%）", state.current_volume);
                 AppendMenuW(hmenu, MF_STRING, CMD_VOL_UP, to_wide(&vol_str).as_ptr());
+                AppendMenuW(
+                    hmenu,
+                    MF_STRING,
+                    CMD_VOL_DOWN,
+                    to_wide("降低音量 10%").as_ptr(),
+                );
 
                 let lb_str = format!(
                     "任务栏歌词: {}",
@@ -1962,78 +2014,67 @@ mod windows {
             null(),
         );
         DestroyMenu(hmenu);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
     }
 
-    unsafe fn handle_command(hwnd: HWND, cmd: usize) {
+    fn queue_command(command: serde_json::Value) {
+        STATE.with(|st| {
+            if let Some(state) = st.borrow().as_ref() {
+                if !state.quitting && !state.backend.send(command) {
+                    eprintln!("托盘请求队列已满或后台工作线程已停止，请稍后重试");
+                }
+            }
+        });
+    }
+
+    fn open_console() {
+        let paths = STATE.with(|st| st.borrow().as_ref().map(|state| state.paths.clone()));
+        if let Some(paths) = paths {
+            if let Err(error) = ipc::spawn_console(&paths) {
+                eprintln!("打开控制终端失败：{error}");
+            }
+        }
+    }
+
+    unsafe fn handle_command(_hwnd: HWND, cmd: usize) {
+        if cmd == CMD_TUI {
+            open_console();
+            return;
+        }
         STATE.with(|st| {
             if let Some(state) = st.borrow_mut().as_mut() {
-                match cmd {
-                    CMD_TOGGLE => {
-                        let _ = ipc::request(&state.paths, json!({"op":"toggle"}), true);
+                if state.quitting {
+                    return;
+                }
+                let request = match cmd {
+                    CMD_TOGGLE => json!({"op":"toggle"}),
+                    CMD_PREV => json!({"op":"prev"}),
+                    CMD_NEXT => json!({"op":"next"}),
+                    CMD_MODE => json!({"op":"tray_mode"}),
+                    CMD_VOL_UP => json!({"op":"tray_volume","delta":10}),
+                    CMD_VOL_DOWN => json!({"op":"tray_volume","delta":-10}),
+                    CMD_LYRICS_BAR => json!({"op":"tray_lyrics_bar"}),
+                    CMD_BOSS => json!({"op":"boss"}),
+                    CMD_DAILY => {
+                        super::play_daily(state.paths.clone());
+                        return;
                     }
-                    CMD_PREV => {
-                        let _ = ipc::request(&state.paths, json!({"op":"prev"}), true);
-                    }
-                    CMD_NEXT => {
-                        let _ = ipc::request(&state.paths, json!({"op":"next"}), true);
-                    }
-                    CMD_MODE => {
-                        let next_mode = match state.current_mode.as_str() {
-                            "list" => "repeat",
-                            "repeat" => "single",
-                            "single" => "shuffle",
-                            _ => "list",
-                        };
-                        let _ = ipc::request(
-                            &state.paths,
-                            json!({"op":"config","key":"mode","value":next_mode}),
-                            true,
-                        );
-                    }
-                    CMD_VOL_UP => {
-                        let next_vol = if state.current_volume >= 100 {
-                            20
-                        } else {
-                            (state.current_volume + 10).min(100)
-                        };
-                        let _ = ipc::request(
-                            &state.paths,
-                            json!({"op":"config","key":"volume","value":next_vol}),
-                            true,
-                        );
-                    }
-                    CMD_LYRICS_BAR => {
-                        let next_lb = !state.lyrics_bar_enabled;
-                        let _ = ipc::request(
-                            &state.paths,
-                            json!({"op":"config","key":"lyrics_bar","value":next_lb}),
-                            true,
-                        );
-                    }
-                    CMD_BOSS => {
-                        let _ = ipc::request(&state.paths, json!({"op":"boss"}), true);
-                    }
-                    CMD_DAILY => super::play_daily(state.paths.clone()),
-                    CMD_TUI => {
-                        let exe =
-                            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli.exe"));
-                        let exe_str = exe.to_string_lossy();
-                        let _ = Command::new("cmd")
-                            .args(["/c", "start", "wocli-music", &*exe_str])
-                            .spawn();
-                    }
-                    CMD_QUIT => {
-                        let _ = super::stop(&state.paths);
-                        let _ = ipc::request(&state.paths, json!({"op":"shutdown"}), false);
-                        DestroyWindow(hwnd);
-                    }
-                    _ => {}
+                    CMD_QUIT => json!({"op":"shutdown"}),
+                    _ => return,
+                };
+                if state.backend.send(request) {
+                    // The worker asks the UI to close once shutdown completes.
+                    // Never call tray::stop here: it would wait for / kill itself.
+                    state.quitting = cmd == CMD_QUIT;
+                } else {
+                    eprintln!("托盘请求队列已满或后台工作线程已停止，请稍后重试");
                 }
             }
         });
     }
 
     pub fn run_tray(paths: Paths) -> Result<()> {
+        let settings = paths.settings()?;
         unsafe {
             let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null());
             let tray_class_name = to_wide("wocli_tray_class");
@@ -2115,6 +2156,7 @@ mod windows {
             RegisterClassW(&lwc);
 
             let taskbar = super::windows_taskbar::TaskbarLyrics::new(&paths, lyrics_class_name);
+            let backend = super::windows_backend::Backend::start(paths.clone());
             STATE.with(|st| {
                 *st.borrow_mut() = Some(TrayState {
                     paths: paths.clone(),
@@ -2123,12 +2165,15 @@ mod windows {
                     current_text: "wocli-music".into(),
                     current_title: "".into(),
                     current_artist: "".into(),
-                    current_mode: "list".into(),
-                    current_volume: 60,
-                    lyrics_bar_enabled: true,
+                    current_mode: settings.mode,
+                    current_volume: settings.volume,
+                    lyrics_bar_enabled: settings.lyrics_bar,
                     boss: false,
                     boss_shortcut_label,
                     phase: "stopped".into(),
+                    backend,
+                    status_checked: None,
+                    quitting: false,
                 });
             });
 
@@ -2148,6 +2193,41 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_tooltip_preserves_unicode_and_null_termination() {
+        assert_eq!(
+            String::from_utf16(&tooltip_utf16::<5>("歌词😀")[..4]).unwrap(),
+            "歌词😀"
+        );
+        assert_eq!(
+            tooltip_utf16::<4>("歌词😀"),
+            ['歌' as u16, '词' as u16, 0, 0]
+        );
+        assert_eq!(tooltip_utf16::<3>("a\0b"), [97, 0, 0]);
+        assert_eq!(tooltip_utf16::<1>("歌"), [0]);
+        assert_eq!(tooltip_utf16::<0>("歌"), [0u16; 0]);
+    }
+
+    #[test]
+    fn status_preserves_lock_shared_with_a_concurrent_starter() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: home.path().into(),
+            runtime: home.path().into(),
+        };
+        let starter = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path(&paths))
+            .unwrap();
+        assert!(!status(&paths).unwrap());
+        starter.try_lock_exclusive().unwrap();
+        assert!(status(&paths).unwrap());
+        drop(starter);
+        assert!(!status(&paths).unwrap());
+    }
 
     #[test]
     fn test_active_lyric_parser() {
