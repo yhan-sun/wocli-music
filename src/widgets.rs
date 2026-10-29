@@ -33,6 +33,16 @@ fn directory() -> Result<PathBuf> {
         .ok_or_else(|| Error::new("无法确定 LOCALAPPDATA，不能配置系统 Widgets"))
 }
 
+pub(crate) fn config_path() -> Result<PathBuf> {
+    Ok(directory()?.join("widgets.json"))
+}
+
+pub(crate) fn action_allowed_at(config_path: &Path, paths: &Paths) -> Result<bool> {
+    let endpoint = endpoint_path(paths)?;
+    Ok(read_config(config_path)?
+        .is_some_and(|config| config.enabled && config.endpoint_path == endpoint))
+}
+
 fn read_json(path: &Path, limit: u64) -> Result<Option<Value>> {
     let file = match fs::File::open(path) {
         Ok(file) => file,

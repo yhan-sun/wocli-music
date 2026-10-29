@@ -142,6 +142,7 @@ struct Service {
     lyric_error: String,
     lyric_serial: u64,
     lyric_session: u128,
+    widget_config_path: Option<PathBuf>,
     lyric_cancelled: Arc<AtomicBool>,
     generation: u64,
     direct_override: bool,
@@ -211,6 +212,7 @@ impl Service {
             lyric_error: String::new(),
             lyric_serial: 0,
             lyric_session: rand::random(),
+            widget_config_path: crate::widgets::config_path().ok(),
             lyric_cancelled: Arc::new(AtomicBool::new(false)),
             generation: 0,
             direct_override: false,
@@ -1152,7 +1154,9 @@ impl Service {
             // cached by Windows after the track, playback state or privacy mode
             // changes; its old buttons must not control the new playback.
             let snapshot = self.lyrics_snapshot();
-            if !self.settings.lyrics_bar
+            if !self.widget_config_path.as_ref().is_some_and(|path| {
+                crate::widgets::action_allowed_at(path, &self.paths).unwrap_or(false)
+            }) || !self.settings.lyrics_bar
                 || self.boss
                 || !matches!(self.phase.as_str(), "playing" | "paused")
                 || snapshot["track_id"].as_str().unwrap_or_default().is_empty()
@@ -2084,6 +2088,17 @@ mod playback_tests {
             .unwrap();
             service.player.null = true;
             service.settings.mode = mode.into();
+            let config_path = dir.path().join("widgets.json");
+            fs::write(
+                &config_path,
+                serde_json::to_vec(&json!({
+                    "schema": 1, "mode": "system", "enabled": true,
+                    "endpoint_path": std::path::absolute(service.paths.socket()).unwrap(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            service.widget_config_path = Some(config_path);
             Self { service, rx, dir }
         }
         fn track(&self, name: &str, good: bool) -> Track {
@@ -2180,7 +2195,9 @@ mod playback_tests {
         for harness in [&mut first, &mut restarted] {
             harness.service.queue = vec![track.clone()];
             harness.service.phase = "playing".into();
-            harness.service.generation = u64::MAX;
+            // Keep the widest counter representation while leaving room for
+            // Harness::drop to advance the generation when it stops playback.
+            harness.service.generation = u64::MAX - 1;
         }
         let old = first.service.lyrics_snapshot();
         let current = restarted.service.lyrics_snapshot();
@@ -2305,6 +2322,45 @@ mod playback_tests {
                 .code,
             "stale_widget_action"
         );
+    }
+
+    #[test]
+    fn widget_buttons_recheck_configuration_when_the_request_reaches_the_daemon() {
+        let mut h = Harness::new("list");
+        let track = h.track("widget-config-race", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let snapshot = h.service.lyrics_snapshot();
+        let request = json!({"op":"widget_action", "action":"pause",
+            "track_id":snapshot["track_id"], "state":snapshot["state"]});
+        let config_path = h.service.widget_config_path.clone().unwrap();
+        let enabled = fs::read(&config_path).unwrap();
+        // The provider may have validated a button before another process
+        // disables Widgets or selects a different library. Check again here.
+        for changed in [
+            json!({"schema":1, "mode":"system", "enabled":false,
+                "endpoint_path":std::path::absolute(h.service.paths.socket()).unwrap()}),
+            json!({"schema":1, "mode":"system", "enabled":true,
+                "endpoint_path":h.dir.path().join("other-library-endpoint")}),
+            json!({"corrupt":true}),
+        ] {
+            fs::write(&config_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert_eq!(
+                h.service.dispatch(request.clone()).unwrap_err().code,
+                "stale_widget_action"
+            );
+            assert_eq!(h.service.phase, "playing");
+        }
+        fs::remove_file(&config_path).unwrap();
+        assert_eq!(
+            h.service.dispatch(request.clone()).unwrap_err().code,
+            "stale_widget_action"
+        );
+        assert_eq!(h.service.phase, "playing");
+        fs::write(&config_path, enabled).unwrap();
+        assert_eq!(h.service.dispatch(request).unwrap()["state"], "paused");
     }
 
     #[test]
