@@ -57,7 +57,14 @@ jobs:
           $nativeBundle = Get-ChildItem ./build/native -Directory | Where-Object Name -Match 'windows-x86_64$' | Select-Object -First 1
           if (-not $nativeBundle) { throw 'Native player notices bundle not found' }
           ./scripts/build_windows_widgets.ps1 -Architecture x64 -PlayerBinary ./target/release/wocli.exe -NativeBundleDirectory $nativeBundle.FullName
-          Copy-Item ./dist/*-windows-x86_64-sources.zip ./artifacts/system-widgets-preview/x64/
+          $previewDirectory = './artifacts/system-widgets-preview/x64'
+          $sourceArchives = @(Get-ChildItem ./dist/*-windows-x86_64-sources.zip -File)
+          if ($sourceArchives.Count -ne 1) { throw 'Expected exactly one matching dependency source archive' }
+          foreach ($sourceArchive in $sourceArchives) {
+            Copy-Item -LiteralPath $sourceArchive.FullName -Destination $previewDirectory
+            $sourceHash = (Get-FileHash -LiteralPath $sourceArchive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$sourceHash  $($sourceArchive.Name)" | Add-Content -LiteralPath "$previewDirectory/SHA256SUMS" -Encoding utf8
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: system-widgets-preview-x64

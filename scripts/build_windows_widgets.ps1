@@ -318,7 +318,7 @@ try {
     @"
 wocli system Widgets preview ($Architecture)
 
-This is an unsigned development preview, not a release or an installer.
+This is an unsigned development preview, not a stable release or an installer.
 Core tests, provider publication and MakeAppx validation passed. This does not
 prove that the Widgets host permits or displays taskbar announcements on a PC.
 The matching player must come from this same development branch. Stable 0.4.10
