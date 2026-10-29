@@ -15,6 +15,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("visible lifecycle, deduplication and idle TCP suspension", BoardLifecycle),
     ("privacy clears, recovery, shell retries and private diagnostics", BoardPrivacy),
     ("guarded actions reject replay and stale library/track controls", BoardActions),
+    ("server rejects a raced action and refreshes without reporting offline", BoardStaleActions),
     ("late responses and lifecycle callbacks cannot resurrect content", BoardRaces),
 };
 var failures = 0;
@@ -296,6 +297,34 @@ static async Task BoardActions()
     Check(ActionCount(other) == 1, "inactive card accepted action");
 }
 
+static async Task BoardStaleActions()
+{
+    await using var daemon = new FakeDaemon { Reply = Reply("旧歌词"), GuardActions = true };
+    using var directory = new TemporaryDirectory();
+    var endpoint = directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
+    var sink = new RecordingWidgetSink();
+    await using var runtime = MakeBoard(sink, directory, endpoint);
+    runtime.Upsert("widget", CardSize.Medium, true); runtime.Start();
+    await Until(() => HasLine(sink, "旧歌词"), "initial card missing");
+    var oldNonce = Nonce(sink.Latest["widget"]);
+    var states = new ConcurrentQueue<string>();
+    sink.OnUpdate = (_, _) => states.Enqueue(runtime.GetSnapshot().State);
+    // The player changes after the click has passed the Core checks, before
+    // its guarded action is checked inside the daemon's serialized handler.
+    daemon.BeforeAction = () => daemon.Reply = Reply("新歌词", track: "song:2", state: "paused");
+    await runtime.HandleActionAsync("widget", "next", oldNonce);
+    await Until(() => states.Contains("refreshing") && HasLine(sink, "新歌词"), "stale action did not immediately refresh the card");
+    Check(!states.Contains("offline") && daemon.ExecutedActions == 0, "stale control executed or was reported as a connection failure");
+    Check(sink.Latest["widget"].Template.Contains("resume", StringComparison.Ordinal), "refreshed paused card has wrong controls");
+    var actions = ActionCount(daemon);
+    await runtime.HandleActionAsync("widget", "next", oldNonce);
+    await Task.Delay(40);
+    Check(ActionCount(daemon) == actions, "old card nonce remained valid after refresh");
+    daemon.BeforeAction = null;
+    await runtime.HandleActionAsync("widget", "resume", Nonce(sink.Latest["widget"]));
+    await Until(() => daemon.ExecutedActions == 1, "fresh control did not work after stale-action recovery");
+}
+
 static async Task BoardRaces()
 {
     await using var first = new FakeDaemon { Reply = Reply("迟到旧歌词"), Delay = 200 };
@@ -368,6 +397,9 @@ sealed class FakeDaemon : IAsyncDisposable
     public volatile string Reply = "{}";
     public volatile bool Stall;
     public volatile int Delay;
+    public volatile bool GuardActions;
+    public Action? BeforeAction;
+    public int ExecutedActions;
     public ConcurrentQueue<string> Requests { get; } = new();
     public int Active;
     public int PeakActive;
@@ -404,6 +436,21 @@ sealed class FakeDaemon : IAsyncDisposable
                 Requests.Enqueue(request ?? "");
                 if (Stall) { await stream.ReadAsync(new byte[1], _closed.Token); return; }
                 var reply = token == Secret ? Reply : "{\"ok\":false,\"error\":\"auth rejected\"}";
+                if (token == Secret && GuardActions && request is not null)
+                {
+                    using var command = JsonDocument.Parse(request);
+                    if (command.RootElement.GetProperty("op").GetString() == "widget_action")
+                    {
+                        BeforeAction?.Invoke();
+                        reply = Reply;
+                        using var current = JsonDocument.Parse(reply);
+                        var data = current.RootElement.GetProperty("data");
+                        if (command.RootElement.GetProperty("track_id").GetString() != data.GetProperty("track_id").GetString() ||
+                            command.RootElement.GetProperty("state").GetString() != data.GetProperty("state").GetString())
+                            reply = "{\"ok\":false,\"code\":\"stale_widget_action\"}";
+                        else Interlocked.Increment(ref ExecutedActions);
+                    }
+                }
                 if (Delay > 0) await Task.Delay(Delay, _closed.Token);
                 await stream.WriteAsync(Encoding.UTF8.GetBytes(reply + "\n"), _closed.Token);
             }

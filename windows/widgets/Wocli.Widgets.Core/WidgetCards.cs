@@ -81,6 +81,7 @@ public static class WidgetCards
         "stopped" => "播放音乐后在这里查看歌词",
         "inactive" => "展开小组件面板后刷新歌词",
         "switching_source" => "正在切换播放器",
+        "refreshing" => "正在刷新播放状态",
         _ => "正在连接播放器"
     };
 }

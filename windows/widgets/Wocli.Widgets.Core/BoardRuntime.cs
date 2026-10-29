@@ -243,6 +243,15 @@ public sealed class BoardRuntime : IAsyncDisposable
                         if (_generation == generation && _action is null) ClearLocked("offline", _enabled, "request_timeout");
                     }
                 }
+                catch (ProtocolException error) when (error.Code == "stale_widget_action")
+                {
+                    // Track/state may advance between rendering and clicking.
+                    // The daemon rejected the action without executing it; this
+                    // is a refresh, not a connection failure. Immediately poll
+                    // for a new snapshot and issue a fresh action nonce.
+                    lock (_gate) ClearLocked("refreshing", _enabled, error.Code);
+                    Wake();
+                }
                 catch (Exception error) when (error is IOException or SocketException or UnauthorizedAccessException or JsonException or ArgumentException)
                 {
                     lock (_gate) ClearLocked("offline", _enabled, error is ProtocolException protocol ? protocol.Code : "connection_unavailable");
