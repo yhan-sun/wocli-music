@@ -1,6 +1,10 @@
 #requires -Version 7.4
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ProviderPath)
+param(
+    [Parameter(Mandatory)][string]$ProviderPath,
+    [switch]$PackagedProxy,
+    [string]$LogDirectory = ''
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -9,13 +13,18 @@ if (-not (Test-Path -LiteralPath $provider -PathType Leaf)) { throw 'ProviderPat
 
 # Self-test mode does not read user configuration or contact the player/Widgets.
 # Logs live outside the package staging tree, which a failed build removes.
-$logDirectory = Join-Path ([IO.Path]::GetTempPath()) ('wocli-widgets-self-test-' + [Guid]::NewGuid().ToString('N'))
+if (-not $LogDirectory) {
+    $LogDirectory = Join-Path ([IO.Path]::GetTempPath()) ('wocli-widgets-self-test-' + [Guid]::NewGuid().ToString('N'))
+}
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $stdout = Join-Path $logDirectory 'stdout.log'
 $stderr = Join-Path $logDirectory 'stderr.log'
 $process = $null
 try {
-    $process = Start-Process -FilePath $provider -ArgumentList '--self-test' -PassThru `
+    $argument = if ($PackagedProxy) { '--self-test-packaged-proxy' } else { '--self-test' }
+    $scope = if ($PackagedProxy) { 'package identity and LOCAL_SERVER proxy activation' } else { 'in-process COM factory and interfaces' }
+    Write-Host "Provider self-test scope: $scope. No Widgets host/display test."
+    $process = Start-Process -FilePath $provider -ArgumentList $argument -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     if (-not $process.WaitForExit(60000)) {
         $process.Kill($true)

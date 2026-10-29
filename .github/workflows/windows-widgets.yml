@@ -11,6 +11,7 @@ on:
       - build.rs
       - scripts/build_windows_widgets.ps1
       - scripts/test_windows_widgets.ps1
+      - scripts/test_windows_widgets_package.ps1
       - .github/workflows/windows-widgets.yml
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - build.rs
       - scripts/build_windows_widgets.ps1
       - scripts/test_windows_widgets.ps1
+      - scripts/test_windows_widgets_package.ps1
       - .github/workflows/windows-widgets.yml
   workflow_dispatch:
 
@@ -42,13 +44,13 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '8.0.x'
-      - name: Check provider COM activation before the full player build
+      - name: Build and validate the provider before the full player build
         shell: pwsh
         run: |
-          $providerDirectory = Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight'
-          dotnet publish ./windows/widgets/Wocli.Widgets/Wocli.Widgets.csproj --configuration Release --runtime win-x64 --self-contained true --output $providerDirectory -p:Platform=x64 -p:WindowsAppSDKSelfContained=false -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/test_windows_widgets.ps1 -ProviderPath (Join-Path $providerDirectory 'Wocli.Widgets.exe')
+          ./scripts/build_windows_widgets.ps1 -Architecture x64 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight')
+      - name: Validate package identity and COM proxy registration on the temporary runner
+        shell: powershell
+        run: ./scripts/test_windows_widgets_package.ps1 -PreviewDirectory (Join-Path $env:RUNNER_TEMP 'wocli-widgets-preflight/x64')
       - name: Build matching development player
         shell: pwsh
         run: |
@@ -74,6 +76,9 @@ jobs:
             $sourceHash = (Get-FileHash -LiteralPath $sourceArchive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$sourceHash  $($sourceArchive.Name)" | Add-Content -LiteralPath "$previewDirectory/SHA256SUMS" -Encoding utf8
           }
+      - name: Verify the final development package registration
+        shell: powershell
+        run: ./scripts/test_windows_widgets_package.ps1 -PreviewDirectory ./artifacts/system-widgets-preview/x64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: system-widgets-preview-x64

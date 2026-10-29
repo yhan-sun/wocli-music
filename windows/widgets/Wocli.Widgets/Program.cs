@@ -11,6 +11,8 @@ internal static class Program
     {
         if (args.Length == 1 && args[0] == "--self-test")
             return ProviderSelfTest.Run();
+        if (args.Length == 1 && args[0] == "--self-test-packaged-proxy")
+            return ProviderSelfTest.Run(verifyPackagedProxy: true);
         if (args.Length == 1 && args[0] == "--stop")
             return StopRunningProvider();
         if (!IsServerActivation(args))

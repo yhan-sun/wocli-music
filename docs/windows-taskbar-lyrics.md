@@ -47,6 +47,8 @@ python .\scripts\build_native.py --platform windows-x86_64
 
 脚本只构建和检查，不安装证书、不启用开发者模式、不修改系统地区或小组件设置。使用开发注册前，按产物中的 `PREVIEW.txt` 操作；注册后的 `Layout` 必须留在固定路径。普通双击安装未签名 MSIX 不可用，正式签名分发尚未完成。
 
+基础 `--self-test` 检查进程内 COM 类工厂和三个接口；它不具备包身份，不能验证框架包的代理注册。CI 另在临时 Windows runner 上安装依赖并开发注册完整 `Layout`，以真实包身份运行 `--self-test-packaged-proxy`，验证临时 COM 类的本地服务器代理激活。此测试不会调用 FeedManager 或 Explorer；不代表真实 Widgets 宿主自动激活正式组件或显示公告已通过。仅 CI 专用脚本执行安装和临时开发模式设置，并在结束后卸载预览注册、还原设置；普通构建脚本不执行这些操作。
+
 安装并在系统 Widgets 设置启用 wocli Feed 后，使用预览播放器：
 
 ```powershell

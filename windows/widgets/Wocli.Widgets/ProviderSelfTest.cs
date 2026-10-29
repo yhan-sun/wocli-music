@@ -1,12 +1,13 @@
 using System.Runtime.InteropServices;
 using Microsoft.Windows.Widgets.Feeds.Providers;
+using Windows.ApplicationModel;
 using Wocli.Widgets.Core;
 
 namespace Wocli.Widgets;
 
 internal static class ProviderSelfTest
 {
-    public static int Run()
+    public static int Run(bool verifyPackagedProxy = false)
     {
         RuntimeLoop? runtime = null;
         string stage = "activation arguments";
@@ -24,6 +25,11 @@ internal static class ProviderSelfTest
             using var apartment = new ComApartment();
             Report(stage = "initialize C#/WinRT wrappers");
             WinRT.ComWrappersSupport.InitializeComWrappers();
+            if (verifyPackagedProxy)
+            {
+                Report(stage = "require package identity");
+                Report($"Packaged identity verified: {Package.Current.Id.FullName}");
+            }
             Report(stage = "read projected interface identities");
             foreach (var type in new[] { typeof(IFeedProvider), typeof(IFeedResourceProvider), typeof(IFeedAnnouncementInvokedTarget) })
                 Report($"{type.FullName} IID={type.GUID:D}, GuidAttribute={type.GetCustomAttributes(typeof(GuidAttribute), false).Cast<GuidAttribute>().SingleOrDefault()?.Value ?? "missing"}");
@@ -36,8 +42,16 @@ internal static class ProviderSelfTest
             Report(stage = "register temporary COM class");
             using var server = new ComServer(provider, classId, Report);
             var iid = typeof(IFeedProvider).GUID;
-            Report(stage = "CoCreateInstance IFeedProvider");
-            Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, 4, ref iid, out var instance));
+            // REGCLS_MULTIPLEUSE + CLSCTX_LOCAL_SERVER also registers the factory
+            // in-process. The basic test uses that registration to validate the
+            // CCW without assuming unpackaged SDK proxy registration. The explicit
+            // packaged mode retains LOCAL_SERVER to verify the actual SDK proxies.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/ne-combaseapi-regcls
+            Report(verifyPackagedProxy
+                ? "Scope: packaged local-server proxy activation for a temporary class and three interfaces; no Widgets host or display test."
+                : "Scope: in-process COM factory/CCW and three interfaces; SDK proxies, packaged activation and Widgets display require separate integration verification.");
+            Report(stage = verifyPackagedProxy ? "CoCreateInstance packaged local-server IFeedProvider" : "CoCreateInstance in-process IFeedProvider");
+            Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, verifyPackagedProxy ? 4u : 1u, ref iid, out var instance));
             try
             {
                 Report(stage = "QueryInterface IFeedProvider");

@@ -217,7 +217,7 @@ try {
         throw "The selected Windows App SDK framework has additional package dependencies that must be bundled: $($runtimeDependencies.OuterXml -join ', ')"
     }
     Export-DotnetNotices $restoreAssets $runtimeConfig (Join-Path $layout 'licenses')
-    # This COM round-trip checks our interfaces without installing the package,
+    # This in-process COM round-trip checks our interfaces without installing the package,
     # opening a Widgets host or connecting to a user's player daemon.
     # Cross-architecture execution must be tested on its own native runner.
     $nativeArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
@@ -299,6 +299,8 @@ try {
         signed = $false
         developmentPlayerIncluded = [bool]$PlayerBinary
         providerComSelfTestPassed = $selfTestPassed
+        providerComSelfTestScope = 'in-process COM factory and interfaces; no packaged proxy or Widgets host test'
+        providerPackagedProxySelfTestPassed = $false
         packageBytes = $packageBytes
         layoutBytes = $payloadBytes
         layoutFileCount = $payload.Count
@@ -312,6 +314,9 @@ wocli system Widgets preview ($Architecture)
 This is an unsigned development preview, not a stable release or an installer.
 Core tests, provider publication and MakeAppx validation passed. This does not
 prove that the Widgets host permits or displays taskbar announcements on a PC.
+The basic COM self-test checks the in-process factory and interfaces only.
+See providerPackagedProxySelfTestPassed in build-info.json for the separate
+CI-only package-identity and LOCAL_SERVER proxy-activation test result.
 The matching player must come from this same development branch. Stable 0.4.10
 does not implement the required lyrics_snapshot IPC or wocli widgets commands.
 The included player reports 0.4.11-alpha.1, an explicitly experimental build.
