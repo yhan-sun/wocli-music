@@ -27,36 +27,30 @@ internal static class Program
         try
         {
             using var apartment = new ComApartment();
-            // Feed providers require package identity. Fail before touching playback
-            // when someone runs the preview EXE outside its MSIX package.
+            // Widget providers require package identity. Fail before touching IPC
+            // when someone runs the EXE outside its MSIX package.
             WinRT.ComWrappersSupport.InitializeComWrappers();
             _ = Package.Current.Id;
             using var stop = new EventWaitHandle(false, EventResetMode.ManualReset, ProviderIdentity.StopEventName);
             stop.Reset();
-            FeedProvider? provider = null;
-            using var disabledExit = new Timer(_ =>
-            {
-                if (provider?.TryBeginDisabledShutdown() == true) stop.Set();
-            }, null, Timeout.Infinite, Timeout.Infinite);
-            var runtime = new RuntimeLoop(new SystemAnnouncementSink());
-            provider = new FeedProvider(runtime, enabled => disabledExit.Change(
-                enabled ? Timeout.Infinite : 2_000, Timeout.Infinite));
+            var runtime = new BoardRuntime(new SystemWidgetSink());
+            var provider = new WidgetProvider(runtime);
             using var server = new ComServer(provider);
             try
             {
                 runtime.Start();
-                if (!provider.RestoreEnabledState()) return 1;
-                // No busy wait: COM callbacks run in the MTA while this thread sleeps.
+                if (!provider.RestoreWidgets()) return 1;
+                // No idle-exit timer can race a new host activation. The runtime
+                // suspends lyric IPC when no widget is active; COM callbacks run
+                // in the MTA while this thread sleeps until explicit shutdown.
                 stop.WaitOne();
             }
             finally
             {
-                // Revoke first so a new activation cannot race announcement cleanup.
+                // Revoke first so a new activation cannot race card cleanup.
                 provider.BeginShutdown();
                 server.Dispose();
-                disabledExit.Change(Timeout.Infinite, Timeout.Infinite);
-                try { runtime.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-                finally { disabledExit.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                runtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
             return 0;
         }

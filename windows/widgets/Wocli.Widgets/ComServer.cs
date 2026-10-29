@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using Microsoft.Windows.Widgets.Feeds.Providers;
+using Microsoft.Windows.Widgets.Providers;
 using WinRT;
 
 namespace Wocli.Widgets;
@@ -18,7 +18,7 @@ public interface IClassFactory
 [ComVisible(true)]
 [ClassInterface(ClassInterfaceType.None)]
 [ComDefaultInterface(typeof(IClassFactory))]
-public sealed class FeedClassFactory(FeedProvider provider, Action<string>? diagnostics = null) : IClassFactory
+public sealed class WidgetClassFactory(WidgetProvider provider, Action<string>? diagnostics = null) : IClassFactory
 {
     public int CreateInstance(nint outer, ref Guid iid, out nint result)
     {
@@ -29,7 +29,7 @@ public sealed class FeedClassFactory(FeedProvider provider, Action<string>? diag
         try
         {
             diagnostics?.Invoke($"factory.CreateInstance requested IID={iid:D}");
-            inspectable = MarshalInspectable<IFeedProvider>.FromManaged(provider);
+            inspectable = MarshalInspectable<IWidgetProvider>.FromManaged(provider);
             diagnostics?.Invoke("factory.FromManaged succeeded");
             // Return the requested interface, rather than treating a CLSID as an IID.
             int status = Marshal.QueryInterface(inspectable, ref iid, out result);
@@ -48,19 +48,19 @@ public sealed class FeedClassFactory(FeedProvider provider, Action<string>? diag
         }
     }
 
-    // This local server remains alive while its one feed is enabled. It is revoked
+    // This local server remains alive until its stop event is signalled. It is revoked
     // explicitly at shutdown, after which no new objects can be activated.
     public int LockServer(bool locked) => 0;
 }
 
 internal sealed class ComServer : IDisposable
 {
-    private readonly FeedClassFactory _factory;
+    private readonly WidgetClassFactory _factory;
     private uint _cookie;
 
-    public ComServer(FeedProvider provider, Guid? classId = null, Action<string>? diagnostics = null)
+    public ComServer(WidgetProvider provider, Guid? classId = null, Action<string>? diagnostics = null)
     {
-        _factory = new FeedClassFactory(provider, diagnostics);
+        _factory = new WidgetClassFactory(provider, diagnostics);
         Marshal.ThrowExceptionForHR(CoRegisterClassObject(
             classId ?? new Guid(ProviderIdentity.ClassId), _factory, 4, 1, out _cookie));
     }

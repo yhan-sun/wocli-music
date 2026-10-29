@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
-using Microsoft.Windows.Widgets.Feeds.Providers;
+using System.Text.Json;
+using Microsoft.Windows.Widgets.Providers;
 using Windows.ApplicationModel;
 using Wocli.Widgets.Core;
 
@@ -9,7 +10,7 @@ internal static class ProviderSelfTest
 {
     public static int Run(bool verifyPackagedProxy = false)
     {
-        RuntimeLoop? runtime = null;
+        BoardRuntime? runtime = null;
         string stage = "activation arguments";
         try
         {
@@ -30,36 +31,31 @@ internal static class ProviderSelfTest
                 Report(stage = "require package identity");
                 Report($"Packaged identity verified: {Package.Current.Id.FullName}");
             }
-            Report(stage = "read projected interface identities");
-            foreach (var type in new[] { typeof(IFeedProvider), typeof(IFeedResourceProvider), typeof(IFeedAnnouncementInvokedTarget) })
-                Report($"{type.FullName} IID={type.GUID:D}, GuidAttribute={type.GetCustomAttributes(typeof(GuidAttribute), false).Cast<GuidAttribute>().SingleOrDefault()?.Value ?? "missing"}");
-            // This runtime is never started; no config, daemon, FeedManager or
+            Report(stage = "read projected interface identity");
+            var type = typeof(IWidgetProvider);
+            Report($"{type.FullName} IID={type.GUID:D}, GuidAttribute={type.GetCustomAttributes(typeof(GuidAttribute), false).Cast<GuidAttribute>().SingleOrDefault()?.Value ?? "missing"}");
+            // This runtime is never started; no config, daemon, WidgetManager or
             // Widgets host is contacted by this test.
             Report(stage = "construct inactive provider");
-            runtime = new RuntimeLoop(new NoSystemSink());
-            var provider = new FeedProvider(runtime, _ => { });
+            runtime = new BoardRuntime(new NoSystemSink());
+            var provider = new WidgetProvider(runtime);
             var classId = Guid.NewGuid();
             Report(stage = "register temporary COM class");
             using var server = new ComServer(provider, classId, Report);
-            var iid = typeof(IFeedProvider).GUID;
+            var iid = typeof(IWidgetProvider).GUID;
             // REGCLS_MULTIPLEUSE + CLSCTX_LOCAL_SERVER also registers the factory
-            // in-process. The basic test uses that registration to validate the
-            // CCW without assuming unpackaged SDK proxy registration. The explicit
-            // packaged mode retains LOCAL_SERVER to verify the actual SDK proxies.
+            // in-process. The basic test validates the CCW without assuming SDK
+            // proxy registration; packaged mode verifies the actual SDK proxy.
             // https://learn.microsoft.com/windows/win32/api/combaseapi/ne-combaseapi-regcls
             Report(verifyPackagedProxy
-                ? "Scope: packaged local-server proxy activation for a temporary class and three interfaces; no Widgets host or display test."
-                : "Scope: in-process COM factory/CCW and three interfaces; SDK proxies, packaged activation and Widgets display require separate integration verification.");
-            Report(stage = verifyPackagedProxy ? "CoCreateInstance packaged local-server IFeedProvider" : "CoCreateInstance in-process IFeedProvider");
+                ? "Scope: packaged local-server proxy activation for a temporary IWidgetProvider class; no Widgets host or display test."
+                : "Scope: in-process COM factory/CCW and IWidgetProvider; SDK proxies, packaged activation and Widgets display require separate integration verification.");
+            Report(stage = verifyPackagedProxy ? "CoCreateInstance packaged local-server IWidgetProvider" : "CoCreateInstance in-process IWidgetProvider");
             Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, verifyPackagedProxy ? 4u : 1u, ref iid, out var instance));
             try
             {
-                Report(stage = "QueryInterface IFeedProvider");
-                VerifyInterface(instance, typeof(IFeedProvider).GUID);
-                Report(stage = "QueryInterface IFeedResourceProvider");
-                VerifyInterface(instance, typeof(IFeedResourceProvider).GUID);
-                Report(stage = "QueryInterface IFeedAnnouncementInvokedTarget");
-                VerifyInterface(instance, typeof(IFeedAnnouncementInvokedTarget).GUID);
+                Report(stage = "QueryInterface IWidgetProvider");
+                VerifyInterface(instance, typeof(IWidgetProvider).GUID);
                 Report(stage = "reject unsupported interface");
                 var unsupported = Guid.NewGuid();
                 int result = Marshal.QueryInterface(instance, ref unsupported, out var unexpected);
@@ -69,29 +65,75 @@ internal static class ProviderSelfTest
             }
             finally { Marshal.Release(instance); }
 
-            Report(stage = "HTML encoding");
-            var html = PanelRenderer.Render(new RuntimeSnapshot(
-                true, "playing", "", "<script>song</script>", "A&B", "<img src=x>",
-                null, null, null, null, null, DateTimeOffset.UtcNow));
-            if (html.Contains("<script>song", StringComparison.Ordinal) ||
-                html.Contains("<img src=x>", StringComparison.Ordinal) ||
-                !html.Contains("&lt;script&gt;song&lt;/script&gt;", StringComparison.Ordinal) ||
-                !html.Contains("A&amp;B", StringComparison.Ordinal))
-                throw new InvalidOperationException("Panel encoding failed.");
+            Report(stage = "reject COM aggregation");
+            var factory = new WidgetClassFactory(provider);
+            if (factory.CreateInstance((nint)1, ref iid, out var aggregated) != unchecked((int)0x80040110) || aggregated != 0)
+                throw new InvalidOperationException("Factory accepted aggregation.");
 
-            Report(stage = "disabled timer lifecycle");
-            int enabledCallbacks = 0;
-            var lifecycle = new FeedProvider(runtime, _ => enabledCallbacks++);
-            lifecycle.SetEnabled(false);
-            lifecycle.SetEnabled(true);
-            if (lifecycle.TryBeginDisabledShutdown())
-                throw new InvalidOperationException("A stale timer stopped an enabled provider.");
-            lifecycle.SetEnabled(false);
-            if (!lifecycle.TryBeginDisabledShutdown())
-                throw new InvalidOperationException("Disabled provider did not stop.");
-            lifecycle.SetEnabled(true);
-            if (enabledCallbacks != 3)
-                throw new InvalidOperationException("A committed shutdown allowed reactivation.");
+            Report(stage = "restore and concurrent widget lifecycle");
+            if (!provider.RestoreWidgets(() =>
+            {
+                provider.ObserveContext(new WidgetRegistration("newer", CardSize.Large, true));
+                provider.Deactivate("inactive");
+                provider.DeleteWidget("deleted", "");
+                return new[]
+                {
+                    new WidgetRegistration("newer", CardSize.Small, false),
+                    new WidgetRegistration("inactive", CardSize.Small, true),
+                    new WidgetRegistration("deleted", CardSize.Small, true),
+                    new WidgetRegistration("restored", CardSize.Medium, false)
+                };
+            })) throw new InvalidOperationException("Restoration failed.");
+            CheckCounts(runtime, 3, 1);
+            provider.ObserveContext(new WidgetRegistration("newer", CardSize.Small, false), preserveActive: true);
+            CheckCounts(runtime, 3, 1);
+            provider.Deactivate("newer");
+            CheckCounts(runtime, 3, 0);
+            provider.ObserveContext(new WidgetRegistration("newer", CardSize.Large, true));
+            provider.DeleteWidget("inactive", "");
+            CheckCounts(runtime, 2, 1);
+            provider.BeginShutdown();
+            provider.ObserveContext(new WidgetRegistration("after-shutdown", CardSize.Large, true));
+            CheckCounts(runtime, 2, 0);
+
+            Report(stage = "Adaptive Card data isolation and system styling");
+            var lyrics = new LyricsSnapshot(true, false, "playing", "private-track",
+                "<script>song</script>", "A&B", "\"${title}\" <img src=x>");
+            var card = WidgetCards.Create(CardSize.Large, "playing", lyrics, new string('a', 32));
+            using (var template = JsonDocument.Parse(card.Template))
+            using (var data = JsonDocument.Parse(card.Data))
+            {
+                if (template.RootElement.GetProperty("type").GetString() != "AdaptiveCard" ||
+                    data.RootElement.GetProperty("title").GetString() != lyrics.Title ||
+                    data.RootElement.GetProperty("line").GetString() != lyrics.Line ||
+                    card.Template.Contains("<script>", StringComparison.Ordinal) ||
+                    card.Template.Contains("Action.Submit", StringComparison.Ordinal) ||
+                    card.Template.Contains("backgroundImage", StringComparison.Ordinal) ||
+                    card.Template.Contains("fontFamily", StringComparison.Ordinal) ||
+                    card.Template.Contains("\"color\"", StringComparison.Ordinal) ||
+                    !card.Template.Contains("Action.Execute", StringComparison.Ordinal) ||
+                    card.Data.Contains("private-track", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Adaptive Card rendering contract failed.");
+            }
+            var hidden = WidgetCards.Create(CardSize.Small, "boss", lyrics with { Boss = true });
+            using (var data = JsonDocument.Parse(hidden.Data))
+                if (data.RootElement.GetProperty("title").GetString() != "" ||
+                    data.RootElement.GetProperty("line").GetString() != "" ||
+                    hidden.Template.Contains("Action.Execute", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Hidden card retained private content or controls.");
+            if (verifyPackagedProxy)
+            {
+                Report(stage = "activate packaged WidgetUpdateRequestOptions without contacting the host");
+                var options = new WidgetUpdateRequestOptions(Guid.NewGuid().ToString())
+                {
+                    Template = card.Template,
+                    Data = card.Data,
+                    CustomState = ""
+                };
+                if (options.Template != card.Template || options.Data != card.Data || options.CustomState != "")
+                    throw new InvalidOperationException("Packaged widget request activation failed.");
+            }
+
             Report("All provider self-tests passed.");
             return 0;
         }
@@ -103,6 +145,13 @@ internal static class ProviderSelfTest
             return 1;
         }
         finally { runtime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    }
+
+    private static void CheckCounts(BoardRuntime runtime, int expectedWidgets, int expectedActive)
+    {
+        var snapshot = runtime.GetSnapshot();
+        if (snapshot.WidgetCount != expectedWidgets || snapshot.ActiveCount != expectedActive)
+            throw new InvalidOperationException("Widget lifecycle state did not match the latest callbacks.");
     }
 
     private static void Report(string text)
@@ -119,10 +168,9 @@ internal static class ProviderSelfTest
         Marshal.Release(result);
     }
 
-    private sealed class NoSystemSink : IAnnouncementSink
+    private sealed class NoSystemSink : IWidgetSink
     {
-        public void Request(Announcement announcement) => throw new InvalidOperationException("Unexpected host call.");
-        public void Remove(string id) => throw new InvalidOperationException("Unexpected host call.");
+        public void Update(string widgetId, WidgetCard card) => throw new InvalidOperationException("Unexpected host call.");
     }
 
     [DllImport("ole32.dll", ExactSpelling = true)]
