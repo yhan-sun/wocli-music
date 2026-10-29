@@ -11,9 +11,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("authenticated bounded loopback protocol", Protocol),
     ("cancellation and deadline release TCP connections", Cancellation),
     ("config bounds and exact local Windows paths", Configuration),
-    ("latest-only pacing, privacy and stale shown callbacks", Runtime),
-    ("offline recovery and serialized removal retry", Recovery),
-    ("endpoint changes, repeated verses and disable during request", Switching),
+    ("plain native cards, Unicode limits and guarded controls", Cards),
+    ("visible lifecycle, deduplication and idle TCP suspension", BoardLifecycle),
+    ("privacy clears, recovery, shell retries and private diagnostics", BoardPrivacy),
+    ("guarded actions reject replay and stale library/track controls", BoardActions),
+    ("late responses and lifecycle callbacks cannot resurrect content", BoardRaces),
 };
 var failures = 0;
 foreach (var (name, run) in tests)
@@ -64,6 +66,16 @@ static async Task Protocol()
     await Throws<ProtocolException>(() => client.ReadAsync(endpoint, CancellationToken.None), "unbounded reply accepted");
     daemon.Reply = "[]";
     await Throws<ProtocolException>(() => client.ReadAsync(endpoint, CancellationToken.None), "array reply accepted");
+    daemon.Reply = "{\"ok\":false,\"code\":\"stale_widget_action\",\"error\":\"private server details\"}";
+    try
+    {
+        await client.ActionAsync(endpoint, "next", "song:1", "playing", CancellationToken.None);
+        throw new InvalidOperationException("stale action response accepted");
+    }
+    catch (ProtocolException error) { Check(error.Code == "stale_widget_action" && !error.Message.Contains("private", StringComparison.Ordinal), "server error disclosed private diagnostics"); }
+    var requests = daemon.Requests.Count;
+    await Throws<ProtocolException>(() => client.ActionAsync(endpoint, "quit", "song:1", "playing", CancellationToken.None), "unlisted operation accepted");
+    Check(requests == daemon.Requests.Count, "unlisted operation reached TCP");
     daemon.Reply = Reply();
     directory.Write("control.endpoint", $"{daemon.Port}\nwrong-secret\n");
     await Throws<ProtocolException>(() => client.ReadAsync(endpoint, CancellationToken.None), "authentication failure accepted");
@@ -114,144 +126,200 @@ static async Task Configuration()
     }
 }
 
-static async Task Runtime()
+static Task Cards()
 {
-    await using var daemon = new FakeDaemon { Reply = Reply("A") };
+    var malicious = "[link](https://example.com) <b>markup</b> ${nonce} \"quoted\"";
+    var lyrics = new LyricsSnapshot(true, false, "playing", "track:1", malicious, malicious, string.Concat(Enumerable.Repeat("🎵", 240)));
+    foreach (var size in Enum.GetValues<CardSize>())
+    {
+        var card = WidgetCards.Create(size, "playing", lyrics, new string('a', 32));
+        using var template = JsonDocument.Parse(card.Template);
+        using var data = JsonDocument.Parse(card.Data);
+        Check(!card.Template.Contains("example.com", StringComparison.Ordinal) && !card.Template.Contains("WebURL", StringComparison.Ordinal), "private input was interpreted as template content");
+        Check(!card.Template.Contains("fontFamily", StringComparison.Ordinal) && !card.Template.Contains("color", StringComparison.Ordinal), "card overrides system font or color");
+        var body = template.RootElement.GetProperty("body").EnumerateArray().ToArray();
+        Check(body.Where(item => item.GetProperty("type").GetString() != "ActionSet").All(item => item.GetProperty("type").GetString() == "RichTextBlock"), "music content can be parsed as Markdown");
+        var actions = body.Last().GetProperty("actions").EnumerateArray().ToArray();
+        Check(actions.Length == 3 && actions.All(action => action.GetProperty("type").GetString() == "Action.Execute"), "unsupported widget action type");
+        Check(actions.Select(action => action.GetProperty("verb").GetString()).SequenceEqual(new[] { "prev", "pause", "next" }), "incorrect action whitelist");
+        Check(data.RootElement.GetProperty("line").GetString()!.EnumerateRunes().Count() <= (size == CardSize.Small ? 44 : size == CardSize.Medium ? 100 : 200), "lyric layout exceeds Unicode limit");
+        if (size == CardSize.Large) Check(data.RootElement.GetProperty("title").GetString() == malicious, "plain text altered or interpreted");
+    }
+    foreach (var hidden in new[] { lyrics with { Boss = true }, lyrics with { Enabled = false }, lyrics with { State = "stopped" } })
+    {
+        var card = WidgetCards.Create(CardSize.Large, "boss", hidden, new string('a', 32));
+        Check(!card.Template.Contains("ActionSet", StringComparison.Ordinal) && !card.Data.Contains("example.com", StringComparison.Ordinal), "privacy card retains controls or music");
+    }
+    return Task.CompletedTask;
+}
+
+static BoardRuntime MakeBoard(RecordingWidgetSink sink, TemporaryDirectory directory, string endpoint)
+{
+    var config = directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = endpoint }));
+    return new BoardRuntime(sink, config, directory.File("status.json"), new BoardOptions { PollInterval = TimeSpan.FromMilliseconds(20), IoTimeout = TimeSpan.FromMilliseconds(450) });
+}
+
+static void Configure(TemporaryDirectory directory, string endpoint, bool enabled = true) =>
+    directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled, endpoint_path = endpoint }));
+
+static string Field(WidgetCard card, string name)
+{
+    using var document = JsonDocument.Parse(card.Data);
+    return document.RootElement.GetProperty(name).GetString()!;
+}
+
+static bool HasLine(RecordingWidgetSink sink, string line, string id = "widget") => sink.Latest.TryGetValue(id, out var card) && Field(card, "line") == line;
+static JsonElement Nonce(WidgetCard card)
+{
+    using var document = JsonDocument.Parse(JsonSerializer.Serialize(new { nonce = Field(card, "nonce") }));
+    return document.RootElement.Clone();
+}
+static int ActionCount(FakeDaemon daemon) => daemon.Requests.Count(request => request.Contains("widget_action", StringComparison.Ordinal));
+
+static async Task BoardLifecycle()
+{
+    await using var daemon = new FakeDaemon { Reply = Reply("第一句") };
     using var directory = new TemporaryDirectory();
     var endpoint = directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
-    var config = directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = endpoint }));
-    var status = directory.File("widgets-status.json");
-    var sink = new RecordingSink();
-    await using var loop = new RuntimeLoop(sink, config, status, new RuntimeOptions
+    var sink = new RecordingWidgetSink();
+    await using var runtime = MakeBoard(sink, directory, endpoint);
+    runtime.Restore("widget", CardSize.Small);
+    runtime.Start(); runtime.Start();
+    await Until(() => sink.Latest.ContainsKey("widget"), "restored card not initialized");
+    await Task.Delay(100);
+    Check(daemon.Requests.IsEmpty, "inactive board polled the daemon");
+    runtime.Activate("widget"); runtime.Activate("widget");
+    await Until(() => HasLine(sink, "第一句"), "active board did not receive lyrics");
+    var updates = sink.Updates.Count;
+    await Task.Delay(150);
+    Check(sink.Updates.Count == updates, "unchanged card rewritten every poll");
+    daemon.Reply = Reply("第二句");
+    await Until(() => HasLine(sink, "第二句"), "new lyric did not update");
+    runtime.Upsert("widget", CardSize.Large, true);
+    await Until(() => sink.Updates.Count > updates + 1, "size change ignored");
+    runtime.Deactivate("widget");
+    await Until(() => HasLine(sink, "") && daemon.Active == 0, "inactive board retained lyrics or socket");
+    var requests = daemon.Requests.Count;
+    await Task.Delay(120);
+    Check(daemon.Requests.Count == requests, "hidden board continued IPC");
+    runtime.Delete("widget");
+    Check(runtime.GetSnapshot().WidgetCount == 0, "deleted widget retained state");
+    runtime.Restore("second", CardSize.Medium, true);
+    await Until(() => HasLine(sink, "第二句", "second"), "active restore failed");
+    await runtime.StopAsync();
+    Check(sink.PeakConcurrent == 1 && daemon.PeakActive == 1, "duplicate worker or overlapping shell/TCP operation");
+    Check(HasLine(sink, "", "second"), "shutdown left private card cached");
+}
+
+static async Task BoardPrivacy()
+{
+    await using var daemon = new FakeDaemon { Reply = Reply("隐私歌词") };
+    using var directory = new TemporaryDirectory();
+    var endpoint = directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
+    var sink = new RecordingWidgetSink();
+    await using var runtime = MakeBoard(sink, directory, endpoint);
+    runtime.Upsert("widget", CardSize.Medium, true); runtime.Start();
+    await Until(() => HasLine(sink, "隐私歌词"), "initial lyric missing");
+    foreach (var condition in new[] { (Reply(boss: true), "boss"), (Reply(enabled: false), "disabled"), (Reply(state: "stopped"), "stopped"), ("[]", "offline") })
     {
-        PollInterval = TimeSpan.FromMilliseconds(15), RequestInterval = TimeSpan.FromMilliseconds(400), IoTimeout = TimeSpan.FromMilliseconds(300)
-    });
-    loop.SetEnabled(true);
-    loop.Start();
-    loop.Start();
-    await Until(() => sink.Requested.Count == 1, "first lyric never requested");
-    var first = sink.Requested.Single();
-    Check(loop.GetSnapshot().State == "requested", "request was misreported as shown");
-    loop.MarkShown(first.Id);
-    loop.MarkShown(first.Id);
-    foreach (var line in new[] { "B", "C", "D" })
-    {
-        daemon.Reply = Reply(line);
-        await Until(() => loop.GetSnapshot().Line == line, "latest lyric not sampled");
+        daemon.Reply = condition.Item1;
+        await Until(() => runtime.GetSnapshot().State == condition.Item2 && HasLine(sink, ""), "privacy state did not clear card: " + condition.Item2);
+        Check(!sink.Latest["widget"].Template.Contains("ActionSet", StringComparison.Ordinal), "hidden card retained playback actions");
+        daemon.Reply = Reply("隐私歌词");
+        await Until(() => HasLine(sink, "隐私歌词"), "worker did not recover");
     }
-    await Until(() => sink.Requested.Count == 2, "latest lyric never requested after pacing delay");
-    Check(sink.Requested.Select(value => value.PrimaryText).SequenceEqual(new[] { "A", "D" }), "intermediate lyrics accumulated in a queue");
-    Check(sink.Removed.Contains(first.Id), "superseded line not removed");
-    await Task.Delay(450);
-    Check(sink.Requested.Count == 2, "unchanged line requested repeatedly");
-    var second = sink.Requested.Last();
-    daemon.Reply = Reply("D", boss: true);
-    await Until(() => loop.GetSnapshot().State == "boss", "boss mode ignored");
-    Check(loop.GetSnapshot().Line == "" && loop.GetSnapshot().Title == "", "boss mode retained private text");
-    var removals = sink.Removed.Count;
-    loop.MarkShown(second.Id);
-    await Until(() => sink.Removed.Count > removals, "late shell display was not retracted");
-    await Until(() => System.IO.File.Exists(status), "diagnostics not written");
-    using (var document = JsonDocument.Parse(await System.IO.File.ReadAllTextAsync(status)))
-    {
-        var root = document.RootElement;
-        Check(root.GetProperty("shown_count").GetInt64() == 1, "duplicate/stale Shown callback incremented displayed count");
-        Check(!root.TryGetProperty("title", out _) && !root.TryGetProperty("line", out _) && !root.TryGetProperty("track_id", out _), "diagnostics persisted private music text");
-        Check(!document.RootElement.GetRawText().Contains(daemon.Secret, StringComparison.Ordinal), "diagnostics leaked authentication token");
-    }
-    daemon.Reply = Reply("D", track: "song:2");
-    await Until(() => sink.Requested.Count == 3, "same song restart was incorrectly deduplicated");
-    Check(sink.Requested.Last().Id != second.Id, "generation did not affect announcement identity");
+    sink.FailUpdate = true;
+    daemon.Reply = Reply("重试歌词");
+    await Until(() => runtime.GetSnapshot().LastError == "widget_update_failed", "shell error not recorded");
+    sink.FailUpdate = false;
+    await Until(() => HasLine(sink, "重试歌词"), "shell update failure was not retried");
+    Configure(directory, endpoint, false);
+    await Until(() => runtime.GetSnapshot().State == "disabled" && HasLine(sink, ""), "config disable retained cached text");
+    await Until(() => System.IO.File.Exists(directory.File("status.json")), "missing diagnostics");
+    var diagnostics = await System.IO.File.ReadAllTextAsync(directory.File("status.json"));
+    using (var document = JsonDocument.Parse(diagnostics))
+        Check(document.RootElement.GetProperty("mode").GetString() == "system-widget-card", "diagnostics use stale Feed mode");
+    Check(!diagnostics.Contains("隐私", StringComparison.Ordinal) && !diagnostics.Contains("私密", StringComparison.Ordinal) && !diagnostics.Contains(daemon.Secret, StringComparison.Ordinal) && !diagnostics.Contains("song:1", StringComparison.Ordinal), "diagnostics persisted private metadata or auth token");
+    Configure(directory, endpoint);
     daemon.Stall = true;
-    await Until(() => daemon.Active > 0, "read did not stall");
-    loop.SetEnabled(false);
-    await Until(() => loop.GetSnapshot().State == "disabled", "disable waited for socket deadline", 500);
-    Check(loop.GetSnapshot().Line == "", "disable kept lyric text");
-    await loop.StopAsync();
-    await Until(() => daemon.Active == 0, "stop left open sockets");
-    Check(sink.PeakConcurrent == 1 && daemon.PeakActive == 1, "runtime overlapped requests or shell operations");
+    await Until(() => runtime.GetSnapshot().State == "offline", "timeout did not clear card");
+    await runtime.StopAsync();
+    await Until(() => daemon.Active == 0, "shutdown retained stalled socket");
 }
 
-static async Task Recovery()
+static async Task BoardActions()
 {
-    await using var daemon = new FakeDaemon { Reply = Reply("恢复测试") };
+    await using var daemon = new FakeDaemon { Reply = Reply("第一句") };
+    await using var other = new FakeDaemon { Reply = Reply("另一曲库") };
     using var directory = new TemporaryDirectory();
     var endpoint = directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
-    var closedListener = new TcpListener(IPAddress.Loopback, 0);
-    closedListener.Start();
-    var closedPort = ((IPEndPoint)closedListener.LocalEndpoint).Port;
-    closedListener.Stop();
-    directory.Write("control.endpoint", $"{closedPort}\n{daemon.Secret}\n");
-    var config = directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = endpoint }));
-    var sink = new RecordingSink();
-    await using var loop = new RuntimeLoop(sink, config, directory.File("status.json"), new RuntimeOptions
+    var otherEndpoint = directory.Write("other.endpoint", $"{other.Port}\n{other.Secret}\n");
+    var sink = new RecordingWidgetSink();
+    await using var runtime = MakeBoard(sink, directory, endpoint);
+    runtime.Upsert("widget", CardSize.Medium, true); runtime.Start();
+    await Until(() => HasLine(sink, "第一句"), "initial controls missing");
+    var first = Nonce(sink.Latest["widget"]);
+    await runtime.HandleActionAsync("widget", "quit", first);
+    await runtime.HandleActionAsync("widget", "resume", first);
+    using var forged = JsonDocument.Parse("{\"nonce\":\"00000000000000000000000000000000\"}");
+    await runtime.HandleActionAsync("widget", "next", forged.RootElement);
+    await Task.Delay(60);
+    Check(ActionCount(daemon) == 0, "arbitrary action or forged nonce reached daemon");
+    await runtime.HandleActionAsync("widget", "next", first);
+    await runtime.HandleActionAsync("widget", "next", first);
+    await Until(() => ActionCount(daemon) == 1, "valid action never reached daemon");
+    using (var request = JsonDocument.Parse(daemon.Requests.Single(value => value.Contains("widget_action", StringComparison.Ordinal))))
     {
-        PollInterval = TimeSpan.FromMilliseconds(15), RequestInterval = TimeSpan.FromMilliseconds(50), IoTimeout = TimeSpan.FromMilliseconds(150)
-    });
-    loop.SetEnabled(true);
-    loop.Start();
-    await Until(() => loop.GetSnapshot().State == "offline", "refused TCP connection terminated or bypassed the runtime");
-    directory.Write("control.endpoint", $"{daemon.Port}\n{daemon.Secret}\n");
-    await Until(() => sink.Requested.Count == 1, "initial request missing");
-    sink.FailRemove = true;
-    daemon.Reply = Reply(state: "stopped");
-    await Until(() => loop.GetSnapshot().State == "stopped", "stop state missing");
-    Check(loop.GetSnapshot().Line == "", "failed removal retained private text");
-    sink.FailRemove = false;
-    await Until(() => sink.Removed.Count > 0, "failed removal was never retried");
-    daemon.Reply = "[]";
-    await Until(() => loop.GetSnapshot().State == "offline", "malformed reply not treated as unavailable");
-    daemon.Reply = Reply("新的歌词", track: "song:3");
-    await Until(() => sink.Requested.Count == 2, "worker stopped permanently after protocol failure");
-    directory.Write("widgets.json", "null");
-    await Until(() => loop.GetSnapshot().State == "offline", "non-object config did not hide the announcement");
-    directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = endpoint }));
-    await Until(() => sink.Requested.Count == 3, "worker stopped permanently after malformed config");
-    directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = false, endpoint_path = endpoint }));
-    await Until(() => loop.GetSnapshot().State == "disabled", "config disable ignored");
-    await loop.StopAsync();
-    Check(sink.PeakConcurrent == 1, "removal retry raced another shell operation");
+        Check(request.RootElement.GetProperty("track_id").GetString() == "song:1" && request.RootElement.GetProperty("state").GetString() == "playing" && request.RootElement.GetProperty("action").GetString() == "next", "action lost atomic daemon guards");
+    }
+    await Task.Delay(70);
+    Check(ActionCount(daemon) == 1, "replayed action was executed twice");
+    daemon.Reply = Reply("新歌曲", track: "song:2");
+    await Until(() => HasLine(sink, "新歌曲"), "new track missing");
+    await runtime.HandleActionAsync("widget", "next", first);
+    await Task.Delay(60);
+    Check(ActionCount(daemon) == 1, "old card controlled new track");
+    var oldLibrary = Nonce(sink.Latest["widget"]);
+    Configure(directory, otherEndpoint);
+    await runtime.HandleActionAsync("widget", "next", oldLibrary);
+    await Until(() => HasLine(sink, "另一曲库"), "library switch missing");
+    Check(ActionCount(daemon) == 1 && ActionCount(other) == 0, "old control operated after library change");
+    other.Reply = Reply("暂停歌词", state: "paused");
+    await Until(() => HasLine(sink, "暂停歌词"), "pause lost metadata");
+    Check(sink.Latest["widget"].Template.Contains("resume", StringComparison.Ordinal), "paused card lacks resume action");
+    var paused = Nonce(sink.Latest["widget"]);
+    await runtime.HandleActionAsync("widget", "resume", paused);
+    await Until(() => ActionCount(other) == 1, "resume not delivered");
+    runtime.Deactivate("widget");
+    await runtime.HandleActionAsync("widget", "next", paused);
+    await Task.Delay(60);
+    Check(ActionCount(other) == 1, "inactive card accepted action");
 }
 
-static async Task Switching()
+static async Task BoardRaces()
 {
-    await using var firstDaemon = new FakeDaemon { Reply = Reply("") };
-    await using var secondDaemon = new FakeDaemon { Reply = Reply("") };
+    await using var first = new FakeDaemon { Reply = Reply("迟到旧歌词"), Delay = 200 };
+    await using var second = new FakeDaemon { Reply = Reply("正确新歌词") };
     using var directory = new TemporaryDirectory();
-    var firstEndpoint = directory.Write("first.endpoint", $"{firstDaemon.Port}\n{firstDaemon.Secret}\n");
-    var secondEndpoint = directory.Write("second.endpoint", $"{secondDaemon.Port}\n{secondDaemon.Secret}\n");
-    var config = directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = firstEndpoint }));
-    var sink = new RecordingSink();
-    await using var loop = new RuntimeLoop(sink, config, directory.File("status.json"), new RuntimeOptions
-    {
-        PollInterval = TimeSpan.FromMilliseconds(15), RequestInterval = TimeSpan.FromMilliseconds(100), IoTimeout = TimeSpan.FromMilliseconds(300)
-    });
-    loop.SetEnabled(true);
-    loop.Start();
-    await Until(() => sink.Requested.Count == 1, "title fallback was not requested");
-    var first = sink.Requested.Single();
-    Check(first.PrimaryText == "私密歌名" && loop.GetSnapshot().Title == "私密歌名", "no-lyric playback lost its title");
-    directory.Write("widgets.json", JsonSerializer.Serialize(new { schema = 1, mode = "system", enabled = true, endpoint_path = secondEndpoint }));
-    await Until(() => sink.Requested.Count == 2, "identical track from a different daemon was wrongly reused");
-    Check(sink.Removed.Contains(first.Id), "endpoint switch did not remove old announcement");
-    var oldVerse = sink.Requested.Last();
-    secondDaemon.Reply = Reply("下一句");
-    await Until(() => sink.Requested.Count == 3, "next verse missing");
-    secondDaemon.Reply = Reply("");
-    await Until(() => sink.Requested.Count == 4, "repeated verse missing");
-    var repeatedVerse = sink.Requested.Last();
-    Check(repeatedVerse.Id != oldVerse.Id, "repeated verse reused announcement id");
-    var removals = sink.Removed.Count;
-    loop.MarkShown(oldVerse.Id);
-    await Until(() => sink.Removed.Count > removals, "old verse Shown callback not retracted");
-    Check(loop.GetSnapshot().AnnouncementId == repeatedVerse.Id, "old verse callback replaced or removed current verse");
-    sink.OnRequest = _ => loop.SetEnabled(false);
-    secondDaemon.Reply = Reply("禁用竞态");
-    await Until(() => sink.Requested.Count == 5 && loop.GetSnapshot().State == "disabled", "disable inside request did not win");
-    Check(sink.Removed.Contains(sink.Requested.Last().Id), "request completed after disable without immediate removal");
-    Check(loop.GetSnapshot().Line == "", "disable race retained text");
-    await loop.StopAsync();
-    Check(sink.PeakConcurrent == 1, "shell callbacks reentered sink operations");
+    var oldEndpoint = directory.Write("old.endpoint", $"{first.Port}\n{first.Secret}\n");
+    var newEndpoint = directory.Write("new.endpoint", $"{second.Port}\n{second.Secret}\n");
+    var sink = new RecordingWidgetSink();
+    await using var runtime = MakeBoard(sink, directory, oldEndpoint);
+    runtime.Upsert("widget", CardSize.Medium, true); runtime.Start();
+    await Until(() => first.Active == 1, "old daemon never requested");
+    Configure(directory, newEndpoint);
+    await Until(() => HasLine(sink, "正确新歌词"), "new library never sampled");
+    Check(sink.Updates.All(update => Field(update.Card, "line") != "迟到旧歌词"), "late result from old library was published");
+    sink.OnUpdate = (_, card) => { if (Field(card, "line") == "取消竞态") runtime.Deactivate("widget"); };
+    second.Reply = Reply("取消竞态");
+    await Until(() => runtime.GetSnapshot().ActiveCount == 0 && HasLine(sink, ""), "deactivate inside shell callback resurrected lyrics");
+    sink.OnUpdate = null;
+    second.Stall = true;
+    runtime.Activate("widget");
+    await Until(() => second.Active == 1, "new read did not stall");
+    runtime.Deactivate("widget");
+    await Until(() => second.Active == 0 && HasLine(sink, ""), "deactivate did not cancel socket immediately", 250);
+    Check(sink.PeakConcurrent == 1, "callback reentered a shell update");
 }
 
 sealed class TemporaryDirectory : IDisposable
@@ -269,29 +337,22 @@ sealed class TemporaryDirectory : IDisposable
     public void Dispose() => Directory.Delete(_path, true);
 }
 
-sealed class RecordingSink : IAnnouncementSink
+sealed class RecordingWidgetSink : IWidgetSink
 {
-    public ConcurrentQueue<Announcement> Requested { get; } = new();
-    public ConcurrentQueue<string> Removed { get; } = new();
-    public volatile bool FailRemove;
-    public Action<Announcement>? OnRequest;
+    public ConcurrentQueue<(string Id, WidgetCard Card)> Updates { get; } = new();
+    public ConcurrentDictionary<string, WidgetCard> Latest { get; } = new();
+    public volatile bool FailUpdate;
+    public Action<string, WidgetCard>? OnUpdate;
     private int _active;
     public int PeakConcurrent;
-    public void Request(Announcement announcement)
-    {
-        var active = Interlocked.Increment(ref _active);
-        PeakConcurrent = Math.Max(PeakConcurrent, active);
-        try { Requested.Enqueue(announcement); OnRequest?.Invoke(announcement); }
-        finally { Interlocked.Decrement(ref _active); }
-    }
-    public void Remove(string id)
+    public void Update(string id, WidgetCard card)
     {
         var active = Interlocked.Increment(ref _active);
         PeakConcurrent = Math.Max(PeakConcurrent, active);
         try
         {
-            if (FailRemove) throw new IOException("test shell failure");
-            Removed.Enqueue(id);
+            if (FailUpdate) throw new IOException("test shell failure");
+            Updates.Enqueue((id, card)); Latest[id] = card; OnUpdate?.Invoke(id, card);
         }
         finally { Interlocked.Decrement(ref _active); }
     }
@@ -306,6 +367,7 @@ sealed class FakeDaemon : IAsyncDisposable
     public string Secret { get; } = new('a', 64);
     public volatile string Reply = "{}";
     public volatile bool Stall;
+    public volatile int Delay;
     public ConcurrentQueue<string> Requests { get; } = new();
     public int Active;
     public int PeakActive;
@@ -342,6 +404,7 @@ sealed class FakeDaemon : IAsyncDisposable
                 Requests.Enqueue(request ?? "");
                 if (Stall) { await stream.ReadAsync(new byte[1], _closed.Token); return; }
                 var reply = token == Secret ? Reply : "{\"ok\":false,\"error\":\"auth rejected\"}";
+                if (Delay > 0) await Task.Delay(Delay, _closed.Token);
                 await stream.WriteAsync(Encoding.UTF8.GetBytes(reply + "\n"), _closed.Token);
             }
             catch (Exception error) when (error is IOException or OperationCanceledException or SocketException) { }

@@ -39,6 +39,16 @@ public sealed class DaemonClient
     }
 
     public async Task<LyricsSnapshot> ReadAsync(string endpointPath, CancellationToken cancellationToken)
+        => await SendAsync(endpointPath, new { op = "lyrics_snapshot" }, cancellationToken).ConfigureAwait(false);
+
+    public async Task<LyricsSnapshot> ActionAsync(string endpointPath, string action, string trackId, string state, CancellationToken cancellationToken)
+    {
+        if (action is not ("prev" or "next" or "pause" or "resume") || trackId.Length is 0 or > 640 || state is not ("playing" or "paused"))
+            throw new ProtocolException("invalid_widget_action");
+        return await SendAsync(endpointPath, new { op = "widget_action", action, track_id = trackId, state }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<LyricsSnapshot> SendAsync(string endpointPath, object request, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_timeout);
@@ -54,11 +64,17 @@ public sealed class DaemonClient
         using var client = new TcpClient(AddressFamily.InterNetwork) { NoDelay = true };
         await client.ConnectAsync(IPAddress.Loopback, port, token);
         await using var stream = client.GetStream();
-        await stream.WriteAsync(Utf8.GetBytes(secret + "\n{\"op\":\"lyrics_snapshot\"}\n"), token);
+        await stream.WriteAsync(Utf8.GetBytes(secret + "\n" + JsonSerializer.Serialize(request) + "\n"), token);
         var reply = await ReadLineAsync(stream, MaxReplyBytes, token);
         using var document = JsonDocument.Parse(reply);
         var root = document.RootElement;
-        if (!Boolean(root, "ok")) throw new ProtocolException("daemon_rejected");
+        if (!Boolean(root, "ok"))
+        {
+            // Error strings may include daemon diagnostics. Only preserve the
+            // fixed protocol codes relevant to a widget action.
+            var code = root.TryGetProperty("code", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+            throw new ProtocolException(code is "stale_widget_action" or "invalid_widget_action" ? code : "daemon_rejected");
+        }
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
             throw new ProtocolException("reply_format");
         return new LyricsSnapshot(
