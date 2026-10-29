@@ -27,10 +27,49 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(any(target_os = "macos", windows, test))]
+struct DailyRequest<'a>(&'a std::sync::atomic::AtomicBool);
+
+#[cfg(any(target_os = "macos", windows, test))]
+impl<'a> DailyRequest<'a> {
+    fn start(busy: &'a std::sync::atomic::AtomicBool) -> Option<Self> {
+        busy.compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .ok()
+        .map(|_| Self(busy))
+    }
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+impl Drop for DailyRequest<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[cfg(any(target_os = "macos", windows))]
 fn play_daily(paths: Paths) {
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(request) = DailyRequest::start(&BUSY) else {
+        return;
+    };
     std::thread::spawn(move || {
+        // Keep one recommendation lookup (including its error dialog) in flight.
+        // Repeated menu clicks must not create unbounded workers and requests.
+        let _request = request;
         let result = (|| -> Result<()> {
+            // The daemon invalidates this intent when the user controls playback
+            // while recommendations are loading. A late result must not replace
+            // a newer song, stop, or pause request.
+            let prepared = ipc::request(&paths, json!({"op":"prepare_play"}), true)?
+                .ok_or_else(|| Error::new("后台状态不可用"))?;
+            let token = prepared["play_token"]
+                .as_str()
+                .ok_or_else(|| Error::new("后台未返回推荐播放凭据"))?;
             let store = crate::store::Store::open(&paths)?;
             let provider = crate::provider::Provider::new(paths.settings()?.direct);
             let daily = crate::recommend::daily(&store, &provider, true, false)?;
@@ -40,14 +79,17 @@ fn play_daily(paths: Paths) {
             }
             ipc::request(
                 &paths,
-                json!({"op":"play", "tracks":tracks, "index":0}),
-                true,
-            )?;
+                json!({"op":"play", "tracks":tracks, "index":0, "play_token":token}),
+                false,
+            )?
+            .ok_or_else(|| Error::coded("cancelled", "后台已退出，已取消推荐播放"))?;
             Ok(())
         })();
         if let Err(error) = result {
-            eprintln!("每日推荐：{error}");
-            daily_error_notice(&error.message);
+            if error.code != "cancelled" {
+                eprintln!("每日推荐：{error}");
+                daily_error_notice(&error.message);
+            }
         }
     });
 }
@@ -174,6 +216,25 @@ pub fn status(paths: &Paths) -> Result<bool> {
     }
 }
 
+#[cfg(windows)]
+fn tray_window_for_pid(pid: u32) -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId};
+    let class: Vec<u16> = "wocli_tray_class".encode_utf16().chain(Some(0)).collect();
+    let mut previous = 0;
+    loop {
+        let hwnd = unsafe { FindWindowExW(0, previous, class.as_ptr(), std::ptr::null()) };
+        if hwnd == 0 {
+            return 0;
+        }
+        let mut owner = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+        if owner == pid {
+            return hwnd;
+        }
+        previous = hwnd;
+    }
+}
+
 pub fn stop(paths: &Paths) -> Result<()> {
     if !status(paths)? {
         return Ok(());
@@ -189,17 +250,11 @@ pub fn stop(paths: &Paths) -> Result<()> {
                 #[cfg(windows)]
                 {
                     unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                            FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
-                        };
-                        let class_name: Vec<u16> =
-                            "wocli_tray_class".encode_utf16().chain(Some(0)).collect();
-                        let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
-                        let mut owner = 0;
-                        if hwnd != 0 {
-                            GetWindowThreadProcessId(hwnd, &mut owner);
-                        }
-                        if hwnd != 0 && owner == pid && PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                        // Different libraries can run separate trays with the same
+                        // window class. Find this PID instead of only the first tray.
+                        let hwnd = tray_window_for_pid(pid);
+                        if hwnd != 0 && PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 {
                             // Give WM_DESTROY time to restore the classic task-button band.
                             for _ in 0..40 {
                                 if !status(paths)? {
@@ -1184,17 +1239,17 @@ mod windows {
         NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-        GetMessageW, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW,
-        RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowTextW,
-        TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-        HICON, HTCLIENT, ICONINFO, IDC_HAND, IDI_APPLICATION, MA_NOACTIVATE, MF_DISABLED,
-        MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_CLOSE,
-        WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCRBUTTONUP,
-        WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WM_USER,
-        WNDCLASSW,
+        AppendMenuW, CopyIcon, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
+        DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect,
+        GetCursorPos, GetMessageW, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
+        RegisterClassW, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer,
+        SetWindowTextW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS,
+        CS_HREDRAW, CS_VREDRAW, HICON, HTCLIENT, ICONINFO, IDC_HAND, IDI_APPLICATION,
+        MA_NOACTIVATE, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+        TPM_RIGHTBUTTON, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
+        WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
+        WM_NCHITTEST, WM_NCRBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+        WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -1235,6 +1290,7 @@ mod windows {
     struct TrayState {
         paths: Paths,
         nid: NOTIFYICONDATAW,
+        icon_present: bool,
         taskbar: super::windows_taskbar::TaskbarLyrics,
         current_text: String,
         current_title: String,
@@ -1275,7 +1331,7 @@ mod windows {
     unsafe fn create_music_tray_icon() -> HICON {
         let dc = GetDC(0);
         if dc == 0 {
-            return LoadIconW(0, IDI_APPLICATION);
+            return fallback_tray_icon();
         }
         let color_dc = CreateCompatibleDC(dc);
         let mask_dc = CreateCompatibleDC(dc);
@@ -1374,8 +1430,14 @@ mod windows {
         if hicon != 0 {
             hicon
         } else {
-            LoadIconW(0, IDI_APPLICATION)
+            fallback_tray_icon()
         }
+    }
+
+    unsafe fn fallback_tray_icon() -> HICON {
+        // LoadIcon returns a shared system icon; WM_DESTROY owns and destroys
+        // nid.hIcon, so give it a private copy even on the fallback path.
+        CopyIcon(LoadIconW(0, IDI_APPLICATION))
     }
 
     fn button_at(hwnd: HWND, x: i32, y: i32) -> u8 {
@@ -1419,8 +1481,11 @@ mod windows {
                 let quit = STATE.with(|st| {
                     if let Some(state) = st.borrow_mut().as_mut() {
                         if READD_PENDING.swap(false, Ordering::Relaxed) {
-                            Shell_NotifyIconW(NIM_ADD, &state.nid);
+                            state.icon_present = false;
                         }
+                        sync_notification_icon(&mut state.icon_present, false, |operation| {
+                            Shell_NotifyIconW(operation, &state.nid) != 0
+                        });
                         if RESET_PENDING.swap(false, Ordering::Relaxed) {
                             state.taskbar.reset();
                         }
@@ -1913,9 +1978,25 @@ mod windows {
 
     unsafe fn set_tooltip(state: &mut TrayState, text: &str) {
         let tip = super::tooltip_utf16::<128>(text);
-        if state.nid.szTip != tip {
-            state.nid.szTip = tip;
-            Shell_NotifyIconW(NIM_MODIFY, &state.nid);
+        let changed = state.nid.szTip != tip;
+        state.nid.szTip = tip;
+        sync_notification_icon(&mut state.icon_present, changed, |operation| {
+            Shell_NotifyIconW(operation, &state.nid) != 0
+        });
+    }
+
+    fn sync_notification_icon(
+        present: &mut bool,
+        changed: bool,
+        mut notify: impl FnMut(u32) -> bool,
+    ) {
+        if !*present {
+            // Explorer can broadcast TaskbarCreated before accepting icons. Retry
+            // on later timer ticks; MODIFY also handles an icon that survived a
+            // transient failure of the previous request.
+            *present = notify(NIM_ADD) || notify(NIM_MODIFY);
+        } else if changed {
+            *present = notify(NIM_MODIFY);
         }
     }
 
@@ -2144,7 +2225,7 @@ mod windows {
             nid.hIcon = create_music_tray_icon();
             let tip = to_wide("wocli-music");
             nid.szTip[..tip.len().min(128)].copy_from_slice(&tip[..tip.len().min(128)]);
-            Shell_NotifyIconW(NIM_ADD, &nid);
+            let icon_present = Shell_NotifyIconW(NIM_ADD, &nid) != 0;
 
             // 注册任务栏歌词条窗口（支持双击）
             let lyrics_class_name = to_wide("wocli_lyrics_bar_class");
@@ -2161,6 +2242,7 @@ mod windows {
                 *st.borrow_mut() = Some(TrayState {
                     paths: paths.clone(),
                     nid,
+                    icon_present,
                     taskbar,
                     current_text: "wocli-music".into(),
                     current_title: "".into(),
@@ -2188,11 +2270,79 @@ mod windows {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn fallback_icon_is_owned_and_can_be_destroyed_independently() {
+            unsafe {
+                let shared = LoadIconW(0, IDI_APPLICATION);
+                let owned = fallback_tray_icon();
+                assert_ne!(shared, 0);
+                assert_ne!(owned, 0);
+                assert_ne!(owned, shared);
+                assert_ne!(DestroyIcon(owned), 0);
+                assert_eq!(LoadIconW(0, IDI_APPLICATION), shared);
+            }
+        }
+
+        #[test]
+        fn notification_icon_retries_after_explorer_is_temporarily_unavailable() {
+            let mut present = false;
+            let mut operations = vec![];
+            sync_notification_icon(&mut present, false, |operation| {
+                operations.push(operation);
+                false
+            });
+            assert!(!present);
+            assert_eq!(operations, [NIM_ADD, NIM_MODIFY]);
+            operations.clear();
+            sync_notification_icon(&mut present, false, |operation| {
+                operations.push(operation);
+                true
+            });
+            assert!(present);
+            assert_eq!(operations, [NIM_ADD]);
+        }
+
+        #[test]
+        fn failed_tooltip_update_retries_even_when_the_text_has_not_changed() {
+            let mut present = true;
+            sync_notification_icon(&mut present, true, |_| false);
+            assert!(!present);
+            let mut operations = vec![];
+            sync_notification_icon(&mut present, false, |operation| {
+                operations.push(operation);
+                operation == NIM_MODIFY
+            });
+            assert!(present);
+            assert_eq!(operations, [NIM_ADD, NIM_MODIFY]);
+            sync_notification_icon(&mut present, false, |_| panic!("already synchronized"));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_daily_request_rejects_other_threads_and_allows_a_retry_after_completion() {
+        let busy = std::sync::atomic::AtomicBool::new(false);
+        let pending = DailyRequest::start(&busy).unwrap();
+        std::thread::scope(|scope| {
+            let attempts = (0..16)
+                .map(|_| scope.spawn(|| DailyRequest::start(&busy).is_none()))
+                .collect::<Vec<_>>();
+            for attempt in attempts {
+                assert!(attempt.join().unwrap());
+            }
+        });
+        drop(pending);
+        assert!(DailyRequest::start(&busy).is_some());
+    }
 
     #[test]
     fn tray_tooltip_preserves_unicode_and_null_termination() {

@@ -433,6 +433,11 @@ impl Player {
     }
     pub fn reset_stream(&mut self) {
         let pos = self.position();
+        // A disconnected output device may never call the sink again. Cancel
+        // the producer directly instead of waiting for Sink::stop to be polled.
+        if let Some(cancelled) = self.cancelled.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
         if let Some(sink) = self.sink.take() {
             sink.stop();
         }
@@ -770,6 +775,8 @@ mod buffering_regressions {
             )
             .unwrap();
         let (mut player, mut output) = Player::test_output(audio);
+        let cancelled = player.cancelled.as_ref().unwrap().clone();
+        let buffer = player.buffer.as_ref().unwrap().clone();
         player.set_stream_device_name_for_test(Some("Mock Headphones".into()));
         assert_eq!(player.stream_device_name(), Some("Mock Headphones"));
         assert!(player.stream_is_none());
@@ -781,6 +788,15 @@ mod buffering_regressions {
         assert!(pos > 0.5);
 
         player.reset_stream();
+        assert!(cancelled.load(Ordering::Relaxed));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !buffer.done.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "old decoder survived device reset"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(player.stream_device_name(), None);
         assert!(player.stream_is_none());
         assert!((player.position() - pos).abs() < 0.001);

@@ -24,6 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MAX_PENDING_DOWNLOADS: usize = 10;
+const DOWNLOAD_HISTORY_LIMIT: usize = 100;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Job {
@@ -41,6 +44,12 @@ pub struct Job {
     pub lyrics: bool,
     pub overwrite: bool,
     pub direct: bool,
+}
+impl Job {
+    fn is_pending(&self) -> bool {
+        ["queued", "resolving", "downloading", "lyrics", "cancelling"]
+            .contains(&self.phase.as_str())
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -131,6 +140,7 @@ struct Service {
     lyric_status: String,
     lyric_error: String,
     lyric_serial: u64,
+    lyric_cancelled: Arc<AtomicBool>,
     generation: u64,
     direct_override: bool,
     cancelled: Arc<AtomicBool>,
@@ -158,6 +168,7 @@ struct Service {
     buffering_since: Option<Instant>,
     last_device_check: Instant,
     visualizer_seen: Option<Instant>,
+    play_token: Option<String>,
 }
 impl Service {
     fn new(paths: Paths, tx: Sender<Event>, quit: Arc<AtomicBool>) -> Result<Self> {
@@ -196,6 +207,7 @@ impl Service {
             lyric_status: "idle".into(),
             lyric_error: String::new(),
             lyric_serial: 0,
+            lyric_cancelled: Arc::new(AtomicBool::new(false)),
             generation: 0,
             direct_override: false,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -223,6 +235,7 @@ impl Service {
             buffering_since: None,
             last_device_check: Instant::now(),
             visualizer_seen: None,
+            play_token: None,
         })
     }
     fn current(&self) -> Option<&Track> {
@@ -306,6 +319,7 @@ impl Service {
     }
     fn stop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
+        self.lyric_cancelled.store(true, Ordering::Relaxed);
         self.prepare_cancelled.store(true, Ordering::Relaxed);
         self.cancel_reattach();
         self.cancel_seek("播放已变化，已取消跳转");
@@ -345,12 +359,21 @@ impl Service {
         let generation = self.generation;
         self.lyric_status = "loading".into();
         self.lyric_error.clear();
+        self.lyric_cancelled.store(true, Ordering::Relaxed);
+        self.lyric_cancelled = Arc::new(AtomicBool::new(false));
         let provider = Provider::new(self.settings.direct || self.direct_override);
         let tx = self.tx.clone();
-        self.pool.execute(move || {
+        let cancelled = self.lyric_cancelled.clone();
+        if !self.pool.execute(move || {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
             let result = provider.lyrics(&track);
             let _ = tx.send(Event::Lyrics(generation, serial, result));
-        });
+        }) {
+            self.lyric_status = "error".into();
+            self.lyric_error = worker_busy().message;
+        }
     }
     fn begin(&mut self, index: usize, quality: String) -> Result<()> {
         self.begin_paused(index, quality, false)
@@ -407,7 +430,10 @@ impl Service {
             .join("cache-rust")
             .join(format!("play-{}-{generation}", std::process::id()));
         self.persist()?;
-        self.pool.execute(move || {
+        if !self.pool.execute(move || {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
             let result = (|| {
                 if !track.path.is_empty() {
                     return Ok(Some((PathBuf::from(&track.path), "local".into())));
@@ -522,8 +548,17 @@ impl Service {
             if tx.send(Event::Ready(generation, result)).is_err() {
                 let _ = fs::remove_file(&target);
             }
-        });
+        }) {
+            let error = worker_busy();
+            self.loading_rejected(error.clone());
+            return Err(error);
+        }
         Ok(())
+    }
+    fn loading_rejected(&mut self, error: Error) {
+        self.stop();
+        self.phase = "error".into();
+        self.error = Some(error);
     }
     fn advance(&mut self, previous: bool, automatic: bool) -> Result<()> {
         if self.queue.is_empty() {
@@ -572,10 +607,12 @@ impl Service {
         let null = self.player.null;
         let generation = self.generation;
         let tx = self.tx.clone();
-        self.pool.execute(move || {
+        if !self.pool.execute(move || {
             let result = input.prepare(&track, 0., cancelled, null);
             let _ = tx.send(Event::Loaded(generation, result));
-        });
+        }) {
+            self.loading_rejected(worker_busy());
+        }
     }
     fn reattach_player(&mut self, target_paused: bool) -> Result<()> {
         let position = self.player.position();
@@ -597,10 +634,13 @@ impl Service {
         let generation = self.generation;
         let null = self.player.null;
         let tx = self.tx.clone();
-        self.pool.execute(move || {
+        if !self.pool.execute(move || {
             let result = input.prepare(&track, position, cancelled, null);
             let _ = tx.send(Event::Reattached(generation, serial, target_paused, result));
-        });
+        }) {
+            self.cancel_reattach();
+            return Err(worker_busy());
+        }
         Ok(())
     }
     fn cancel_reattach(&mut self) {
@@ -618,6 +658,7 @@ impl Service {
         }
     }
     fn seek_request(&mut self, request: Value, reply: Sender<Result<Value>>) {
+        self.play_token = None;
         let result = (|| {
             if !["playing", "paused"].contains(&self.phase.as_str()) {
                 return Err(Error::new("当前没有可跳转的音频"));
@@ -653,10 +694,14 @@ impl Service {
             let tx = self.tx.clone();
             self.pending_seek = Some((Instant::now() + Duration::from_secs(10), reply.clone()));
             let null = self.player.null;
-            self.pool.execute(move || {
+            if !self.pool.execute(move || {
                 let result = input.prepare(&track, position, cancelled, null);
                 let _ = tx.send(Event::SeekReady(generation, serial, result));
-            });
+            }) {
+                self.pending_seek = None;
+                self.seek_cancelled.store(true, Ordering::Relaxed);
+                return Err(worker_busy());
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -846,21 +891,11 @@ impl Service {
                 && j.directory == directory
                 && j.lyrics == save_lyrics
                 && j.direct == direct
-                && ["queued", "resolving", "downloading", "lyrics", "cancelling"]
-                    .contains(&j.phase.as_str())
+                && j.is_pending()
         }) {
             return Ok(());
         }
-        if self
-            .jobs
-            .iter()
-            .filter(|j| {
-                ["queued", "resolving", "downloading", "lyrics", "cancelling"]
-                    .contains(&j.phase.as_str())
-            })
-            .count()
-            >= 10
-        {
+        if self.jobs.iter().filter(|j| j.is_pending()).count() >= MAX_PENDING_DOWNLOADS {
             return Err(Error::new("最多同时保留 10 项未完成下载"));
         }
         self.job_sequence += 1;
@@ -887,20 +922,49 @@ impl Service {
         self.kick_download();
         Ok(())
     }
+    fn prune_download_history(&mut self) {
+        let mut excess = self
+            .jobs
+            .iter()
+            .filter(|job| !job.is_pending())
+            .count()
+            .saturating_sub(DOWNLOAD_HISTORY_LIMIT);
+        if excess == 0 {
+            return;
+        }
+        let mut removed = HashSet::new();
+        self.jobs.retain(|job| {
+            if excess > 0 && !job.is_pending() {
+                excess -= 1;
+                removed.insert(job.id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        self.job_controls.retain(|id, _| !removed.contains(id));
+        self.job_queue.retain(|id| !removed.contains(id));
+    }
     fn kick_download(&mut self) {
         if self.job_active.is_some() {
             return;
         }
-        let Some(id) = self.job_queue.pop_front() else {
-            return;
+        // Cancellations and expired history must not block later queued jobs,
+        // nor recurse through stale entries on the service thread's stack.
+        let index = loop {
+            let Some(id) = self.job_queue.pop_front() else {
+                return;
+            };
+            if let Some(index) = self
+                .jobs
+                .iter()
+                .position(|job| job.id == id && job.phase == "queued")
+            {
+                break index;
+            }
         };
-        let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) else {
-            return;
-        };
-        if job.phase != "queued" {
-            self.kick_download();
-            return;
-        }
+        let job = &mut self.jobs[index];
+        let id = job.id.clone();
         job.phase = "resolving".into();
         let job = job.clone();
         let control = &self.job_controls[&id];
@@ -909,8 +973,12 @@ impl Service {
         self.job_active = Some((id.clone(), serial));
         let tx = self.tx.clone();
         let provider = Provider::with_sources(job.direct, self.paths.home.clone());
-        self.pool.execute(move || {
+        let rejected_id = id.clone();
+        if !self.pool.execute(move || {
             let result = (|| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(Error::coded("cancelled", "已取消"));
+                }
                 prepare_download_directory(&job.directory)?;
                 let mut excluded = HashSet::new();
                 let path = loop {
@@ -1033,10 +1101,43 @@ impl Service {
                 Ok((path.to_string_lossy().into_owned(), warning))
             })();
             let _ = tx.send(Event::JobDone(id, serial, result));
-        });
+        }) {
+            self.event(Event::JobDone(rejected_id, serial, Err(worker_busy())));
+        }
     }
     fn dispatch(&mut self, request: Value) -> Result<Value> {
         let op = request["op"].as_str().unwrap_or_default();
+        if op == "prepare_play" {
+            let token = format!("{:032x}", rand::random::<u128>());
+            self.play_token = Some(token.clone());
+            return Ok(json!({"play_token": token}));
+        }
+        if op == "play"
+            && request.get("play_token").is_some()
+            && (request["play_token"].as_str().is_none()
+                || request["play_token"].as_str() != self.play_token.as_deref())
+        {
+            return Err(Error::coded("cancelled", "播放操作已变化，已取消过期推荐"));
+        }
+        if [
+            "play",
+            "pause",
+            "resume",
+            "toggle",
+            "stop",
+            "next",
+            "prev",
+            "retry",
+            "queue_add",
+            "queue_remove",
+            "queue_clear",
+            "boss",
+            "shutdown",
+        ]
+        .contains(&op)
+        {
+            self.play_token = None;
+        }
         if [
             "play",
             "retry",
@@ -1332,16 +1433,25 @@ impl Service {
             "download" => self.enqueue_job(&request)?,
             "download_cancel" | "download_retry" => {
                 let id = request["id"].as_str().unwrap_or_default();
-                let job = self
+                let index = self
                     .jobs
-                    .iter_mut()
-                    .find(|j| j.id == id)
+                    .iter()
+                    .position(|j| j.id == id)
                     .ok_or_else(|| Error::new("找不到下载任务"))?;
+                if op == "download_retry"
+                    && ["error", "cancelled"].contains(&self.jobs[index].phase.as_str())
+                    && self.jobs.iter().filter(|job| job.is_pending()).count()
+                        >= MAX_PENDING_DOWNLOADS
+                {
+                    return Err(Error::new("最多同时保留 10 项未完成下载"));
+                }
+                let job = &mut self.jobs[index];
                 let control = self.job_controls.get_mut(id).unwrap();
                 if op == "download_cancel" {
                     if job.phase == "queued" {
                         control.cancelled.store(true, Ordering::Relaxed);
                         job.phase = "cancelled".into();
+                        self.job_queue.retain(|queued| queued != id);
                     } else if ["resolving", "downloading", "lyrics"].contains(&job.phase.as_str()) {
                         control.cancelled.store(true, Ordering::Relaxed);
                         job.phase = "cancelling".into();
@@ -1354,8 +1464,10 @@ impl Service {
                     job.total = 0;
                     job.error.clear();
                     job.warning.clear();
+                    self.job_queue.retain(|queued| queued != id);
                     self.job_queue.push_back(id.into());
                 }
+                self.prune_download_history();
                 self.kick_download();
             }
             "boss" => {
@@ -1708,10 +1820,14 @@ impl Service {
                         }
                     }
                 }
+                self.prune_download_history();
                 self.kick_download();
             }
         }
     }
+}
+fn worker_busy() -> Error {
+    Error::coded("worker_busy", "后台任务过多，请稍后重试")
 }
 fn prepare_download_directory(directory: &str) -> Result<()> {
     (|| -> std::io::Result<()> {
@@ -1945,6 +2061,165 @@ mod playback_tests {
             self.service.stop();
         }
     }
+    struct BusyPool(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    impl BusyPool {
+        fn fill(pool: &crate::pool::WorkerPool) -> Self {
+            let gate = Self(Arc::new((
+                std::sync::Mutex::new(false),
+                std::sync::Condvar::new(),
+            )));
+            let (tx, rx) = mpsc::channel();
+            for _ in 0..4 {
+                let state = gate.0.clone();
+                let tx = tx.clone();
+                assert!(pool.execute(move || {
+                    let _ = tx.send(());
+                    let (lock, wake) = &*state;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        released = wake.wait(released).unwrap();
+                    }
+                }));
+            }
+            for _ in 0..4 {
+                rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            let mut queued = 0;
+            while pool.execute(|| {}) {
+                queued += 1;
+                assert!(queued < 1_000, "worker queue must be bounded");
+            }
+            gate
+        }
+    }
+    impl Drop for BusyPool {
+        fn drop(&mut self) {
+            let (lock, wake) = &*self.0;
+            *lock.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+
+    #[test]
+    fn a_full_worker_queue_reports_errors_instead_of_sticking_in_loading() {
+        let mut h = Harness::new("list");
+        let track = h.track("busy", true);
+        let _busy = BusyPool::fill(&h.service.pool);
+        let error = h
+            .service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap_err();
+        assert_eq!(error.code, "worker_busy");
+        assert_eq!(h.service.phase, "error");
+        h.service.start_lyrics();
+        assert_eq!(h.service.lyric_status, "error");
+        h.service
+            .enqueue_job(&json!({"track":Track { id:"kuwo:busy".into(), ..Default::default() }}))
+            .unwrap();
+        assert_eq!(h.service.jobs[0].phase, "error");
+        assert!(h.service.jobs[0].error.contains("后台任务过多"));
+        assert!(h.service.job_active.is_none());
+    }
+    #[test]
+    fn a_full_worker_queue_rejects_seek_and_reattach_without_stale_pending_flags() {
+        let mut h = Harness::new("list");
+        let track = h.track("busy-seek", true);
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let _busy = BusyPool::fill(&h.service.pool);
+        let (reply, rx) = mpsc::channel();
+        h.service
+            .seek_request(json!({"op":"seek_to", "position":10}), reply);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(100))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "worker_busy"
+        );
+        assert!(h.service.pending_seek.is_none());
+        assert_eq!(h.service.phase, "playing");
+        assert_eq!(
+            h.service.reattach_player(false).unwrap_err().code,
+            "worker_busy"
+        );
+        assert!(!h.service.reattach_pending);
+        let input = h.service.audio_input.clone().unwrap();
+        h.service.prepare_input(input);
+        assert_eq!(h.service.phase, "error");
+        assert_eq!(h.service.error.as_ref().unwrap().code, "worker_busy");
+    }
+    #[test]
+    fn delayed_recommendations_cannot_override_a_newer_playback_action() {
+        for op in [
+            "play",
+            "pause",
+            "resume",
+            "toggle",
+            "stop",
+            "next",
+            "prev",
+            "retry",
+            "queue_clear",
+            "boss",
+        ] {
+            let mut h = Harness::new("list");
+            let track = h.track("current", true);
+            h.service
+                .dispatch(json!({"op":"play", "tracks":[track]}))
+                .unwrap();
+            h.pump("playing");
+            let token =
+                h.service.dispatch(json!({"op":"prepare_play"})).unwrap()["play_token"].clone();
+            let _ = h.service.dispatch(json!({"op":op}));
+            let before = serde_json::to_value(h.service.status()).unwrap();
+            let error = h
+                .service
+                .dispatch(json!({"op":"play", "play_token":token}))
+                .unwrap_err();
+            assert_eq!(error.code, "cancelled", "{op}");
+            let after = serde_json::to_value(h.service.status()).unwrap();
+            assert_eq!(before["track"], after["track"], "{op}");
+            assert_eq!(before["phase"], after["phase"], "{op}");
+            assert_eq!(before["queue"], after["queue"], "{op}");
+        }
+        let mut h = Harness::new("list");
+        let track = h.track("recommendation", true);
+        let first = h.service.dispatch(json!({"op":"prepare_play"})).unwrap()["play_token"].clone();
+        let token = h.service.dispatch(json!({"op":"prepare_play"})).unwrap()["play_token"].clone();
+        assert_eq!(
+            h.service
+                .dispatch(json!({"op":"play", "play_token":first}))
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+        h.service.dispatch(json!({"op":"status"})).unwrap();
+        h.service
+            .dispatch(json!({"op":"play", "play_token":token, "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        assert_eq!(
+            h.service
+                .dispatch(json!({"op":"play", "play_token":token}))
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+        let token = h.service.dispatch(json!({"op":"prepare_play"})).unwrap()["play_token"].clone();
+        let (reply, _rx) = mpsc::channel();
+        h.service
+            .seek_request(json!({"op":"seek_to", "position":2}), reply);
+        assert_eq!(
+            h.service
+                .dispatch(json!({"op":"play", "play_token":token}))
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+    }
 
     #[test]
     fn bad_tracks_are_skipped_in_every_mode_and_all_bad_queues_terminate() {
@@ -2169,6 +2444,118 @@ mod playback_tests {
         h.service
             .event(Event::SeekReady(h.service.generation, serial, Ok(audio)));
         assert!(h.service.player.position() < 1.);
+    }
+    #[test]
+    fn cancelled_download_history_stays_bounded_and_preserves_pending_jobs() {
+        let mut h = Harness::new("list");
+        h.service.job_active = Some(("busy".into(), 1));
+        for index in 0..1_000 {
+            h.service
+                .enqueue_job(&json!({"track": Track {
+                    id: format!("kuwo:{index}"), ..Default::default()
+                }}))
+                .unwrap();
+            if index != 0 {
+                let id = h.service.jobs.last().unwrap().id.clone();
+                h.service
+                    .dispatch(json!({"op":"download_cancel", "id": id}))
+                    .unwrap();
+            }
+        }
+        assert_eq!(h.service.jobs.len(), DOWNLOAD_HISTORY_LIMIT + 1);
+        assert_eq!(h.service.job_controls.len(), DOWNLOAD_HISTORY_LIMIT + 1);
+        assert_eq!(h.service.job_queue, VecDeque::from(["d1".to_string()]));
+        assert_eq!(h.service.jobs[0].phase, "queued");
+        assert_eq!(h.service.jobs.last().unwrap().id, "d1000");
+    }
+    #[test]
+    fn download_retry_does_not_accumulate_queue_entries_or_bypass_capacity() {
+        let mut h = Harness::new("list");
+        h.service.job_active = Some(("busy".into(), 1));
+        h.service
+            .enqueue_job(&json!({"track": Track { id: "kuwo:1".into(), ..Default::default() }}))
+            .unwrap();
+        for _ in 0..1_000 {
+            h.service
+                .dispatch(json!({"op":"download_cancel", "id":"d1"}))
+                .unwrap();
+            assert!(h.service.job_queue.is_empty());
+            h.service
+                .dispatch(json!({"op":"download_retry", "id":"d1"}))
+                .unwrap();
+            assert_eq!(h.service.job_queue.len(), 1);
+        }
+        h.service
+            .dispatch(json!({"op":"download_cancel", "id":"d1"}))
+            .unwrap();
+        for index in 2..=MAX_PENDING_DOWNLOADS + 1 {
+            h.service
+                .enqueue_job(&json!({"track": Track {
+                    id: format!("kuwo:{index}"), ..Default::default()
+                }}))
+                .unwrap();
+        }
+        let before = h.service.job_controls["d1"].serial;
+        let error = h
+            .service
+            .dispatch(json!({"op":"download_retry", "id":"d1"}))
+            .unwrap_err();
+        assert!(error.message.contains("10"));
+        assert_eq!(h.service.jobs[0].phase, "cancelled");
+        assert_eq!(h.service.job_controls["d1"].serial, before);
+        assert_eq!(h.service.job_queue.len(), MAX_PENDING_DOWNLOADS);
+    }
+    #[test]
+    fn completed_download_history_releases_old_controls() {
+        let mut h = Harness::new("list");
+        for index in 0..DOWNLOAD_HISTORY_LIMIT + 20 {
+            h.service.job_active = Some(("busy".into(), 1));
+            h.service
+                .enqueue_job(&json!({"track": Track {
+                    id: format!("kuwo:{index}"), ..Default::default()
+                }}))
+                .unwrap();
+            let id = h.service.job_queue.pop_front().unwrap();
+            h.service.job_active = Some((id.clone(), 1));
+            h.service.event(Event::JobDone(
+                id,
+                1,
+                Ok(("audio.mp3".into(), String::new())),
+            ));
+        }
+        assert_eq!(h.service.jobs.len(), DOWNLOAD_HISTORY_LIMIT);
+        assert_eq!(h.service.job_controls.len(), DOWNLOAD_HISTORY_LIMIT);
+        assert!(h.service.job_queue.is_empty());
+        assert!(h.service.job_active.is_none());
+        assert!(h.service.jobs.iter().all(|job| job.phase == "done"));
+        assert!(!h.service.job_controls.contains_key("d1"));
+    }
+    #[test]
+    fn stale_download_entries_do_not_block_the_next_job() {
+        let mut h = Harness::new("list");
+        h.service.job_active = Some(("busy".into(), 1));
+        let directory = h.dir.path().join("not-a-directory");
+        fs::write(&directory, b"file").unwrap();
+        h.service
+            .job_queue
+            .extend((0..10_000).map(|_| "expired".into()));
+        h.service
+            .enqueue_job(&json!({"track": Track {
+                id: "kuwo:1".into(), ..Default::default()
+            }, "directory": directory}))
+            .unwrap();
+        h.service.job_active = None;
+        h.service.kick_download();
+        assert!(h.service.job_queue.is_empty());
+        assert_eq!(h.service.job_active, Some(("d1".into(), 1)));
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while h.service.job_active.is_some() {
+            assert!(Instant::now() < deadline);
+            if let Ok(event) = h.rx.recv_timeout(Duration::from_millis(20)) {
+                h.service.event(event);
+            }
+        }
+        assert_eq!(h.service.jobs[0].phase, "error");
     }
     #[test]
     fn download_rejects_an_unwritable_directory_before_resolving_sources() {

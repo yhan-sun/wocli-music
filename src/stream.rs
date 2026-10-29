@@ -3,11 +3,15 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 pub const PREBUFFER_SIZE: u64 = 256 * 1024;
+// ureq body reads can stay blocked until the socket deadline after cancellation.
+// Bound those outstanding reads independently from the service worker pool.
+static STREAM_CONNECTIONS: OnceLock<crate::pool::ConnectionLimiter> = OnceLock::new();
+const MAX_STREAM_CONNECTIONS: usize = 8;
 
 // Compressed bytes must cover time, not just a fixed size: 256 KiB can be less
 // than two seconds of FLAC. Keep startup reserves bounded even for unusual files.
@@ -232,6 +236,10 @@ pub(crate) fn start_stream_buffered(
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::coded("cancelled", "已取消"));
     }
+    let connection = STREAM_CONNECTIONS
+        .get_or_init(|| crate::pool::ConnectionLimiter::new(MAX_STREAM_CONNECTIONS))
+        .acquire()
+        .ok_or_else(|| Error::coded("worker_busy", "音频连接繁忙，请稍后重试"))?;
     // Keep failed/slow streaming attempts separate from the full-download fallback.
     let cache_path = cache_path.with_extension(format!(
         "{}.stream",
@@ -249,6 +257,9 @@ pub(crate) fn start_stream_buffered(
         )
         .call()
         .map_err(|e| Error::coded("network", format!("网络连接失败: {e}")))?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(Error::coded("cancelled", "已取消"));
+    }
     let status = response.status();
     if status != 200 && status != 206 {
         return Err(Error::coded("network", format!("HTTP 请求失败 ({status})")));
@@ -285,103 +296,129 @@ pub(crate) fn start_stream_buffered(
     let coord_worker = coord.clone();
     let cache_worker_path = cache_path.clone();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let mut ready = false;
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&cache_worker_path)?;
-            let mut reader = response.into_reader();
-            let mut buffer = [0u8; 32 * 1024];
-            let mut head = Vec::new();
-            let mut digest = Md5::new();
-            let mut downloaded = 0u64;
-            let prebuffer_target = prebuffer_size(actual_total, duration);
-            loop {
+    let cancel_wait = cancelled.clone();
+    thread::Builder::new()
+        .name("wocli-stream-download".into())
+        .spawn(move || {
+            let _connection = connection;
+            let mut ready = false;
+            let result = (|| {
+                let mut file = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&cache_worker_path)?;
+                let mut reader = response.into_reader();
+                let mut buffer = [0u8; 32 * 1024];
+                let mut head = Vec::new();
+                let mut digest = Md5::new();
+                let mut downloaded = 0u64;
+                let prebuffer_target = prebuffer_size(actual_total, duration);
+                loop {
+                    if cancelled.load(Ordering::Relaxed)
+                        || coord_worker.cancelled.load(Ordering::Relaxed)
+                    {
+                        return Err(Error::coded("cancelled", "已取消"));
+                    }
+                    let n = reader
+                        .read(&mut buffer)
+                        .map_err(|e| Error::coded("network", format!("数据流读取中断: {e}")))?;
+                    if n == 0 {
+                        break;
+                    }
+                    if head.len() < 4 {
+                        head.extend_from_slice(&buffer[..n.min(4 - head.len())]);
+                        if head.len() == 4 && !crate::provider::kuwo::valid_audio(&head) {
+                            return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
+                        }
+                    }
+                    downloaded += n as u64;
+                    if downloaded > 1024 * 1024 * 1024 {
+                        return Err(Error::coded("invalid_audio", "音频长度异常"));
+                    }
+                    file.write_all(&buffer[..n])?;
+                    digest.update(&buffer[..n]);
+                    coord_worker.notify_progress(downloaded);
+                    on_buffer(downloaded, actual_total);
+                    if !ready && downloaded >= prebuffer_target {
+                        ready = true;
+                        let _ = ready_tx.send(Ok(()));
+                    }
+                }
                 if cancelled.load(Ordering::Relaxed)
                     || coord_worker.cancelled.load(Ordering::Relaxed)
                 {
                     return Err(Error::coded("cancelled", "已取消"));
                 }
-                let n = reader
-                    .read(&mut buffer)
-                    .map_err(|e| Error::coded("network", format!("数据流读取中断: {e}")))?;
-                if n == 0 {
-                    break;
+                if head.len() < 4 || !crate::provider::kuwo::valid_audio(&head) {
+                    return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
                 }
-                if head.len() < 4 {
-                    head.extend_from_slice(&buffer[..n.min(4 - head.len())]);
-                    if head.len() == 4 && !crate::provider::kuwo::valid_audio(&head) {
-                        return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
+                if (actual_total > 0 && downloaded != actual_total)
+                    || (total_size > 0 && (downloaded as f64) < total_size as f64 * 0.8)
+                {
+                    return Err(Error::coded("incomplete_audio", "音频传输长度不完整"));
+                }
+                if let Some(expected) = expected_md5 {
+                    let digest = digest.finalize();
+                    if expected.trim_matches('"').to_lowercase() != format!("{digest:x}")
+                        && expected.trim_matches('"') != STANDARD.encode(digest)
+                    {
+                        return Err(Error::coded("incomplete_audio", "音频 MD5 校验失败"));
                     }
                 }
-                downloaded += n as u64;
-                if downloaded > 1024 * 1024 * 1024 {
-                    return Err(Error::coded("invalid_audio", "音频长度异常"));
+                file.flush()?;
+                coord_worker.total.store(downloaded, Ordering::Release);
+                coord_worker.mark_completed(downloaded);
+                on_buffer(downloaded, downloaded);
+                Ok(downloaded)
+            })();
+            match result {
+                Ok(n) => {
+                    if !ready {
+                        let _ = ready_tx.send(Ok(()));
+                    }
+                    on_complete(Ok(n));
                 }
-                file.write_all(&buffer[..n])?;
-                digest.update(&buffer[..n]);
-                coord_worker.notify_progress(downloaded);
-                on_buffer(downloaded, actual_total);
-                if !ready && downloaded >= prebuffer_target {
-                    ready = true;
-                    let _ = ready_tx.send(Ok(()));
-                }
-            }
-            if cancelled.load(Ordering::Relaxed) || coord_worker.cancelled.load(Ordering::Relaxed) {
-                return Err(Error::coded("cancelled", "已取消"));
-            }
-            if head.len() < 4 || !crate::provider::kuwo::valid_audio(&head) {
-                return Err(Error::coded("invalid_audio", "返回内容不是有效音频"));
-            }
-            if (actual_total > 0 && downloaded != actual_total)
-                || (total_size > 0 && (downloaded as f64) < total_size as f64 * 0.8)
-            {
-                return Err(Error::coded("incomplete_audio", "音频传输长度不完整"));
-            }
-            if let Some(expected) = expected_md5 {
-                let digest = digest.finalize();
-                if expected.trim_matches('"').to_lowercase() != format!("{digest:x}")
-                    && expected.trim_matches('"') != STANDARD.encode(digest)
-                {
-                    return Err(Error::coded("incomplete_audio", "音频 MD5 校验失败"));
+                Err(error) => {
+                    if error.code == "cancelled" {
+                        coord_worker.mark_cancelled();
+                    } else {
+                        coord_worker.mark_failed();
+                    }
+                    let _ = std::fs::remove_file(cache_worker_path);
+                    if ready {
+                        on_complete(Err(error));
+                    } else {
+                        let _ = ready_tx.send(Err(error));
+                    }
                 }
             }
-            file.flush()?;
-            coord_worker.total.store(downloaded, Ordering::Release);
-            coord_worker.mark_completed(downloaded);
-            on_buffer(downloaded, downloaded);
-            Ok(downloaded)
-        })();
-        match result {
-            Ok(n) => {
-                if !ready {
-                    let _ = ready_tx.send(Ok(()));
-                }
-                on_complete(Ok(n));
-            }
-            Err(error) => {
-                if error.code == "cancelled" {
-                    coord_worker.mark_cancelled();
-                } else {
-                    coord_worker.mark_failed();
-                }
-                let _ = std::fs::remove_file(cache_worker_path);
-                if ready {
-                    on_complete(Err(error));
-                } else {
-                    let _ = ready_tx.send(Err(error));
-                }
-            }
-        }
-    });
-    match ready_rx.recv_timeout(Duration::from_secs(12)) {
-        Ok(Ok(())) => Ok(StreamHandle { coord, cache_path }),
-        Ok(Err(error)) => Err(error),
-        Err(_) => {
+        })
+        .map_err(|e| Error::new(format!("无法启动音频下载线程：{e}")))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        if cancel_wait.load(Ordering::Relaxed) {
             coord.mark_cancelled();
-            Err(Error::coded("network", "预缓冲超时，网络连接缓慢"))
+            let _ = std::fs::remove_file(&cache_path);
+            return Err(Error::coded("cancelled", "已取消"));
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            coord.mark_cancelled();
+            let _ = std::fs::remove_file(&cache_path);
+            return Err(Error::coded("network", "预缓冲超时，网络连接缓慢"));
+        }
+        match ready_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(Ok(())) if !cancel_wait.load(Ordering::Relaxed) => {
+                return Ok(StreamHandle { coord, cache_path });
+            }
+            Ok(Ok(())) => continue,
+            Ok(Err(error)) => return Err(error),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                coord.mark_failed();
+                let _ = std::fs::remove_file(&cache_path);
+                return Err(Error::coded("network", "音频下载线程意外结束"));
+            }
         }
     }
 }
@@ -626,6 +663,60 @@ mod regression_tests {
         );
         assert!(handle.coord.completed.load(Ordering::Acquire));
         server.join().unwrap();
+    }
+    #[test]
+    fn cancelling_prebuffer_releases_the_caller_and_cleans_the_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = test_wav(30);
+        let (sent_tx, sent_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (url, server) = serve(move |mut s| {
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            s.write_all(&body[..40000]).unwrap();
+            sent_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancelled.clone();
+        let path = dir.path().join("cancel-prebuffer");
+        let (tx, rx) = mpsc::channel();
+        let caller = thread::spawn(move || {
+            let result = start_stream(&agent(), &url, 0, path, cancel_worker, |_, _| {}, |_| {});
+            let _ = tx.send(result.err().map(|error| error.code));
+        });
+        sent_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while std::fs::read_dir(dir.path()).unwrap().count() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "download did not create its partial file"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+            Some("cancelled".into())
+        );
+        // The HTTP reader is still blocked; waking it must finish cleanup and
+        // release its cancellation token, without reporting a successful stream.
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        caller.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Arc::strong_count(&cancelled) != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "stream worker retained its cancellation token"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
     #[test]
     fn previews_and_partial_http_responses_are_rejected() {

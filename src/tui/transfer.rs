@@ -316,6 +316,7 @@ impl App {
     }
     pub(super) fn draw_transfer(&mut self, frame: &mut Frame, body: Rect, dialog: Dialog) {
         let mut lines = vec![];
+        let mut fields = vec![];
         match &dialog.stage {
             Stage::Input => {
                 let labels = if dialog.export.is_some() {
@@ -337,14 +338,8 @@ impl App {
                         1 => &dialog.name,
                         _ => &dialog.list,
                     };
-                    lines.push(Line::styled(
-                        format!("{value}{}", if dialog.focus == i as u8 { "▏" } else { "" }),
-                        Style::default().fg(FG).bg(if dialog.focus == i as u8 {
-                            SELECTED
-                        } else {
-                            BG
-                        }),
-                    ));
+                    lines.push(Line::raw(""));
+                    fields.push((i, value.clone()));
                     self.hit(
                         Rect::new(body.x, body.y + i as u16 * 2 + 1, body.width, 1),
                         Action::TransferField(i as u8),
@@ -458,13 +453,27 @@ impl App {
                 }));
             }
         }
-        if !dialog.error.is_empty() {
-            lines.push(Line::styled(dialog.error.clone(), Style::default().fg(BAD)));
-        }
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().fg(FG)),
             Rect::new(body.x, body.y, body.width, body.height.saturating_sub(2)),
         );
+        for (i, value) in fields {
+            let focused = dialog.focus == i as u8;
+            frame.render_widget(
+                input_paragraph(value, focused, body.width).style(
+                    Style::default()
+                        .fg(FG)
+                        .bg(if focused { SELECTED } else { BG }),
+                ),
+                Rect::new(body.x, body.y + i as u16 * 2 + 1, body.width, 1),
+            );
+        }
+        if !dialog.error.is_empty() {
+            frame.render_widget(
+                Paragraph::new(dialog.error.clone()).style(Style::default().fg(BAD)),
+                Rect::new(body.x, body.bottom().saturating_sub(2), body.width, 1),
+            );
+        }
         let label = match dialog.stage {
             Stage::Input if dialog.export.is_some() => "导出 ↵",
             Stage::Input => "解析与匹配 ↵",

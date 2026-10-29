@@ -36,6 +36,7 @@ pub(super) struct Tap {
     producer: Producer<f32>,
     count: usize,
     channels: usize,
+    frame_sum: f32,
     frames: usize,
     sum: f32,
     state: Arc<Spectrum>,
@@ -43,20 +44,23 @@ pub(super) struct Tap {
 impl Tap {
     pub fn sample(&mut self, sample: f32) {
         self.count += 1;
+        self.frame_sum += if sample.is_finite() {
+            sample.clamp(-1., 1.)
+        } else {
+            0.
+        };
         if self.count < self.channels {
             return;
         }
         self.count = 0;
+        let mono = self.frame_sum / self.channels as f32;
+        self.frame_sum = 0.;
         if !self.state.enabled.load(Ordering::Relaxed) {
             self.frames = 0;
             self.sum = 0.;
             return;
         }
-        self.sum += if sample.is_finite() {
-            sample.clamp(-1., 1.)
-        } else {
-            0.
-        };
+        self.sum += mono;
         self.frames += 1;
         if self.frames == DECIMATE {
             let _ = self.producer.push(self.sum / DECIMATE as f32);
@@ -127,6 +131,7 @@ pub(super) fn start(rate: u32, channels: u16) -> std::io::Result<(Tap, Arc<Spect
             producer,
             count: 0,
             channels: channels as usize,
+            frame_sum: 0.,
             frames: 0,
             sum: 0.,
             state: state.clone(),
@@ -200,5 +205,21 @@ mod tests {
             assert_eq!(peak, expected, "{values:?}");
         }
         assert_eq!(bands(&[0.; WINDOW], 12000.), [0.; BANDS]);
+    }
+
+    #[test]
+    fn stereo_tap_includes_audio_from_the_left_channel() {
+        let (mut tap, state) = start(48000, 2).unwrap();
+        state.enabled.store(true, Ordering::Relaxed);
+        for n in 0..(WINDOW * DECIMATE * 2) {
+            tap.sample((std::f32::consts::TAU * 2200. * n as f32 / 48000.).sin() * 0.5);
+            tap.sample(0.);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while state.levels()[5] < 0.05 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.levels()[5] > 0.05);
+        assert!(state.levels()[5] > state.levels()[1]);
     }
 }

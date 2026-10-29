@@ -253,7 +253,7 @@ fn pump(
             let cancelled = cancelled.clone();
             let closed = host.closed.clone();
             let tx = host.tx.clone();
-            HTTP_POOL
+            if !HTTP_POOL
                 .get_or_init(|| crate::pool::WorkerPool::new(4))
                 .execute(move || {
                     if closed.load(Ordering::Relaxed) || cancelled.load(Ordering::Relaxed) {
@@ -265,7 +265,10 @@ fn pump(
                     }
                     let result = http(&agent, &request, remaining, &cancelled, &closed);
                     let _ = tx.send((request["id"].as_u64().unwrap_or_default(), result));
-                });
+                })
+            {
+                return Err(Error::coded("worker_busy", "音源请求繁忙，请稍后重试"));
+            }
         }
         for (id, result) in host.rx.try_iter() {
             let (error, response) = match result {

@@ -384,4 +384,38 @@ mod tests {
         );
         assert_eq!(state.underruns.load(Ordering::Relaxed), 0);
     }
+
+    #[test]
+    fn repeated_track_replacement_releases_decoder_spectrum_and_cancel_state() {
+        let mut buffers = Vec::new();
+        let mut spectra = Vec::new();
+        let mut cancellations = Vec::new();
+        for _ in 0..100 {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let source = Gated {
+                position: 0,
+                limit: 100000,
+                pause_at: 4000,
+                gate: Arc::new(AtomicBool::new(false)),
+                blocked: Arc::new(AtomicBool::new(false)),
+                cancel: cancel.clone(),
+            };
+            let (source, state) = BufferedSource::prepare(
+                Box::new(source),
+                Arc::new(AtomicU64::new(0)),
+                cancel.clone(),
+            )
+            .unwrap();
+            buffers.push(Arc::downgrade(&state));
+            spectra.push(Arc::downgrade(&state.spectrum));
+            cancellations.push(Arc::downgrade(&cancel));
+            drop(source);
+            assert!(cancel.load(Ordering::Relaxed));
+        }
+        wait(|| {
+            buffers.iter().all(|state| state.upgrade().is_none())
+                && spectra.iter().all(|state| state.upgrade().is_none())
+                && cancellations.iter().all(|state| state.upgrade().is_none())
+        });
+    }
 }

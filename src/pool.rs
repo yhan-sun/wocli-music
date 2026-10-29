@@ -1,19 +1,21 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
+const MAX_QUEUED_JOBS: usize = 64;
 
 pub struct WorkerPool {
-    sender: Option<Sender<Job>>,
+    sender: Option<SyncSender<Job>>,
     workers: Vec<JoinHandle<()>>,
     active_jobs: Arc<AtomicUsize>,
 }
 
 impl WorkerPool {
     pub fn new(num_threads: usize) -> Self {
-        let (sender, receiver) = channel::<Job>();
+        assert!(num_threads > 0, "a worker pool needs at least one worker");
+        let (sender, receiver) = sync_channel::<Job>(MAX_QUEUED_JOBS);
         let receiver = Arc::new(Mutex::new(receiver));
         let active_jobs = Arc::new(AtomicUsize::new(0));
         let mut workers = Vec::with_capacity(num_threads);
@@ -35,7 +37,9 @@ impl WorkerPool {
                         }
                     };
                     active.fetch_add(1, Ordering::Relaxed);
-                    job();
+                    // Keep accounting and capacity intact in unwind builds.
+                    // Release builds use panic=abort and terminate on panic.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                     active.fetch_sub(1, Ordering::Relaxed);
                 })
                 .expect("Failed to spawn worker thread");
@@ -51,7 +55,7 @@ impl WorkerPool {
 
     pub fn execute(&self, f: impl FnOnce() + Send + 'static) -> bool {
         if let Some(ref sender) = self.sender {
-            sender.send(Box::new(f)).is_ok()
+            sender.try_send(Box::new(f)).is_ok()
         } else {
             false
         }
@@ -137,6 +141,55 @@ mod tests {
         }));
         thread::sleep(Duration::from_millis(50));
         assert!(done.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn saturated_pool_rejects_work_without_blocking_and_recovers_after_drain() {
+        let pool = WorkerPool::new(1);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        assert!(pool.execute(move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let completed = Arc::new(AtomicUsize::new(0));
+        for _ in 0..MAX_QUEUED_JOBS {
+            let completed = completed.clone();
+            assert!(pool.execute(move || {
+                completed.fetch_add(1, Ordering::Relaxed);
+            }));
+        }
+        let rejected_capture = Arc::new(());
+        let captured = rejected_capture.clone();
+        let start = std::time::Instant::now();
+        assert!(!pool.execute(move || drop(captured)));
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert_eq!(Arc::strong_count(&rejected_capture), 1);
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while completed.load(Ordering::Relaxed) != MAX_QUEUED_JOBS {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(pool.execute(move || tx.send(()).unwrap()));
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(pool);
+        assert_eq!(completed.load(Ordering::Relaxed), MAX_QUEUED_JOBS);
+    }
+
+    #[test]
+    #[cfg(panic = "unwind")]
+    fn panicking_job_does_not_retire_a_worker_or_leak_active_count() {
+        let pool = WorkerPool::new(1);
+        assert!(pool.execute(|| panic!("test task panic")));
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(pool.execute(move || tx.send(()).unwrap()));
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let active = pool.active_jobs.clone();
+        drop(pool);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
     }
 
     #[test]

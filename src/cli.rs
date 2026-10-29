@@ -765,6 +765,11 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                     json!({"track_id":track.id,"blocked":action == "dislike"})
                 }
                 "show" | "play" | "add" => {
+                    let play_token = if action == "play" {
+                        Some(request(&paths, json!({"op":"prepare_play"}))?["play_token"].clone())
+                    } else {
+                        None
+                    };
                     let daily = crate::recommend::daily(
                         &store,
                         &provider,
@@ -779,10 +784,11 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                             ));
                         }
                         if action == "play" {
-                            let result = request(
+                            let result = ipc::request(
                                 &paths,
-                                json!({"op":"play","tracks":tracks,"index":0,"quality":args.value("--quality"),"direct":args.flag("--direct") || settings.direct}),
-                            )?;
+                                json!({"op":"play","tracks":tracks,"index":0,"quality":args.value("--quality"),"direct":args.flag("--direct") || settings.direct,"play_token":play_token}),
+                                false,
+                            )?.ok_or_else(|| Error::coded("cancelled", "后台已退出，已取消推荐播放"))?;
                             let result = if args.flag("--no-wait") {
                                 result
                             } else {
