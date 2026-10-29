@@ -23,9 +23,9 @@ public static class WidgetCards
         // Markdown-capable TextBlock, so lyrics cannot introduce links or HTML.
         if (content)
         {
-            body.Add(Rich("${title}", "Bolder", size == CardSize.Small ? "Default" : "Medium"));
+            body.Add(Rich("${title}", "Bolder", "Default"));
             if (size != CardSize.Small) body.Add(Rich("${artist}", "Default", "Small", subtle: true));
-            body.Add(Rich("${line}", "Default", size == CardSize.Large ? "Large" : "Default"));
+            body.Add(Rich("${line}", "Default", "Default"));
         }
         else
         {
@@ -37,7 +37,11 @@ public static class WidgetCards
             body.Add(new
             {
                 type = "ActionSet",
-                actions = new[]
+                // The small card has one touch target; medium and large have
+                // three, following the Windows widget design fundamentals.
+                actions = size == CardSize.Small
+                ? new[] { Action(lyrics!.State == "paused" ? "播放" : "暂停", lyrics.State == "paused" ? "resume" : "pause") }
+                : new[]
                 {
                     Action("上一首", "prev"),
                     Action(lyrics!.State == "paused" ? "播放" : "暂停", lyrics.State == "paused" ? "resume" : "pause"),
@@ -48,9 +52,12 @@ public static class WidgetCards
         var template = JsonSerializer.Serialize(new { type = "AdaptiveCard", version = "1.5", body });
         var data = JsonSerializer.Serialize(new
         {
-            title = content ? Limit(lyrics!.Title, size == CardSize.Small ? 28 : 80) : "",
-            artist = content ? Limit(lyrics!.Artist, 60) : "",
-            line = content ? Limit(lyrics!.Line.Length > 0 ? lyrics.Line : "暂无同步歌词", size switch { CardSize.Small => 44, CardSize.Medium => 100, _ => 200 }) : "",
+            // RichTextBlock has no maxLines. These conservative text budgets
+            // reserve room for controls; actual wrapping still requires host
+            // verification with Windows text scaling and both color themes.
+            title = content ? Limit(lyrics!.Title, size switch { CardSize.Small => 12, CardSize.Medium => 24, _ => 32 }) : "",
+            artist = content && size != CardSize.Small ? Limit(lyrics!.Artist, size == CardSize.Medium ? 24 : 40) : "",
+            line = content ? Limit(lyrics!.Line.Length > 0 ? lyrics.Line : "暂无同步歌词", size switch { CardSize.Small => 18, CardSize.Medium => 52, _ => 112 }) : "",
             nonce = controls ? nonce : ""
         });
         return new WidgetCard(template, data);

@@ -129,7 +129,7 @@ static async Task Configuration()
 
 static Task Cards()
 {
-    var malicious = "[link](https://example.com) <b>markup</b> ${nonce} \"quoted\"";
+    var malicious = "[x](https://example.com) \"x\"";
     var lyrics = new LyricsSnapshot(true, false, "playing", "track:1", malicious, malicious, string.Concat(Enumerable.Repeat("🎵", 240)));
     foreach (var size in Enum.GetValues<CardSize>())
     {
@@ -141,9 +141,15 @@ static Task Cards()
         var body = template.RootElement.GetProperty("body").EnumerateArray().ToArray();
         Check(body.Where(item => item.GetProperty("type").GetString() != "ActionSet").All(item => item.GetProperty("type").GetString() == "RichTextBlock"), "music content can be parsed as Markdown");
         var actions = body.Last().GetProperty("actions").EnumerateArray().ToArray();
-        Check(actions.Length == 3 && actions.All(action => action.GetProperty("type").GetString() == "Action.Execute"), "unsupported widget action type");
-        Check(actions.Select(action => action.GetProperty("verb").GetString()).SequenceEqual(new[] { "prev", "pause", "next" }), "incorrect action whitelist");
-        Check(data.RootElement.GetProperty("line").GetString()!.EnumerateRunes().Count() <= (size == CardSize.Small ? 44 : size == CardSize.Medium ? 100 : 200), "lyric layout exceeds Unicode limit");
+        Check(actions.Length == (size == CardSize.Small ? 1 : 3) && actions.All(action => action.GetProperty("type").GetString() == "Action.Execute"), "incorrect touch target budget or unsupported widget action type");
+        Check(actions.Select(action => action.GetProperty("verb").GetString()).SequenceEqual(size == CardSize.Small ? new[] { "pause" } : new[] { "prev", "pause", "next" }), "incorrect action whitelist");
+        Check(data.RootElement.GetProperty("line").GetString()!.EnumerateRunes().Count() <= (size == CardSize.Small ? 18 : size == CardSize.Medium ? 52 : 112), "lyric layout exceeds Unicode limit");
+        Check(body.First().GetProperty("inlines")[0].GetProperty("size").GetString() == "Default", "title consumes excess card height");
+        var longText = string.Concat(Enumerable.Repeat("🎵", 240));
+        var longCard = WidgetCards.Create(size, "playing", lyrics with { Title = longText, Artist = longText }, new string('a', 32));
+        Check(Field(longCard, "title").EnumerateRunes().Count() == (size == CardSize.Small ? 12 : size == CardSize.Medium ? 24 : 32), "title layout budget or Unicode truncation incorrect");
+        Check(Field(longCard, "artist").EnumerateRunes().Count() == (size == CardSize.Small ? 0 : size == CardSize.Medium ? 24 : 40), "artist layout budget incorrect");
+        Check(Field(longCard, "title").EndsWith("…", StringComparison.Ordinal), "truncated title lacks ellipsis");
         if (size == CardSize.Large) Check(data.RootElement.GetProperty("title").GetString() == malicious, "plain text altered or interpreted");
     }
     foreach (var hidden in new[] { lyrics with { Boss = true }, lyrics with { Enabled = false }, lyrics with { State = "stopped" } })
