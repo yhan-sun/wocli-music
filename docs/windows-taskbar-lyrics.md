@@ -44,7 +44,7 @@ python .\scripts\build_native.py --platform windows-x86_64
 
 这是开发预览注册包，**不能直接双击未签名 MSIX 安装**。先完整解压到固定目录，按产物 `PREVIEW.txt` 安装微软依赖，并在已有开发者模式的环境开发注册 `Layout/AppxManifest.xml`。注册后须保留整个 `Layout` 在该路径。构建脚本不会安装证书、开启开发者模式或修改系统地区。正式签名／商店分发尚未完成。
 
-然后使用包内配套播放器：
+升级前先退出旧 TUI，使用包内播放器执行 `./wocli.exe tray stop` 和 `./wocli.exe daemon stop`，避免旧托盘和旧后台继续处理请求。然后使用包内配套播放器：
 
 ```powershell
 .\wocli.exe widgets on

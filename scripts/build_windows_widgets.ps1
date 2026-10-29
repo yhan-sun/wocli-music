@@ -447,6 +447,9 @@ run "wocli widgets on", open Widgets (Win+W), and add "wocli 歌词" in its pick
 The lyrics appear inside the expanded board, not on the collapsed weather entry.
 If upgrading from alpha.1, remove its development registration first, keep this
 new Layout in a permanent directory, then register it using the commands above.
+Before upgrading an existing player, exit the old TUI, run "wocli tray stop"
+and "wocli daemon stop", then start the included player. Otherwise an already
+running older daemon may keep serving requests without this preview's protocol.
 The shared LocalAppData\wocli-music configuration and diagnostics are excluded
 from MSIX write virtualization so the unpackaged player can read them. These
 shared files remain after removing the package; other app folders are unaffected.
