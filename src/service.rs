@@ -141,6 +141,7 @@ struct Service {
     lyric_status: String,
     lyric_error: String,
     lyric_serial: u64,
+    lyric_session: u128,
     lyric_cancelled: Arc<AtomicBool>,
     generation: u64,
     direct_override: bool,
@@ -209,6 +210,7 @@ impl Service {
             lyric_status: "idle".into(),
             lyric_error: String::new(),
             lyric_serial: 0,
+            lyric_session: rand::random(),
             lyric_cancelled: Arc::new(AtomicBool::new(false)),
             generation: 0,
             direct_override: false,
@@ -335,7 +337,7 @@ impl Service {
             "enabled": self.settings.lyrics_bar,
             "boss": self.boss,
             "state": self.phase,
-            "track_id": track.map(|track| format!("{}:{}", self.generation, track.id.chars().take(256).collect::<String>())).unwrap_or_default(),
+            "track_id": track.map(|track| format!("{:032x}:{}:{}", self.lyric_session, self.generation, track.id.chars().take(256).collect::<String>())).unwrap_or_default(),
             "title": track.map(|track| clip(&track.title)).unwrap_or_default(),
             "artist": track.map(|track| clip(&track.artist)).unwrap_or_default(),
             "line": line,
@@ -2167,6 +2169,28 @@ mod playback_tests {
             *lock.lock().unwrap() = true;
             wake.notify_all();
         }
+    }
+
+    #[test]
+    fn widget_buttons_from_a_previous_daemon_session_are_rejected() {
+        let mut first = Harness::new("list");
+        let mut restarted = Harness::new("list");
+        let mut track = first.track("widget-restart", true);
+        track.id = "歌".repeat(256);
+        for harness in [&mut first, &mut restarted] {
+            harness.service.queue = vec![track.clone()];
+            harness.service.phase = "playing".into();
+            harness.service.generation = u64::MAX;
+        }
+        let old = first.service.lyrics_snapshot();
+        let current = restarted.service.lyrics_snapshot();
+        assert_ne!(old["track_id"], current["track_id"]);
+        assert!(current["track_id"].as_str().unwrap().chars().count() <= 320);
+        let error = restarted.service.dispatch(json!({
+            "op":"widget_action", "action":"pause", "track_id":old["track_id"], "state":"playing",
+        })).unwrap_err();
+        assert_eq!(error.code, "stale_widget_action");
+        assert_eq!(restarted.service.phase, "playing");
     }
 
     #[test]
