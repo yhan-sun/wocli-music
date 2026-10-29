@@ -116,7 +116,7 @@ Foreign IDs stay separate from playable Kuwo/local IDs. Unmatched entries and am
 
 ### 3. Native Desktop Companion
 - **macOS**: Menu bar scrolling lyrics with native Control Center and hardware media key integration.
-- **Windows**: A real taskbar child window, with background Explorer button detection and available-space placement. Narrow gaps show lyrics only; insufficient or unknown space hides the surface. Wider layouts include playback buttons. Use `wocli tray status` for attachment diagnostics; see [implementation and compatibility scope](docs/windows-taskbar-lyrics.md).
+- **Windows**: The stable version embeds a Win32 child window with custom GDI painting in taskbar free space; it is not the system Weather/Widgets component. Background detection avoids occupied areas and hides the surface when space is insufficient. Use `wocli tray status` for diagnostics. The development branch also includes a separately packaged, system-rendered Feed announcement preview. Windows controls its visibility, so continuous or per-line display is not guaranteed; see [implementation, preview setup and compatibility scope](docs/windows-taskbar-lyrics.md).
 - Run `wocli lyrics-bar on` to enable, `wocli lyrics-bar off` to disable.
 
 ### 4. AI MCP Integration

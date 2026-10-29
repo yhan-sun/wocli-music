@@ -34,6 +34,7 @@ pub const HELP: &str = "wocli — 原生终端音乐播放器
   like [--id ID]                     喜欢或取消喜欢
   lyrics [--id ID --refresh --output song.lrc]
   lyrics-bar [on|off|toggle|status]  任务栏 / 状态栏实时歌词控制
+  widgets on|off|status             Windows 系统任务栏公告组件（预览）
   boss [on|off|toggle]               老板模式（暂停并隐藏歌词、歌曲信息）
   tray start|stop|status|run         系统托盘小图标控制服务
   download [--id ID | 关键词 --pick N] [--quality best --lyrics --output 目录]
@@ -590,6 +591,42 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                 println!("任务栏歌词：{}", if target { "已开启" } else { "已关闭" });
             }
             res
+        }
+        "widgets" => {
+            let action = args.pos.get(1).map(String::as_str).unwrap_or("status");
+            if !["on", "off", "status"].contains(&action) {
+                return Err(Error::new("用法：wocli widgets [on|off|status]"));
+            }
+            if action != "status" {
+                let enabled = action == "on";
+                crate::widgets::configure(&paths, enabled)?;
+                if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
+                    request(
+                        &paths,
+                        json!({"op":"config","key":"lyrics_bar","value":enabled}),
+                    )?;
+                } else {
+                    let mut settings = paths.settings()?;
+                    settings.lyrics_bar = enabled;
+                    paths.save_settings(&settings)?;
+                }
+            }
+            let value = crate::widgets::status(&paths)?;
+            if !args.flag("--json") {
+                println!(
+                    "Windows 系统公告组件（预览）：{}",
+                    if value["enabled"] == true {
+                        "已启用配置"
+                    } else {
+                        "未启用"
+                    }
+                );
+                println!("{}", value["note"].as_str().unwrap_or_default());
+                if action == "on" {
+                    println!("需另行安装 MSIX 组件并在 Widgets 面板启用 wocli。此模式由系统渲染，不保证常驻或逐句显示；不会回退为自绘歌词条。");
+                }
+            }
+            value
         }
         "boss" => {
             let sub = args.pos.get(1).map(String::as_str);

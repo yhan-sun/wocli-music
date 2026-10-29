@@ -137,6 +137,7 @@ struct Service {
     rejected_sources: HashSet<String>,
     source_failures: Vec<String>,
     lyric_text: String,
+    lyric_lines: Vec<lyrics::Line>,
     lyric_status: String,
     lyric_error: String,
     lyric_serial: u64,
@@ -204,6 +205,7 @@ impl Service {
             rejected_sources: HashSet::new(),
             source_failures: vec![],
             lyric_text: String::new(),
+            lyric_lines: vec![],
             lyric_status: "idle".into(),
             lyric_error: String::new(),
             lyric_serial: 0,
@@ -307,6 +309,37 @@ impl Service {
             source_failures: self.source_failures.clone(),
             downloads: self.jobs.clone(),
         }
+    }
+    // The system component needs one current line, not the queue, download
+    // history or full LRC on every poll. Keep concealed/stopped metadata out of
+    // this response, even if a provider has a stale display request in flight.
+    fn lyrics_snapshot(&self) -> Value {
+        let visible = self.settings.lyrics_bar
+            && !self.boss
+            && matches!(self.phase.as_str(), "playing" | "paused");
+        let track = self.current().filter(|_| visible);
+        let clip = |text: &str| text.chars().take(240).collect::<String>();
+        let line = if track.is_some() {
+            lyrics::current(
+                &self.lyric_lines,
+                self.player.position(),
+                self.settings.lyric_offset,
+            )
+            .and_then(|index| self.lyric_lines.get(index))
+            .map(|line| clip(line.text.trim()))
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        json!({
+            "enabled": self.settings.lyrics_bar,
+            "boss": self.boss,
+            "state": self.phase,
+            "track_id": track.map(|track| format!("{}:{}", self.generation, track.id.chars().take(256).collect::<String>())).unwrap_or_default(),
+            "title": track.map(|track| clip(&track.title)).unwrap_or_default(),
+            "artist": track.map(|track| clip(&track.artist)).unwrap_or_default(),
+            "line": line,
+        })
     }
     fn persist(&self) -> Result<()> {
         self.store.save(
@@ -417,7 +450,8 @@ impl Service {
             self.paths.home.clone(),
         );
         self.lyric_text = self.store.lyric(&track.id)?;
-        if lyrics::parse(&self.lyric_text).is_empty() {
+        self.lyric_lines = lyrics::parse(&self.lyric_text);
+        if self.lyric_lines.is_empty() {
             self.lyric_text.clear();
             self.start_lyrics();
         } else {
@@ -1152,6 +1186,7 @@ impl Service {
             self.failed_indices.clear();
         }
         match op {
+            "lyrics_snapshot" => return Ok(self.lyrics_snapshot()),
             "status" => {
                 if request["visualizer"].as_bool() == Some(true) {
                     self.player.set_visualizer(true);
@@ -1412,6 +1447,7 @@ impl Service {
                 }
                 if current && self.phase == "stopped" {
                     self.lyric_text.clear();
+                    self.lyric_lines.clear();
                     self.lyric_status = "idle".into();
                     self.lyric_error.clear();
                     self.quality.clear();
@@ -1424,6 +1460,7 @@ impl Service {
                 self.stop();
                 self.queue.clear();
                 self.lyric_text.clear();
+                self.lyric_lines.clear();
                 self.lyric_status = "idle".into();
                 self.lyric_error.clear();
                 self.index = 0;
@@ -1721,6 +1758,7 @@ impl Service {
                             let _ = self.store.save_lyric(&track.id, &text);
                         }
                         self.lyric_text = text;
+                        self.lyric_lines = lyrics::parse(&self.lyric_text);
                         self.lyric_status = "ready".into();
                         self.lyric_error.clear();
                     }
@@ -2098,6 +2136,86 @@ mod playback_tests {
             *lock.lock().unwrap() = true;
             wake.notify_all();
         }
+    }
+
+    #[test]
+    fn system_lyrics_snapshot_tracks_offsets_and_conceals_inactive_metadata() {
+        let mut h = Harness::new("list");
+        let mut track = h.track("system-widget", true);
+        track.title = "歌".repeat(400);
+        h.service
+            .store
+            .save_lyric(&track.id, "[00:00]第一句\n[00:10]第二句")
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track.clone()]}))
+            .unwrap();
+        h.pump("playing");
+        let first = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(first["line"], "第一句");
+        assert_eq!(first["title"].as_str().unwrap().chars().count(), 240);
+        assert!(first.get("queue").is_none());
+        assert!(first.get("lyrics").is_none());
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyric_offset", "value":10000}))
+            .unwrap();
+        h.service.dispatch(json!({"op":"pause"})).unwrap();
+        let paused = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(paused["line"], "第二句");
+        assert_eq!(paused["state"], "paused");
+        h.service
+            .dispatch(json!({"op":"boss", "active":true}))
+            .unwrap();
+        let concealed = h.service.dispatch(json!({"op":"lyrics_snapshot"})).unwrap();
+        assert_eq!(concealed["boss"], true);
+        for field in ["track_id", "title", "artist", "line"] {
+            assert_eq!(concealed[field], "");
+        }
+        h.service
+            .dispatch(json!({"op":"boss", "active":false}))
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":false}))
+            .unwrap();
+        assert_eq!(h.service.lyrics_snapshot()["line"], "");
+        h.service
+            .dispatch(json!({"op":"config", "key":"lyrics_bar", "value":true}))
+            .unwrap();
+        h.service.dispatch(json!({"op":"stop"})).unwrap();
+        assert_eq!(h.service.lyrics_snapshot()["title"], "");
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        assert_ne!(h.service.lyrics_snapshot()["track_id"], first["track_id"]);
+    }
+
+    #[test]
+    fn system_lyrics_cache_accepts_current_results_and_rejects_old_tracks() {
+        let mut h = Harness::new("list");
+        let track = h.track("system-widget-cache", true);
+        h.service
+            .store
+            .save_lyric(&track.id, "[00:00]cached")
+            .unwrap();
+        h.service
+            .dispatch(json!({"op":"play", "tracks":[track]}))
+            .unwrap();
+        h.pump("playing");
+        let generation = h.service.generation;
+        let serial = h.service.lyric_serial;
+        h.service
+            .event(Event::Lyrics(generation, serial, Ok("[00:00]fresh".into())));
+        assert_eq!(h.service.lyrics_snapshot()["line"], "fresh");
+        h.service.event(Event::Lyrics(
+            generation.wrapping_sub(1),
+            serial,
+            Ok("[00:00]stale".into()),
+        ));
+        assert_eq!(h.service.lyrics_snapshot()["line"], "fresh");
+        h.service.dispatch(json!({"op":"queue_clear"})).unwrap();
+        assert!(h.service.lyric_lines.is_empty());
+        assert_eq!(h.service.lyrics_snapshot()["line"], "");
     }
 
     #[test]

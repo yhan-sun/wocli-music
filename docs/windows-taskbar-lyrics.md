@@ -1,10 +1,66 @@
 # Windows 任务栏嵌入歌词
 
-目标是将歌词放在通知区域旁的任务栏空白中，随任务栏显示、隐藏和移动。它不使用桌面置顶悬浮条作为回退。
+现行 v0.4.10 将歌词放在通知区域旁的任务栏空白中，随任务栏显示、隐藏和移动。它不使用桌面置顶悬浮条作为回退。
 
-这是 Rust 调用 Win32 创建子窗口、GDI 绘制文字与按钮的原生方案，不依赖浏览器、WebView2 或 .NET。Windows 本身没有负责接收和绘制歌词的标准任务栏控件；“原生绘制”和“系统官方歌词接口”是不同能力，后者不能作为本项目的实现前提。
+这是 Rust 调用 Win32 创建子窗口、GDI 自绘文字与按钮的方案，不依赖浏览器、WebView2 或 .NET。它不是 Windows Widgets 系统组件；现有代码自行指定颜色、字体和按钮绘制，因此不能把“原生 Win32 窗口”视为“系统负责渲染和样式”。
 
-## 开启与诊断
+## 新目标与官方能力
+
+2026-10-29 明确的新要求是：歌词显示于 Windows 11 左下角天气／小组件入口位置，使用系统组件与系统样式；字体、颜色、主题及交互状态由系统负责，不采用应用自绘。现行版本的右侧空白区定位和 GDI 绘制均不满足此要求。下面的兼容性测试只验证现行实现，不代表新目标已经完成；仅移动自绘窗口或修改颜色不能作为该问题的修复。
+
+用户回报版本“应该是 25H”，暂按 Windows 11 25H2 评估，并选择了欧洲经济区国家；准确内部版本号及设备实际能力尚未实机核实。25H2 和地区设置本身不代表第三方 Feed 已可用，也不解除公告显示策略、次数与时长限制。
+
+官方能力核查：
+
+- 普通 [Widget Provider](https://learn.microsoft.com/en-us/windows/apps/design/widgets/) 将模板和数据交给 Widgets Board 显示，并不是任务栏天气入口的实时文字槽位。
+- [Windows App SDK 1.6 的历史 experimental2 发布说明](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/release-notes/windows-app-sdk-1-6) 曾列出 `WidgetAnnouncement` 和 `WidgetManager.TryShowAnnouncement`。但当前稳定版的 [WidgetManager 成员表](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.widgets.providers.widgetmanager?view=windows-app-sdk-2.0) 与 [Notifications 类型表](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.widgets.notifications?view=windows-app-sdk-2.0) 未提供这条普通 Widget 公告路径，不能仅凭历史预览条目承诺支持。
+- [Feed Provider Announcement](https://learn.microsoft.com/en-us/windows/apps/develop/feeds/feed-provider-announcements) 可请求由系统显示任务栏主／副文本；使用 [AnnouncementTextColor.Default](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.widgets.notifications.announcementtextcolor?view=windows-app-sdk-2.0) 可采用系统颜色。系统决定排队、优先级和是否显示，并设有每日公告及徽标次数限制。
+- 公告的 [Duration](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.widgets.notifications.feedannouncement.duration?view=windows-app-sdk-2.0) 受平台时长上下限约束，不能据此承诺歌词持续常驻或每句实时更新。
+- 当前 [Feed Provider 文档](https://learn.microsoft.com/en-us/windows/apps/develop/feeds/feed-providers) 仍声明该能力处于预览且仅面向欧洲经济区；接入公告还要求 MSIX 打包身份。需要核对目标 Windows 版本、地区及实际可用性，不能直接以现有免安装 EXE 宣称完成系统组件接入。
+
+地区限制针对 Feed Provider，不应推广为所有第三方 Widgets 的限制。微软的 [DMA 说明](https://blogs.windows.com/windows-insider/2023/11/16/previewing-changes-in-windows-to-comply-with-the-digital-markets-act-in-the-european-economic-area/) 指出相关资格使用设备初次设置时选择的地区；当前“国家或地区”设置只能作为诊断线索，不能单独证明接口可用，也不应要求用户修改地区或重置电脑来接入歌词功能。
+
+## 系统组件预览（开发分支）
+
+`codex/windows-system-widgets` 增加独立的 MSIX Feed Provider。任务栏文字通过 `FeedManager.TryShowAnnouncement` 提交，使用 `AnnouncementTextColor.Default`；运行时不创建自绘任务栏窗口、不修改 Explorer 或天气入口。Windows 决定展示位置、文字排版、主题及可见时长。启用配置和收到请求成功均不等于系统实际显示；`Shown` 回调仅表示曾经显示，也不等于现在仍可见。
+
+这是一项有明确限制的预览，**不满足“常驻、每句实时同步”的完整目标**。它每 500ms 从本地后台读取当前歌词，最多每 5 秒请求一次最新内容，不积压漏过的句子，不使用徽标。5 秒是本项目的节流值，不是微软公布的配额；系统仍可能限制或拒绝公告。暂停、切歌、停止、老板模式、关闭开关、后台失联和宿主禁用都会影响请求或触发移除；平台移除接口同样需要真实宿主验收。
+
+开发分支包含：
+
+- Rust `lyrics_snapshot` 只返回当前一句、歌曲元数据和播放状态；不复制整份播放队列、下载记录或完整歌词。解析后的歌词仅在内容变化时更新缓存，老板模式、关闭歌词和停止时清空对外文本。
+- 独立 C#/.NET Feed Provider 使用官方 Windows App SDK COM 接口，与播放器通过已有本机 TCP 授权协议通信，不启动音频后台。连接、文件大小、回复长度及取消均有边界。
+- 点击公告后打开的 Feed 面板由 Widgets 宿主中的网页承载，采用系统字体和语义颜色。它不是任务栏的绘制层，也不是 Adaptive Card。`https://wocli.invalid/lyrics` 通过资源回调返回本地内容，不连接外网；HTML 转义歌曲文字。
+- 配置与不含歌曲文本的心跳诊断保存在 `%LOCALAPPDATA%\wocli-music`。MSIX 仅为此目录排除 AppData 写入虚拟化，保证未打包的播放器与组件读写同一份文件；卸载组件不会自动删除该共享目录。
+
+### 构建与试用
+
+在有 PowerShell 7.4、Python、.NET 8 SDK、Windows SDK 22621 或更高版本的 Windows 开发环境运行：
+
+```powershell
+cargo build --release --locked
+python .\scripts\build_native.py --platform windows-x86_64
+.\scripts\build_windows_widgets.ps1 -PlayerBinary .\target\release\wocli.exe -NativeBundleDirectory .\build\native\wocli-music-0.4.11-alpha.1-windows-x86_64
+```
+
+输出位于 `artifacts/system-widgets-preview/x64`，含同一分支的 `wocli.exe`、自包含 .NET 的 `Layout`、未签名 MSIX、微软 Windows App Runtime 依赖包、校验和与构建信息。Windows App SDK 使用官方框架依赖方式：所选 SDK 的自包含清单明确未包含已验证的 Widgets 代理注册，不能据此保证宿主跨进程通信。稳定版 v0.4.10 不含新命令及 IPC；预览播放器明确标为 `0.4.11-alpha.1`，实际源码提交号见 `build-info.json`。运行库会增加包体积，实际大小由构建脚本记录。
+
+脚本只构建和检查，不安装证书、不启用开发者模式、不修改系统地区或小组件设置。使用开发注册前，按产物中的 `PREVIEW.txt` 操作；注册后的 `Layout` 必须留在固定路径。普通双击安装未签名 MSIX 不可用，正式签名分发尚未完成。
+
+安装并在系统 Widgets 设置启用 wocli Feed 后，使用预览播放器：
+
+```powershell
+.\wocli.exe widgets on
+.\wocli.exe widgets status --json
+.\wocli.exe play "歌名 歌手"
+.\wocli.exe widgets off
+```
+
+`widgets on` 为当前 `--home` 选择系统模式并打开歌词总开关；该曲库的旧 GDI 歌词条停止显示。曲库目录内的 `windows-lyrics-system` 标记持久保存这一选择，切换至其他曲库或删除共享配置也不会重新显示旧自绘条。`off` 关闭当前曲库的歌词；若组件已切换至其他曲库，不改变其开关。组件一次只连接一个选定曲库；切换时用相应 `--home` 再执行 `widgets on`。缺少组件、系统不支持或公告未获显示时，保持无自绘回退。
+
+`provider_responding` 只验证同一 endpoint 的近期心跳；`diagnostics.requested_count` 与 `shown_count` 区分请求和宿主展示回调。检查不会假装确认屏幕上可见。正式验收需在目标 Windows 11 的真实 Widgets 宿主验证：浅/深主题、停播与老板模式移除、逐次切歌、配额触发、重启 Explorer、禁用 Feed、组件退出和长时间内存占用。构建、COM 自测和单元测试无法替代这些验收。
+
+## v0.4.10 旧实现：开启与诊断
 
 ```powershell
 wocli tray start
@@ -48,7 +104,7 @@ wocli 参考了挂接、后台检测、快照失效和空白区域布局的思�
 
 ## 兼容性与验证边界
 
-Microsoft 没有为 Windows 11 提供向任意任务栏区域填入歌词文字的公开专用接口。此实现依赖 Explorer 窗口结构及 UI Automation；Windows 更新、第三方任务栏或安全软件可能影响挂接，失败原因见 `tray status`。
+现行自绘实现依赖 Explorer 窗口结构及 UI Automation；Windows 更新、第三方任务栏或安全软件可能影响挂接，失败原因见 `tray status`。上述系统公告接口是另一条集成路径，不应与此窗口挂接实现混为一谈；其公开契约也不保证歌词在指定位置持续实时显示。
 
 自动测试覆盖空白区域避让、图标占满、窄窗口、DPI、负坐标、迟到快照，以及 Windows 原生隔离窗口的父子关系、窗口替换、无置顶状态和空间恢复。隔离窗口测试不能替代真实 Windows 10/11 Explorer、多屏及混合 DPI 的实机验收；不据此宣称所有任务栏版本都已验证。
 
