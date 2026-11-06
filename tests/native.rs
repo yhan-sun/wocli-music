@@ -84,6 +84,52 @@ impl Drop for App {
         let _ = self.cmd(&["daemon", "stop"]);
     }
 }
+
+#[test]
+fn daemon_stop_releases_resources_and_repeated_stop_does_not_restart_it() {
+    use fs2::FileExt;
+    let app = App::new();
+    let song = app.song("退出测试.wav", 30);
+    app.cli(&["play", song.to_str().unwrap()]);
+    let doctor = app.cli(&["doctor"]);
+    let runtime = PathBuf::from(doctor["runtime_dir"].as_str().unwrap());
+    app.cli(&["daemon", "stop"]);
+    assert!(!PathBuf::from(doctor["socket"].as_str().unwrap()).exists());
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.join("service.lock"))
+        .unwrap();
+    lock.try_lock_exclusive().unwrap();
+    drop(lock);
+    app.cli(&["daemon", "stop"]);
+    assert_eq!(app.cli(&["doctor"])["service_running"], false);
+    assert_eq!(app.cli(&["tray", "status"])["tray_running"], false);
+    assert!(app.cli(&["daemon", "status"]).is_null());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn tray_stop_waits_for_exit_and_immediate_restart_uses_a_new_tray() {
+    let app = App::new();
+    let song = app.song("托盘退出测试.wav", 30);
+    app.cli(&["play", song.to_str().unwrap()]);
+    let doctor = app.cli(&["doctor"]);
+    let runtime = PathBuf::from(doctor["runtime_dir"].as_str().unwrap());
+    for _ in 0..2 {
+        app.cli(&["tray", "start"]);
+        assert_eq!(app.cli(&["tray", "status"])["tray_running"], true);
+        app.cli(&["tray", "stop"]);
+        assert_eq!(app.cli(&["tray", "status"])["tray_running"], false);
+        assert!(!runtime.join("tray.pid").exists());
+        assert!(!runtime.join("hotkeys.json").exists());
+        assert_eq!(app.cli(&["doctor"])["service_running"], true);
+    }
+    app.cli(&["tray", "start"]);
+    app.cli(&["daemon", "stop"]);
+    assert_eq!(app.cli(&["doctor"])["service_running"], false);
+    assert_eq!(app.cli(&["tray", "status"])["tray_running"], false);
+}
+
 #[test]
 fn native_service_preserves_pause_seek_lyrics_collections_and_queue() {
     let app = App::new();

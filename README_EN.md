@@ -80,7 +80,9 @@ wocli toggle                  # Toggle play / pause
 wocli mcp prompt             # Print AI prompt to connect with Claude / Cursor
 ```
 
-> **Tip**: Press <kbd>q</kbd> in the terminal to exit the interface; **music and downloads continue seamlessly in the background**. Run `wocli stop` to pause playback, or `wocli daemon stop` to terminate the background daemon.
+> **Tip**: Press <kbd>q</kbd> in the terminal to exit the interface; **music and downloads continue seamlessly in the background**. Run `wocli stop` to stop playback, or `wocli daemon stop` to terminate the background daemon.
+
+Choose **退出播放器 (Quit player)** in the tray menu to stop playback and downloads, wait for daemon cleanup, and close the tray. If shutdown fails, the tray remains available for retry. `wocli tray stop` closes only the tray; `wocli daemon stop` confirms that both processes have stopped.
 
 ---
 

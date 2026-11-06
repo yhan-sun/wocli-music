@@ -1,14 +1,13 @@
 #![allow(unexpected_cfgs)]
 #![allow(unused_imports)]
 
+#[cfg(any(target_os = "macos", windows, test))]
+mod backend;
 #[cfg(target_os = "macos")]
 mod macos_hotkey;
 #[cfg(any(windows, test))]
 #[path = "tray/taskbar_layout.rs"]
 mod taskbar_layout;
-#[cfg(any(windows, test))]
-#[path = "tray/windows_backend.rs"]
-mod windows_backend;
 #[cfg(windows)]
 #[path = "tray/windows_taskbar.rs"]
 mod windows_taskbar;
@@ -239,41 +238,53 @@ pub fn stop(paths: &Paths) -> Result<()> {
     if !status(paths)? {
         return Ok(());
     }
-    let pid_file = pid_path(paths);
-    if pid_file.exists() {
-        if let Ok(content) = fs::read_to_string(&pid_file) {
-            if let Ok(pid) = content.trim().parse::<u32>() {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
+    let pid = fs::read_to_string(pid_path(paths))?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
+        .ok_or_else(|| Error::new("托盘进程编号无效，无法确认退出"))?;
+    if pid == std::process::id() {
+        return Err(Error::new("托盘不能通过 stop 终止自身，请正常退出事件循环"));
+    }
+    #[cfg(unix)]
+    if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error.into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+        // Different libraries can run separate trays with the same window
+        // class. Find this PID instead of only the first tray.
+        let hwnd = tray_window_for_pid(pid);
+        if hwnd != 0 && unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) } != 0 {
+            // Give WM_DESTROY time to restore the classic task-button band.
+            for _ in 0..40 {
+                if !status(paths)? {
+                    return Ok(());
                 }
-                #[cfg(windows)]
-                {
-                    unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-                        // Different libraries can run separate trays with the same
-                        // window class. Find this PID instead of only the first tray.
-                        let hwnd = tray_window_for_pid(pid);
-                        if hwnd != 0 && PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 {
-                            // Give WM_DESTROY time to restore the classic task-button band.
-                            for _ in 0..40 {
-                                if !status(paths)? {
-                                    break;
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                        }
-                    }
-                    if status(paths)? {
-                        let _ = Command::new("taskkill")
-                            .args(["/F", "/PID", &pid.to_string()])
-                            .output();
-                    }
-                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        if status(paths)? {
+            let output = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .output()?;
+            if !output.status.success() && status(paths)? {
+                return Err(Error::new("托盘未能退出，请稍后重试"));
             }
         }
     }
-    let _ = fs::remove_file(pid_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while status(paths)? {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::new("托盘仍在退出，请稍后重试"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
     Ok(())
 }
 
@@ -352,18 +363,20 @@ pub fn run(paths: Paths) -> Result<()> {
     fs::write(pid_path(&paths), format!("{}\n", std::process::id()))?;
 
     #[cfg(target_os = "macos")]
-    {
-        macos::run_tray(paths)
-    }
+    let result = macos::run_tray(paths.clone());
     #[cfg(windows)]
-    {
-        windows::run_tray(paths)
-    }
+    let result = windows::run_tray(paths.clone());
     #[cfg(all(unix, not(target_os = "macos")))]
-    {
+    let result = {
         println!("当前平台（Linux）暂未启用图形托盘，可使用 CLI 与 TUI 命令控制播放。");
         Ok(())
+    };
+    // Clean up while the lock still belongs to this process, before a new tray
+    // can start. A stop caller must not delete a replacement tray's PID file.
+    for name in ["tray.pid", "hotkeys.json", "taskbar.json"] {
+        let _ = fs::remove_file(paths.runtime.join(name));
     }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -580,6 +593,10 @@ mod macos {
     }
 
     pub fn run_tray(paths: Paths) -> Result<()> {
+        let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, stopping.clone())?;
+        signal_hook::flag::register(signal_hook::consts::SIGINT, stopping.clone())?;
+        let backend = super::backend::Backend::start(paths.clone());
         unsafe {
             let _root_pool = NSAutoreleasePool::new(nil);
             let app = NSApp();
@@ -749,7 +766,7 @@ mod macos {
             let item_tui = create_item("打开终端播放器", TAG_TUI, target_obj);
             let _: () = msg_send![menu, addItem: item_tui];
 
-            let item_quit = create_item("退出", TAG_QUIT, target_obj);
+            let item_quit = create_item("退出播放器", TAG_QUIT, target_obj);
             let _: () = msg_send![menu, addItem: item_quit];
 
             let _: () = msg_send![status_item, setMenu: menu];
@@ -847,69 +864,43 @@ mod macos {
 
             let mut last_title = String::new();
             let mut last_bar_text = String::new();
-            let mut current_mode = "list".to_string();
-            let mut current_volume = 60u8;
-            let mut lyrics_bar_enabled = true;
             let mut controls_enabled = true;
             let mut last_phase = String::new();
             let mut last_controls_visible = true;
+            let mut quitting = false;
+            let mut snapshot = None;
+            let mut checked = std::time::Instant::now();
 
-            loop {
+            while !stopping.load(Ordering::Relaxed) {
                 let subpool = NSAutoreleasePool::new(nil);
+                if let Some(update) = backend.take_update() {
+                    if update.quit {
+                        if update.result.is_ok() {
+                            // Only remove the tray after the daemon has released
+                            // its lock. Never signal this process via tray::stop.
+                            subpool.drain();
+                            break;
+                        }
+                        quitting = false;
+                        set_item_title(item_quit, "退出失败，点击重试");
+                        let _: () = msg_send![item_quit, setEnabled: YES];
+                    }
+                    checked = update.started;
+                    snapshot = update.result.ok().flatten();
+                }
 
                 // 1. 处理来自菜单项的操作
                 let action = PENDING_ACTION.swap(0, Ordering::Relaxed);
-                if action > 0 {
-                    match action as isize {
-                        TAG_TOGGLE => {
-                            let _ = ipc::request(&paths, json!({"op":"toggle"}), true);
-                        }
-                        TAG_PREV => {
-                            let _ = ipc::request(&paths, json!({"op":"prev"}), true);
-                        }
-                        TAG_NEXT => {
-                            let _ = ipc::request(&paths, json!({"op":"next"}), true);
-                        }
-                        TAG_MODE => {
-                            let next_mode = match current_mode.as_str() {
-                                "list" => "repeat",
-                                "repeat" => "single",
-                                "single" => "shuffle",
-                                _ => "list",
-                            };
-                            let _ = ipc::request(
-                                &paths,
-                                json!({"op":"config","key":"mode","value":next_mode}),
-                                true,
-                            );
-                        }
-                        TAG_VOL_UP => {
-                            let next_vol = (current_volume + 10).min(100);
-                            let _ = ipc::request(
-                                &paths,
-                                json!({"op":"config","key":"volume","value":next_vol}),
-                                true,
-                            );
-                        }
-                        TAG_VOL_DOWN => {
-                            let next_vol = current_volume.saturating_sub(10);
-                            let _ = ipc::request(
-                                &paths,
-                                json!({"op":"config","key":"volume","value":next_vol}),
-                                true,
-                            );
-                        }
-                        TAG_LYRICS_BAR => {
-                            let next_lb = !lyrics_bar_enabled;
-                            let _ = ipc::request(
-                                &paths,
-                                json!({"op":"config","key":"lyrics_bar","value":next_lb}),
-                                true,
-                            );
-                        }
-                        TAG_BOSS => {
-                            let _ = ipc::request(&paths, json!({"op":"boss"}), true);
-                        }
+                if action > 0 && !quitting {
+                    let request = match action as isize {
+                        TAG_TOGGLE => Some(json!({"op":"toggle"})),
+                        TAG_PREV => Some(json!({"op":"prev"})),
+                        TAG_NEXT => Some(json!({"op":"next"})),
+                        TAG_MODE => Some(json!({"op":"tray_mode"})),
+                        TAG_VOL_UP => Some(json!({"op":"tray_volume","delta":10})),
+                        TAG_VOL_DOWN => Some(json!({"op":"tray_volume","delta":-10})),
+                        TAG_LYRICS_BAR => Some(json!({"op":"tray_lyrics_bar"})),
+                        TAG_BOSS => Some(json!({"op":"boss"})),
                         TAG_CONTROLS => {
                             controls_enabled = !controls_enabled;
                             let new_cb = format!(
@@ -922,8 +913,12 @@ mod macos {
                             let _: () = msg_send![item_toggle, setVisible: flag];
                             let _: () = msg_send![item_next, setVisible: flag];
                             last_controls_visible = controls_enabled;
+                            None
                         }
-                        TAG_DAILY => super::play_daily(paths.clone()),
+                        TAG_DAILY => {
+                            super::play_daily(paths.clone());
+                            None
+                        }
                         TAG_TUI => {
                             let exe =
                                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli"));
@@ -932,24 +927,32 @@ mod macos {
                                 exe.to_string_lossy()
                             );
                             let _ = Command::new("osascript").args(["-e", &script]).spawn();
+                            None
                         }
-                        TAG_QUIT => {
-                            clear_now_playing();
-                            let _: () = msg_send![lyrics_window, orderOut: nil];
-                            let _: () = msg_send![status_bar, removeStatusItem: item_prev];
-                            let _: () = msg_send![status_bar, removeStatusItem: item_toggle];
-                            let _: () = msg_send![status_bar, removeStatusItem: item_next];
-                            let _: () = msg_send![status_bar, removeStatusItem: status_item];
-                            let _ = super::stop(&paths);
-                            let _ = ipc::request(&paths, json!({"op":"shutdown"}), false);
-                            break;
+                        TAG_QUIT => Some(json!({"op":"shutdown"})),
+                        _ => None,
+                    };
+                    if let Some(request) = request {
+                        if backend.send(request) {
+                            if action as isize == TAG_QUIT {
+                                quitting = true;
+                                set_item_title(item_quit, "正在退出播放器…");
+                                let _: () = msg_send![item_quit, setEnabled: NO];
+                            }
+                        } else {
+                            eprintln!("托盘请求队列已满或后台工作线程已停止，请稍后重试");
+                            if action as isize == TAG_QUIT {
+                                set_item_title(item_quit, "退出失败，点击重试");
+                            }
                         }
-                        _ => {}
                     }
                 }
 
                 // 2. 轮询后台状态并刷新菜单、状态栏与悬浮歌词
-                if let Ok(Some(st)) = ipc::request(&paths, json!({"op":"status"}), false) {
+                if let Some(st) = snapshot
+                    .as_ref()
+                    .filter(|_| checked.elapsed() < std::time::Duration::from_secs(2))
+                {
                     let is_boss = st["boss"].as_bool().unwrap_or(false);
                     let phase = st["phase"].as_str().unwrap_or("stopped");
                     let track = &st["track"];
@@ -960,10 +963,8 @@ mod macos {
                     let lyrics_text = st["lyrics"].as_str().unwrap_or("");
                     let offset = st["lyric_offset"].as_i64().unwrap_or(0);
                     let vol = st["volume"].as_u64().unwrap_or(60) as u8;
-                    current_volume = vol;
                     let mode = st["mode"].as_str().unwrap_or("list");
-                    current_mode = mode.to_string();
-                    lyrics_bar_enabled = st["lyrics_bar"].as_bool().unwrap_or(true);
+                    let lyrics_bar_enabled = st["lyrics_bar"].as_bool().unwrap_or(true);
 
                     let active_lyr = active_lyric(lyrics_text, pos, offset);
                     let phase_label = match phase {
@@ -1207,6 +1208,12 @@ mod macos {
 
                 subpool.drain();
             }
+            clear_now_playing();
+            let _: () = msg_send![lyrics_window, orderOut: nil];
+            let _: () = msg_send![status_bar, removeStatusItem: item_prev];
+            let _: () = msg_send![status_bar, removeStatusItem: item_toggle];
+            let _: () = msg_send![status_bar, removeStatusItem: item_next];
+            let _: () = msg_send![status_bar, removeStatusItem: status_item];
         }
         Ok(())
     }
@@ -1301,7 +1308,7 @@ mod windows {
         boss: bool,
         boss_shortcut_label: String,
         phase: String,
-        backend: super::windows_backend::Backend,
+        backend: super::backend::Backend,
         status_checked: Option<std::time::Instant>,
         quitting: bool,
     }
@@ -2237,7 +2244,7 @@ mod windows {
             RegisterClassW(&lwc);
 
             let taskbar = super::windows_taskbar::TaskbarLyrics::new(&paths, lyrics_class_name);
-            let backend = super::windows_backend::Backend::start(paths.clone());
+            let backend = super::backend::Backend::start(paths.clone());
             STATE.with(|st| {
                 *st.borrow_mut() = Some(TrayState {
                     paths: paths.clone(),
@@ -2327,6 +2334,33 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_rejects_self_termination_and_invalid_process_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().into(),
+            runtime: dir.path().into(),
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path(&paths))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        for pid in [
+            std::process::id().to_string(),
+            "0".into(),
+            "-1".into(),
+            "invalid".into(),
+        ] {
+            fs::write(pid_path(&paths), &pid).unwrap();
+            assert!(stop(&paths).is_err());
+            assert!(status(&paths).unwrap());
+            assert_eq!(fs::read_to_string(pid_path(&paths)).unwrap(), pid);
+        }
+    }
 
     #[test]
     fn a_pending_daily_request_rejects_other_threads_and_allows_a_retry_after_completion() {

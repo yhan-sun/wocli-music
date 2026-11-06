@@ -1134,8 +1134,10 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                     v
                 }
                 "stop" => {
-                    let _ = crate::tray::stop(&paths);
-                    ipc::request(&paths, json!({"op":"shutdown"}), false)?.unwrap_or(Value::Null)
+                    // Keep the tray available for retry if daemon shutdown fails.
+                    let value = ipc::request(&paths, json!({"op":"shutdown"}), false)?;
+                    crate::tray::stop(&paths)?;
+                    value.unwrap_or(Value::Null)
                 }
                 "status" => {
                     ipc::request(&paths, json!({"op":"status"}), false)?.unwrap_or(Value::Null)
