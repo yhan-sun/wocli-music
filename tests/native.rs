@@ -86,6 +86,58 @@ impl Drop for App {
 }
 
 #[test]
+fn stop_without_a_daemon_is_idempotent_and_never_starts_one() {
+    let app = App::new();
+    for _ in 0..2 {
+        assert!(app.cli(&["stop"]).is_null());
+        assert!(app.cli(&["daemon", "status"]).is_null());
+        assert_eq!(app.cli(&["doctor"])["service_running"], false);
+    }
+}
+
+#[test]
+fn playing_without_arguments_restarts_the_current_item_without_replacing_the_queue() {
+    let app = App::new();
+    let first = app.song("第一首.wav", 30);
+    let second = app.song("第二首.wav", 30);
+    app.cli(&["play", first.to_str().unwrap()]);
+    app.cli(&["queue", "add", second.to_str().unwrap()]);
+    app.cli(&["next"]);
+    app.cli(&["stop"]);
+    let state = app.cli(&["play"]);
+    assert_eq!(
+        state["track"]["path"],
+        second.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(state["queue"].as_array().unwrap().len(), 2);
+    assert_eq!(state["index"], 1);
+}
+
+#[test]
+fn ten_thousand_track_requests_and_status_responses_cross_the_old_frame_limit() {
+    let app = App::new();
+    let song = app.song(&format!("大队列测试-{}.wav", "x".repeat(120)), 30);
+    let track = app.cli(&["play", song.to_str().unwrap()])["track"].clone();
+    let request = json!({"op":"queue_add", "tracks":vec![track; 9_999]});
+    assert!(serde_json::to_vec(&request).unwrap().len() > 2 * 1024 * 1024);
+    let state = app.socket(request);
+    assert_eq!(state["queue"].as_array().unwrap().len(), 10_000);
+    assert_eq!(
+        app.cli(&["status"])["queue"].as_array().unwrap().len(),
+        10_000
+    );
+    assert_eq!(
+        app.cli(&["queue", "list"])["queue"]
+            .as_array()
+            .unwrap()
+            .len(),
+        10_000
+    );
+    app.cli(&["daemon", "stop"]);
+    assert!(app.cli(&["daemon", "status"]).is_null());
+}
+
+#[test]
 fn daemon_stop_releases_resources_and_repeated_stop_does_not_restart_it() {
     use fs2::FileExt;
     let app = App::new();
@@ -109,7 +161,7 @@ fn daemon_stop_releases_resources_and_repeated_stop_does_not_restart_it() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn tray_stop_waits_for_exit_and_immediate_restart_uses_a_new_tray() {
+fn tray_survives_boss_changes_and_restarts_after_a_confirmed_stop() {
     let app = App::new();
     let song = app.song("托盘退出测试.wav", 30);
     app.cli(&["play", song.to_str().unwrap()]);
@@ -118,6 +170,13 @@ fn tray_stop_waits_for_exit_and_immediate_restart_uses_a_new_tray() {
     for _ in 0..2 {
         app.cli(&["tray", "start"]);
         assert_eq!(app.cli(&["tray", "status"])["tray_running"], true);
+        for mode in ["on", "off"] {
+            app.cli(&["boss", mode]);
+            // Give the native UI two polling cycles to apply visibility. This
+            // catches sending NSStatusItem selectors to shadowing NSMenuItems.
+            thread::sleep(Duration::from_millis(450));
+            assert_eq!(app.cli(&["tray", "status"])["tray_running"], true);
+        }
         app.cli(&["tray", "stop"]);
         assert_eq!(app.cli(&["tray", "status"])["tray_running"], false);
         assert!(!runtime.join("tray.pid").exists());

@@ -246,6 +246,28 @@ impl Drop for Client {
 }
 
 #[test]
+fn large_saved_queues_keep_mcp_status_and_queue_pagination_working() {
+    let app = App::new();
+    let mut track = app.song();
+    track.title = "大队列中的本地歌曲".repeat(15);
+    app.store()
+        .save("queue", &json!({"tracks":vec![track; 10_000],"index":0}))
+        .unwrap();
+    let mut c = Client::new(&app, false);
+    c.start("2025-11-25");
+    let status = c.call("play_music", json!({}));
+    assert_eq!(status["queue_length"], 10_000);
+    assert_eq!(
+        c.call("get_playback_status", json!({}))["queue_length"],
+        10_000
+    );
+    let page = c.call("get_queue", json!({"offset":9_990,"limit":20}));
+    assert_eq!(page["total"], 10_000);
+    assert_eq!(page["items"].as_array().unwrap().len(), 10);
+    c.finish();
+}
+
+#[test]
 fn stdio_legacy_and_modern_discovery_resources_and_config_work() {
     let app = App::new();
     for version in [

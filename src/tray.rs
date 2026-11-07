@@ -8,6 +8,8 @@ mod macos_hotkey;
 #[cfg(any(windows, test))]
 #[path = "tray/taskbar_layout.rs"]
 mod taskbar_layout;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod terminal;
 #[cfg(windows)]
 #[path = "tray/windows_taskbar.rs"]
 mod windows_taskbar;
@@ -628,9 +630,9 @@ mod macos {
             // 依次创建：下一首 -> 播放/暂停 -> 上一首 -> 歌词/状态栏
             // 最终在菜单栏呈现顺序（自左向右）：
             // [ 🎵 歌词/标题 ] [ ⏮ 上一首 ] [ ⏯ 播放/暂停 ] [ ⏭ 下一首 ]
-            let item_next = status_bar.statusItemWithLength_(24.0);
-            let _: () = msg_send![item_next, retain];
-            let btn_next: id = msg_send![item_next, button];
+            let status_next = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![status_next, retain];
+            let btn_next: id = msg_send![status_next, button];
             let _: () = msg_send![btn_next, retain];
             let _: () = msg_send![btn_next, setTarget: target_obj];
             let _: () = msg_send![btn_next, setAction: sel!(onAction:)];
@@ -649,9 +651,9 @@ mod macos {
                 let _: () = msg_send![btn_next, setImage: img_next];
             }
 
-            let item_toggle = status_bar.statusItemWithLength_(24.0);
-            let _: () = msg_send![item_toggle, retain];
-            let btn_toggle: id = msg_send![item_toggle, button];
+            let status_toggle = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![status_toggle, retain];
+            let btn_toggle: id = msg_send![status_toggle, button];
             let _: () = msg_send![btn_toggle, retain];
             let _: () = msg_send![btn_toggle, setTarget: target_obj];
             let _: () = msg_send![btn_toggle, setAction: sel!(onAction:)];
@@ -682,9 +684,9 @@ mod macos {
                 let _: () = msg_send![img_pause, retain];
             }
 
-            let item_prev = status_bar.statusItemWithLength_(24.0);
-            let _: () = msg_send![item_prev, retain];
-            let btn_prev: id = msg_send![item_prev, button];
+            let status_prev = status_bar.statusItemWithLength_(24.0);
+            let _: () = msg_send![status_prev, retain];
+            let btn_prev: id = msg_send![status_prev, button];
             let _: () = msg_send![btn_prev, retain];
             let _: () = msg_send![btn_prev, setTarget: target_obj];
             let _: () = msg_send![btn_prev, setAction: sel!(onAction:)];
@@ -909,9 +911,9 @@ mod macos {
                             );
                             set_item_title(item_controls_bar, &new_cb);
                             let flag = if controls_enabled { YES } else { NO };
-                            let _: () = msg_send![item_prev, setVisible: flag];
-                            let _: () = msg_send![item_toggle, setVisible: flag];
-                            let _: () = msg_send![item_next, setVisible: flag];
+                            let _: () = msg_send![status_prev, setVisible: flag];
+                            let _: () = msg_send![status_toggle, setVisible: flag];
+                            let _: () = msg_send![status_next, setVisible: flag];
                             last_controls_visible = controls_enabled;
                             None
                         }
@@ -920,13 +922,9 @@ mod macos {
                             None
                         }
                         TAG_TUI => {
-                            let exe =
-                                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wocli"));
-                            let script = format!(
-                                "tell application \"Terminal\" to do script \"\\\"{}\\\"\"",
-                                exe.to_string_lossy()
-                            );
-                            let _ = Command::new("osascript").args(["-e", &script]).spawn();
+                            if let Err(error) = super::terminal::open(&paths) {
+                                eprintln!("打开终端播放器失败：{error}");
+                            }
                             None
                         }
                         TAG_QUIT => Some(json!({"op":"shutdown"})),
@@ -1135,9 +1133,9 @@ mod macos {
                     let controls_visible = !is_boss && controls_enabled;
                     if controls_visible != last_controls_visible {
                         let flag = if controls_visible { YES } else { NO };
-                        let _: () = msg_send![item_prev, setVisible: flag];
-                        let _: () = msg_send![item_toggle, setVisible: flag];
-                        let _: () = msg_send![item_next, setVisible: flag];
+                        let _: () = msg_send![status_prev, setVisible: flag];
+                        let _: () = msg_send![status_toggle, setVisible: flag];
+                        let _: () = msg_send![status_next, setVisible: flag];
                         last_controls_visible = controls_visible;
                     }
 
@@ -1180,9 +1178,9 @@ mod macos {
                     let controls_visible = controls_enabled;
                     if controls_visible != last_controls_visible {
                         let flag = if controls_visible { YES } else { NO };
-                        let _: () = msg_send![item_prev, setVisible: flag];
-                        let _: () = msg_send![item_toggle, setVisible: flag];
-                        let _: () = msg_send![item_next, setVisible: flag];
+                        let _: () = msg_send![status_prev, setVisible: flag];
+                        let _: () = msg_send![status_toggle, setVisible: flag];
+                        let _: () = msg_send![status_next, setVisible: flag];
                         last_controls_visible = controls_visible;
                     }
                     if !last_bar_text.is_empty() {
@@ -1210,9 +1208,9 @@ mod macos {
             }
             clear_now_playing();
             let _: () = msg_send![lyrics_window, orderOut: nil];
-            let _: () = msg_send![status_bar, removeStatusItem: item_prev];
-            let _: () = msg_send![status_bar, removeStatusItem: item_toggle];
-            let _: () = msg_send![status_bar, removeStatusItem: item_next];
+            let _: () = msg_send![status_bar, removeStatusItem: status_prev];
+            let _: () = msg_send![status_bar, removeStatusItem: status_toggle];
+            let _: () = msg_send![status_bar, removeStatusItem: status_next];
             let _: () = msg_send![status_bar, removeStatusItem: status_item];
         }
         Ok(())

@@ -491,10 +491,11 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             } else {
                 vec![]
             };
-            let value = request(
-                &paths,
-                json!({"op":"play","tracks":tracks,"quality":args.value("--quality"),"direct":args.flag("--direct")}),
-            )?;
+            let mut command = json!({"op":"play","quality":args.value("--quality"),"direct":args.flag("--direct")});
+            if !tracks.is_empty() {
+                command["tracks"] = json!(tracks);
+            }
+            let value = request(&paths, command)?;
             let value = if args.flag("--no-wait") {
                 value
             } else {
@@ -557,7 +558,7 @@ pub fn run(raw: Vec<String>) -> Result<()> {
             value
         }
         "stop" => {
-            let value = request(&paths, json!({"op":"stop"}))?;
+            let value = ipc::request(&paths, json!({"op":"stop"}), false)?.unwrap_or(Value::Null);
             if !args.flag("--json") {
                 print_status(&value);
             }

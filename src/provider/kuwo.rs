@@ -868,11 +868,8 @@ impl KuwoProvider {
                 }
             }
             file.sync_all()?;
-            if overwrite {
-                fs::rename(&temporary, target)?;
-            } else {
-                fs::hard_link(&temporary, target)?;
-            }
+            drop(file);
+            crate::download_file::commit(&temporary, target, overwrite, cancelled)?;
             Ok(received)
         })();
         let _ = fs::remove_file(&temporary);

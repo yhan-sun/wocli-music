@@ -1,6 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 pub mod cli;
+mod download_file;
 pub mod help;
 pub mod ipc;
 pub mod lyrics;

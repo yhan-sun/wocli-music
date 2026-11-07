@@ -328,7 +328,11 @@ impl Backend {
                 } else {
                     vec![]
                 };
-                let result=self.request(json!({"op":"play","tracks":tracks,"quality":a.quality.map(Quality::as_str),"direct":self.direct}),true,cancelled)?;
+                let mut command = json!({"op":"play","quality":a.quality.map(Quality::as_str),"direct":self.direct});
+                if !tracks.is_empty() {
+                    command["tracks"] = json!(tracks);
+                }
+                let result = self.request(command, true, cancelled)?;
                 self.summary(Some(result))
             }
             "control_playback" => {

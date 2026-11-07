@@ -2859,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "wocli-music"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "base64",
  "chrono",
