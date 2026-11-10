@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::Write,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,6 +26,9 @@ use std::{
 
 const MAX_PENDING_DOWNLOADS: usize = 10;
 const DOWNLOAD_HISTORY_LIMIT: usize = 100;
+
+#[cfg(windows)]
+use std::io::Read;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1063,7 +1066,7 @@ impl Service {
                         stream.quality.clone(),
                     ));
                     let downloaded = provider
-                        .download(&stream, &candidate, false, &cancelled, |received, total| {
+                        .download(&stream, &candidate, true, &cancelled, |received, total| {
                             let _ =
                                 tx.send(Event::JobProgress(id.clone(), serial, received, total));
                         })
@@ -1086,11 +1089,12 @@ impl Service {
                                     if cancelled.load(Ordering::Relaxed) {
                                         return Err(Error::coded("cancelled", "已取消"));
                                     }
-                                    if job.overwrite {
-                                        fs::rename(&candidate, &path)?;
-                                    } else {
-                                        fs::hard_link(&candidate, &path)?;
-                                    }
+                                    crate::download_file::commit(
+                                        &candidate,
+                                        &path,
+                                        job.overwrite,
+                                        &cancelled,
+                                    )?;
                                     Ok(bytes)
                                 }
                                 Err(error) => Err(error),
@@ -1920,11 +1924,7 @@ fn prepare_download_directory(directory: &str) -> Result<()> {
 fn handle(mut stream: Stream, tx: Sender<Event>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let result = (|| -> Result<Value> {
-        let mut line = String::new();
-        BufReader::new(stream.try_clone()?)
-            .take(2 * 1024 * 1024)
-            .read_line(&mut line)?;
-        let value = serde_json::from_str(&line)?;
+        let value = crate::ipc::read_message(stream.try_clone()?)?;
         let (reply, rx) = mpsc::channel();
         tx.send(Event::Call(Call { value, reply }))
             .map_err(|_| Error::new("后台服务正在退出"))?;
@@ -1938,8 +1938,14 @@ fn handle(mut stream: Stream, tx: Sender<Event>) {
         }
     };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let _ = serde_json::to_writer(&mut stream, &response);
-    let _ = stream.write_all(b"\n");
+    if let Err(error) = crate::ipc::write_message(&mut stream, &response) {
+        if error.code == "ipc_message_too_large" {
+            let _ = crate::ipc::write_message(
+                &mut stream,
+                &json!({"ok":false,"error":error.message,"code":error.code,"details":[]}),
+            );
+        }
+    }
 }
 pub fn run(paths: Paths) -> Result<()> {
     let lock = OpenOptions::new()

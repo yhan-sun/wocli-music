@@ -1,7 +1,7 @@
-//! Serialize IPC away from the Win32 message loop. A stalled daemon must not
-//! prevent Explorer callbacks, painting, menu dismissal, or tray shutdown.
+//! Serialize IPC away from native UI loops. A stalled daemon must not prevent
+//! menu dismissal, painting, or retrying a failed player shutdown.
 use crate::model::Result;
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 use crate::{ipc, store::Paths};
 use serde_json::{json, Value};
 use std::{
@@ -24,7 +24,7 @@ pub(super) struct Backend {
 }
 
 impl Backend {
-    #[cfg(windows)]
+    #[cfg(any(target_os = "macos", windows))]
     pub fn start(paths: Paths) -> Self {
         Self::with_request(move |value, autostart| ipc::request(&paths, value, autostart))
     }

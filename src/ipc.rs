@@ -10,6 +10,10 @@ use std::{
     time::Duration,
 };
 
+// A supported 10,000-track playlist can exceed the old 2 MiB frame. Apply the
+// same bound to requests and responses, and report overflow before JSON parsing.
+const MAX_MESSAGE_BYTES: u64 = 64 * 1024 * 1024;
+
 #[cfg(unix)]
 use std::{
     os::unix::net::UnixStream,
@@ -113,50 +117,66 @@ pub fn connect(paths: &Paths) -> Result<Stream> {
 }
 
 pub fn request(paths: &Paths, value: Value, autostart: bool) -> Result<Option<Value>> {
+    let shutdown = value["op"] == "shutdown";
     let stream = match connect(paths) {
         Ok(stream) => stream,
         Err(_) => {
             if !autostart {
+                if shutdown {
+                    // The endpoint disappears before worker cleanup releases
+                    // the lock. A repeated stop must still wait for completion.
+                    wait_for_shutdown(paths, Duration::from_secs(30))?;
+                }
                 return Ok(None);
             }
             start(paths)?;
             connect(paths)?
         }
     };
-    let shutdown = value["op"] == "shutdown";
-    let response = exchange(stream, value)?;
-    if shutdown {
-        use fs2::FileExt;
-        let lock_file = paths.runtime.join("service.lock");
-        if lock_file.exists() {
-            if let Ok(lock) = OpenOptions::new().write(true).open(&lock_file) {
-                let deadline = std::time::Instant::now() + Duration::from_secs(30);
-                loop {
-                    if lock.try_lock_exclusive().is_ok() {
-                        break;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        return Err(Error::new("后台仍在清理下载任务，请稍后重试"));
-                    }
-                    thread::sleep(Duration::from_millis(30));
-                }
-            }
+    let response = match exchange(stream, value) {
+        // Older daemons can exit before the IPC handler flushes its reply.
+        // A closed connection alone is not success: confirm cleanup via lock.
+        Err(error) if shutdown && error.code == "ipc_closed" => {
+            wait_for_shutdown(paths, Duration::from_secs(30))?;
+            return Ok(None);
         }
+        result => result?,
+    };
+    if shutdown {
+        wait_for_shutdown(paths, Duration::from_secs(30))?;
     }
     Ok(Some(response))
+}
+
+fn wait_for_shutdown(paths: &Paths, timeout: Duration) -> Result<()> {
+    use fs2::FileExt;
+    let lock = match OpenOptions::new()
+        .write(true)
+        .open(paths.runtime.join("service.lock"))
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => {}
+            Err(error) => return Err(error.into()),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::new("后台仍在清理任务，请稍后重试"));
+        }
+        thread::sleep(Duration::from_millis(30));
+    }
 }
 
 pub fn exchange(mut stream: Stream, value: Value) -> Result<Value> {
     stream.set_read_timeout(Some(Duration::from_secs(15)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, &value)?;
-    stream.write_all(b"\n")?;
-    let mut response = String::new();
-    BufReader::new(stream)
-        .take(2 * 1024 * 1024)
-        .read_line(&mut response)?;
-    let result: Value =
-        serde_json::from_str(&response).map_err(|_| Error::new("后台服务响应无效"))?;
+    write_message(&mut stream, &value)?;
+    let result = read_message(stream)?;
     if result["ok"] == true {
         Ok(result["data"].clone())
     } else {
@@ -169,6 +189,65 @@ pub fn exchange(mut stream: Stream, value: Value) -> Result<Value> {
             details: serde_json::from_value(result["details"].clone()).unwrap_or_default(),
         })
     }
+}
+
+pub(crate) fn read_message(stream: impl Read) -> Result<Value> {
+    read_message_with_limit(stream, MAX_MESSAGE_BYTES)
+}
+
+fn transport_error(error: std::io::Error) -> Error {
+    match error.kind() {
+        std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::BrokenPipe => {
+            Error::coded("ipc_closed", format!("后台连接已断开：{error}"))
+        }
+        _ => error.into(),
+    }
+}
+
+pub(crate) fn write_message(stream: impl Write, message: &Value) -> Result<()> {
+    write_message_with_limit(stream, message, MAX_MESSAGE_BYTES)
+}
+
+fn write_message_with_limit(mut stream: impl Write, message: &Value, limit: u64) -> Result<()> {
+    let mut bytes = serde_json::to_vec(message)?;
+    if bytes.len() as u64 >= limit {
+        return Err(message_too_large(limit));
+    }
+    bytes.push(b'\n');
+    stream.write_all(&bytes).map_err(transport_error)
+}
+
+fn message_too_large(limit: u64) -> Error {
+    Error::coded(
+        "ipc_message_too_large",
+        format!("IPC 消息超过长度上限（{limit} 字节）"),
+    )
+}
+
+fn read_message_with_limit(stream: impl Read, limit: u64) -> Result<Value> {
+    let mut message = Vec::new();
+    let received = BufReader::new(stream)
+        .take(limit + 1)
+        .read_until(b'\n', &mut message)
+        .map_err(transport_error)?;
+    if received == 0 {
+        return Err(Error::coded("ipc_closed", "后台连接已断开，未收到响应"));
+    }
+    if received as u64 > limit {
+        return Err(message_too_large(limit));
+    }
+    serde_json::from_slice(&message).map_err(|_| {
+        if !message.ends_with(b"\n") {
+            // Shutdown may end the process while its IPC thread is flushing a
+            // large reply. Let request() verify daemon cleanup via its lock.
+            Error::coded("ipc_closed", "后台连接在消息传输完成前断开")
+        } else {
+            Error::new("后台服务响应无效")
+        }
+    })
 }
 
 pub fn start(paths: &Paths) -> Result<()> {
@@ -370,4 +449,141 @@ mod windows_tests {
 
 pub fn control(paths: &Paths, op: &str) -> Result<Value> {
     request(paths, json!({"op":op}), true)?.ok_or_else(|| Error::new("后台服务未运行"))
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    #[test]
+    fn frame_limit_accepts_exact_fit_and_reports_overflow_instead_of_invalid_json() {
+        let message = b"{\"queue\":[1,2,3]}\n";
+        assert_eq!(
+            read_message_with_limit(&message[..], message.len() as u64).unwrap(),
+            json!({"queue":[1,2,3]})
+        );
+        let error = read_message_with_limit(&message[..], message.len() as u64 - 1).unwrap_err();
+        assert_eq!(error.code, "ipc_message_too_large");
+        assert_eq!(read_message(&b""[..]).unwrap_err().code, "ipc_closed");
+        assert_eq!(
+            read_message(&b"{\"queue\":["[..]).unwrap_err().code,
+            "ipc_closed"
+        );
+        assert_ne!(
+            read_message(&b"{invalid}\n"[..]).unwrap_err().code,
+            "ipc_closed"
+        );
+        let mut output = Vec::new();
+        let value = json!({"queue":[1,2,3]});
+        assert_eq!(
+            write_message_with_limit(&mut output, &value, message.len() as u64 - 1)
+                .unwrap_err()
+                .code,
+            "ipc_message_too_large"
+        );
+        assert!(output.is_empty());
+        write_message_with_limit(&mut output, &value, message.len() as u64).unwrap();
+        assert_eq!(output, message);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use fs2::FileExt;
+    use std::sync::mpsc;
+
+    #[test]
+    fn repeated_shutdown_waits_for_cleanup_without_an_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().into(),
+            runtime: dir.path().into(),
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(paths.runtime.join("service.lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            tx.send(request(&paths, json!({"op":"shutdown"}), false))
+                .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(lock);
+        assert!(rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap()
+            .is_none());
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_timeout_is_not_reported_as_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().into(),
+            runtime: dir.path().into(),
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(paths.runtime.join("service.lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        assert!(wait_for_shutdown(&paths, Duration::from_millis(20)).is_err());
+        drop(lock);
+        wait_for_shutdown(&paths, Duration::ZERO).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_confirms_exit_when_daemon_disconnects_before_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().into(),
+            runtime: dir.path().into(),
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(paths.runtime.join("service.lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(paths.socket()).unwrap();
+        let (release, cleanup) = mpsc::channel();
+        let daemon = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&line).unwrap()["op"],
+                "shutdown"
+            );
+            drop(reader);
+            cleanup.recv().unwrap();
+            drop(lock);
+        });
+        let (tx, rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            tx.send(request(&paths, json!({"op":"shutdown"}), false))
+                .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release.send(()).unwrap();
+        assert!(rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap()
+            .is_none());
+        client.join().unwrap();
+        daemon.join().unwrap();
+    }
 }
