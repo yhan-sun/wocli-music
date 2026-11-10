@@ -1597,13 +1597,19 @@ impl App {
         if header.width >= 95 {
             let width = 12;
             right = right.saturating_sub(width);
+            let quality = if self.state.default_quality.is_empty() {
+                "音质"
+            } else {
+                &self.state.default_quality
+            };
             self.button(
                 frame,
                 Rect::new(right, header.y, width, 1),
-                &format!("{} ▾", self.state.default_quality),
+                &format!("{quality} ▾"),
                 Action::Quality(false),
                 false,
             );
+            right = right.saturating_sub(1);
         }
         if header.width >= 110 {
             right = right.saturating_sub(10);
@@ -1933,6 +1939,10 @@ impl App {
                 tablearea,
             );
         }
+        // On small terminals, preserving the song title is more useful than
+        // squeezing both title and artist into a few cells each. The selected
+        // song's full metadata remains available in the song menu.
+        let show_artist = tablearea.width >= 40;
         let current = self.state.track.as_ref().map(|t| t.id.as_str());
         let data: Vec<Row> = self
             .rows
@@ -1952,7 +1962,7 @@ impl App {
                             })
                     )
                 };
-                Row::new(vec![
+                let mut cells = vec![
                     marker,
                     format!(
                         "{}{}",
@@ -1963,28 +1973,41 @@ impl App {
                         },
                         t.title
                     ),
-                    t.artist.clone(),
-                    clock(t.duration),
-                ])
-                .style(Style::default().fg(if Some(t.id.as_str()) == current {
+                ];
+                if show_artist {
+                    cells.push(t.artist.clone());
+                }
+                cells.push(clock(t.duration));
+                Row::new(cells).style(Style::default().fg(if Some(t.id.as_str()) == current {
                     ACCENT
                 } else {
                     FG
                 }))
             })
             .collect();
-        let table = Table::new(
-            data,
-            [
+        let widths = if show_artist {
+            vec![
                 Constraint::Length(3),
                 Constraint::Percentage(62),
                 Constraint::Percentage(38),
                 Constraint::Length(5),
-            ],
-        )
-        .column_spacing(1)
-        .header(Row::new(["", "歌曲", "歌手", "时长"]).style(Style::default().fg(DIM).bg(PANEL)))
-        .row_highlight_style(Style::default().bg(SELECTED).fg(ACCENT));
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(5),
+            ]
+        };
+        let headings = if show_artist {
+            vec!["", "歌曲", "歌手", "时长"]
+        } else {
+            vec!["", "歌曲", "时长"]
+        };
+        let table = Table::new(data, widths)
+            .column_spacing(1)
+            .header(Row::new(headings).style(Style::default().fg(DIM).bg(PANEL)))
+            .row_highlight_style(Style::default().bg(SELECTED).fg(ACCENT));
         if !(self.view == View::Daily && self.rows.is_empty()) {
             frame.render_stateful_widget(table, tablearea, &mut self.table);
         }
@@ -2355,14 +2378,17 @@ impl App {
                 Action::Mode,
                 false,
             ),
-            ("−".into(), 3, Action::Volume(-5), false),
         ] {
             if x + width <= area.right() {
                 self.button(frame, Rect::new(x, y, width, 1), &label, action, primary);
                 x += width + 1;
             }
         }
-        if x + 5 <= area.right() {
+        // Keep the volume controls together: partial groups look broken and
+        // can leave a visible minus button without the matching plus button.
+        if x + 12 <= area.right() {
+            self.button(frame, Rect::new(x, y, 3, 1), "−", Action::Volume(-5), false);
+            x += 4;
             frame.render_widget(
                 Paragraph::new(format!("{}%", self.state.volume))
                     .alignment(Alignment::Center)
@@ -2370,8 +2396,6 @@ impl App {
                 Rect::new(x, y, 5, 1),
             );
             x += 5;
-        }
-        if x + 3 <= area.right() {
             self.button(frame, Rect::new(x, y, 3, 1), "+", Action::Volume(5), false);
         }
         let position = self
@@ -3388,6 +3412,27 @@ mod interaction_tests {
     }
 
     #[test]
+    fn wide_header_separates_quality_and_spectrum_actions() {
+        let (_root, mut app, _rx) = setup();
+        app.state.default_quality.clear();
+        let rendered = screen(&draw_terminal(&mut app, 123, 41));
+        assert!(rendered.contains("音质"), "{rendered}");
+        let quality = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, Action::Quality(false)))
+            .unwrap()
+            .rect;
+        let spectrum = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, Action::Visualizer))
+            .unwrap()
+            .rect;
+        assert!(spectrum.right() < quality.x);
+    }
+
+    #[test]
     fn minimum_terminal_height_still_shows_clickable_search_results() {
         let (_root, mut app, _rx) = setup();
         app.query = "歌曲".into();
@@ -3410,6 +3455,40 @@ mod interaction_tests {
                 .find(|hit| matches!(hit.action, Action::Select(0)))
                 .unwrap();
             assert!(hit.rect.y < 12);
+        }
+    }
+
+    #[test]
+    fn narrow_track_list_prioritizes_title_and_volume_controls_stay_grouped() {
+        let (_root, mut app, _rx) = setup();
+        app.store
+            .favorite(&Track {
+                id: "layout:1".into(),
+                title: "城市夜晚的回声计划".into(),
+                artist: "测试歌手".into(),
+                duration: 254.,
+                ..Track::default()
+            })
+            .unwrap();
+        app.reload().unwrap();
+        let narrow = screen(&draw_terminal(&mut app, 30, 26));
+        assert!(narrow.contains("城市夜晚的回声"), "{narrow}");
+        assert!(narrow.contains("04:14"), "{narrow}");
+        assert!(!narrow.contains("歌手"), "{narrow}");
+        let wide = screen(&draw_terminal(&mut app, 80, 26));
+        assert!(wide.contains("测试歌手"), "{wide}");
+
+        for width in 30..90 {
+            draw_terminal(&mut app, width, 26);
+            let down = app
+                .hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::Volume(-5)));
+            let up = app
+                .hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::Volume(5)));
+            assert_eq!(down, up, "unpaired volume controls at width {width}");
         }
     }
 

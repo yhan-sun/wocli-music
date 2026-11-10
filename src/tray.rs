@@ -1238,7 +1238,7 @@ mod windows {
         BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
         InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor, DT_CENTER,
-        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD,
+        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL,
         PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -1455,20 +1455,12 @@ mod windows {
             let mut area: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut area);
             let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
-            let dp = |v| super::taskbar_layout::pixels(v, dpi);
-            let h = area.bottom - area.top;
-            if area.right < dp(180) || y < dp(4) || y >= h - dp(4) {
-                return 0;
-            }
-            if (dp(6)..dp(34)).contains(&x) {
-                1
-            } else if (dp(36)..dp(64)).contains(&x) {
-                2
-            } else if (dp(66)..dp(94)).contains(&x) {
-                3
-            } else {
-                0
-            }
+            super::taskbar_layout::LyricsContentLayout::new(
+                area.right - area.left,
+                area.bottom - area.top,
+                dpi,
+            )
+            .button_at(x, y)
         }
     }
     unsafe extern "system" fn tray_wnd_proc(
@@ -1672,8 +1664,6 @@ mod windows {
                     SetBkMode(mem_dc, TRANSPARENT as i32);
 
                     let (text, phase) = PAINT_STATE.with(|snapshot| snapshot.borrow().clone());
-                    let is_paused = phase == "paused";
-
                     let hover = HOVER_BTN.load(Ordering::Relaxed);
 
                     let dp = |v| {
@@ -1682,23 +1672,27 @@ mod windows {
                             windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
                         )
                     };
-                    let controls = w >= dp(180);
-                    if controls {
+                    let layout = super::taskbar_layout::LyricsContentLayout::new(
+                        w,
+                        h,
+                        windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
+                    );
+                    if let Some(buttons) = layout.buttons {
                         // Color-key pixels pass mouse input through to Explorer.
                         // Give each button a solid face matching its entire hitbox.
                         let normal_brush = CreateSolidBrush(0x00202020);
                         let hover_brush = CreateSolidBrush(0x00404040);
-                        for (button, left, right) in [(1, 6, 34), (2, 36, 64), (3, 66, 94)] {
+                        for (index, button) in buttons.iter().enumerate() {
                             let btn_rc = RECT {
-                                left: dp(left),
-                                top: dp(4),
-                                right: dp(right),
-                                bottom: h - dp(4),
+                                left: button.left,
+                                top: button.top,
+                                right: button.right,
+                                bottom: button.bottom,
                             };
                             FillRect(
                                 mem_dc,
                                 &btn_rc,
-                                if hover == button {
+                                if hover == index as u8 + 1 {
                                     hover_brush
                                 } else {
                                     normal_brush
@@ -1711,7 +1705,7 @@ mod windows {
                         // 2. 绘制上一首、播放/暂停、下一首矢量文字图标
                         let btn_font_name = to_wide("Segoe UI Symbol");
                         let btn_font = CreateFontW(
-                            dp(16),
+                            -dp(14),
                             0,
                             0,
                             0,
@@ -1728,18 +1722,15 @@ mod windows {
                         );
                         let old_btn_font = SelectObject(mem_dc, btn_font);
 
-                        let btn_configs = [
-                            (1, "⏮", 6, 34),
-                            (2, if phase == "playing" { "⏸" } else { "▶" }, 36, 64),
-                            (3, "⏭", 66, 94),
-                        ];
+                        let btn_configs = ["⏮", if phase == "playing" { "⏸" } else { "▶" }, "⏭"];
 
-                        for (btn_idx, glyph, left, right) in btn_configs {
+                        for (index, (button, glyph)) in buttons.iter().zip(btn_configs).enumerate()
+                        {
                             let mut btn_rc = RECT {
-                                left: dp(left),
-                                top: 0,
-                                right: dp(right),
-                                bottom: h,
+                                left: button.left,
+                                top: button.top,
+                                right: button.right,
+                                bottom: button.bottom,
                             };
                             let wide_glyph = to_wide(glyph);
                             let glyph_len = wide_glyph.len() as i32 - 1;
@@ -1759,9 +1750,9 @@ mod windows {
                                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
                             );
 
-                            // 前景色：悬停金色，默认典雅银白
-                            let color = if hover == btn_idx {
-                                0x0000D7FF
+                            // Use a lighter neutral on hover.
+                            let color = if hover == index as u8 + 1 {
+                                0x00F0F0F0
                             } else {
                                 0x00D0D0D0
                             };
@@ -1777,26 +1768,15 @@ mod windows {
 
                         SelectObject(mem_dc, old_btn_font);
                         DeleteObject(btn_font);
-
-                        // 3. 绘制精致纵向分割线
-                        let sep_brush = CreateSolidBrush(0x00404040);
-                        let sep_rc = RECT {
-                            left: dp(98),
-                            top: dp(8),
-                            right: dp(99),
-                            bottom: h - dp(8),
-                        };
-                        FillRect(mem_dc, &sep_rc, sep_brush);
-                        DeleteObject(sep_brush);
                     }
-                    // 4. 绘制歌词文本
-                    let font_name = to_wide("Microsoft YaHei");
+                    // Use a regular system UI font; Windows handles fallback for CJK.
+                    let font_name = to_wide("Segoe UI");
                     let font = CreateFontW(
-                        dp(16),
+                        -dp(14),
                         0,
                         0,
                         0,
-                        FW_SEMIBOLD as i32,
+                        FW_NORMAL as i32,
                         0,
                         0,
                         0,
@@ -1810,10 +1790,10 @@ mod windows {
                     let old_font = SelectObject(mem_dc, font);
 
                     let mut text_rect = RECT {
-                        left: if controls { dp(104) } else { dp(8) },
-                        top: 0,
-                        right: w - dp(8),
-                        bottom: h,
+                        left: layout.text.left,
+                        top: layout.text.top,
+                        right: layout.text.right,
+                        bottom: layout.text.bottom,
                     };
 
                     let wide_text = to_wide(&text);
@@ -1841,9 +1821,7 @@ mod windows {
                             );
                         }
 
-                        // 绘制正文字体：播放时金黄色 (0x0000D7FF)，暂停时银白色 (0x00E0E0E0)
-                        let text_color = if is_paused { 0x00E0E0E0 } else { 0x0000D7FF };
-                        SetTextColor(mem_dc, text_color);
+                        SetTextColor(mem_dc, 0x00F0F0F0);
                         DrawTextW(
                             mem_dc,
                             wide_text.as_ptr(),
