@@ -418,6 +418,8 @@ See providerPackagedActivationSelfTestPassed in build-info.json for the separate
 CI-only package-identity and LOCAL_SERVER COM activation test result. That test
 uses a same-process temporary class; cross-process proxy marshaling and the
 actual Widgets host remain unverified (providerCrossProcessProxyVerified=false).
+The widget provider is a separate Windows host process. Quitting the player does
+not guarantee that it exits, and Windows may activate it again.
 Use the player bundled with this component, or the matching player release.
 Older versions may not implement the required lyrics_snapshot IPC or widgets
 commands. See sourceCommit in build-info.json for the matching source revision.
