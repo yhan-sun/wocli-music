@@ -22,3 +22,4 @@ pub mod tui;
 mod tui_camouflage;
 
 pub mod updater;
+pub mod widgets;
