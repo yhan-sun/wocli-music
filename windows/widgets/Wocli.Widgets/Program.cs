@@ -13,6 +13,8 @@ internal static class Program
             return ProviderSelfTest.Run();
         if (args.Length == 1 && args[0] == "--self-test-packaged-proxy")
             return ProviderSelfTest.Run(verifyPackagedProxy: true);
+        if (args.Length == 2 && args[0] == "--self-test-proxy-server" && Guid.TryParse(args[1], out var testClass))
+            return ProviderSelfTest.RunProxyServer(testClass);
         if (args.Length == 1 && args[0] == "--stop")
             return StopRunningProvider();
         if (!IsServerActivation(args))

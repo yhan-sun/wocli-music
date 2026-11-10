@@ -28,7 +28,7 @@
 
 `widgets status --json` 中 `mode` 为 `system-widget-card`，`surface` 为 `widgets-board`。`provider_responding` 只表示同一曲库的新卡片组件近期心跳；旧 Feed 组件的心跳不会被接受。更新接口返回成功或宿主报告激活，都不等于已验证屏幕上的实际显示效果。
 
-组件提供程序是独立的 Windows 宿主进程；退出播放器会停止播放后台和托盘，但不会保证提供程序同时退出。Windows 小组件宿主也可能重新激活它。
+Windows 小组件提供程序是独立进程；退出播放器会停止播放后台和托盘，但不会保证提供程序同时退出。Windows 小组件宿主也可能重新激活它。
 
 ## 构建与安装
 

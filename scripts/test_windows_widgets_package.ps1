@@ -95,7 +95,11 @@ function Stop-TestProcess {
     if ($running -and $running.StartTime.ToUniversalTime().Ticks -eq $started.startTicks) {
         # Windows PowerShell/.NET Framework lacks Process.Kill(entireProcessTree).
         & "$env:SystemRoot\System32\taskkill.exe" /PID $started.pid /T /F | Out-Host
-        if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $started.pid -ErrorAction SilentlyContinue)) {
+        $taskkillExitCode = $LASTEXITCODE
+        # The wrapper can exit after Get-Process but before taskkill. Treat that
+        # as successful cleanup and do not leak taskkill's exit code to Actions.
+        $global:LASTEXITCODE = 0
+        if ($taskkillExitCode -ne 0 -and (Get-Process -Id $started.pid -ErrorAction SilentlyContinue)) {
             throw 'Could not terminate the package test process tree.'
         }
     }

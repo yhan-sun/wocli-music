@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Windows.Widgets.Providers;
@@ -72,6 +73,12 @@ internal static class ProviderSelfTest
                     throw new InvalidOperationException("Unexpected unsupported-interface result.");
             }
             finally { Marshal.Release(instance); }
+
+            if (verifyPackagedProxy)
+            {
+                Report(stage = "activate IWidgetProvider across separate packaged processes");
+                VerifyCrossProcessProxy();
+            }
 
             Report(stage = "reject COM aggregation");
             var factory = new WidgetClassFactory(provider);
@@ -166,6 +173,63 @@ internal static class ProviderSelfTest
         if (snapshot.WidgetCount != expectedWidgets || snapshot.ActiveCount != expectedActive)
             throw new InvalidOperationException("Widget lifecycle state did not match the latest callbacks.");
     }
+
+    // The child exposes only an inactive, synthetic provider and a random COM
+    // class. The parent must obtain IWidgetProvider through a real process
+    // boundary; neither process contacts the widget host or player.
+    private static void VerifyCrossProcessProxy()
+    {
+        var classId = Guid.NewGuid();
+        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, EventName(classId, "ready"));
+        using var stop = new EventWaitHandle(false, EventResetMode.ManualReset, EventName(classId, "stop"));
+        var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
+        start.ArgumentList.Add("--self-test-proxy-server");
+        start.ArgumentList.Add(classId.ToString("D"));
+        using var child = Process.Start(start) ?? throw new InvalidOperationException("Could not start proxy test server.");
+        try
+        {
+            if (!ready.WaitOne(TimeSpan.FromSeconds(15)))
+                throw new InvalidOperationException($"Proxy test server did not become ready; exited={child.HasExited}.");
+            if (child.HasExited) throw new InvalidOperationException("Proxy test server exited before activation.");
+            var iid = typeof(IWidgetProvider).GUID;
+            Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, 4, ref iid, out var instance));
+            try { VerifyInterface(instance, iid); }
+            finally { Marshal.Release(instance); }
+            Report("Cross-process IWidgetProvider activation and QueryInterface passed; Widgets host was not tested.");
+        }
+        finally
+        {
+            stop.Set();
+            if (!child.WaitForExit(5000)) { child.Kill(entireProcessTree: true); child.WaitForExit(); }
+        }
+    }
+
+    public static int RunProxyServer(Guid classId)
+    {
+        try
+        {
+            using var apartment = new ComApartment();
+            WinRT.ComWrappersSupport.InitializeComWrappers();
+            _ = Package.Current.Id;
+            using var ready = EventWaitHandle.OpenExisting(EventName(classId, "ready"));
+            using var stop = EventWaitHandle.OpenExisting(EventName(classId, "stop"));
+            var runtime = new BoardRuntime(new NoSystemSink());
+            try
+            {
+                using var server = new ComServer(new WidgetProvider(runtime), classId);
+                ready.Set();
+                return stop.WaitOne(TimeSpan.FromSeconds(30)) ? 0 : 1;
+            }
+            finally { runtime.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        }
+        catch (Exception error)
+        {
+            ProviderLog.Error("proxy_test_server", error);
+            return 1;
+        }
+    }
+
+    private static string EventName(Guid classId, string purpose) => $"Local\\wocli-widget-test-{classId:N}-{purpose}";
 
     private static void Report(string text)
     {
