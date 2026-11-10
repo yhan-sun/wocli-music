@@ -57,7 +57,7 @@ internal static class ProviderSelfTest
             // verifies package identity and LOCAL_SERVER activation only.
             // https://learn.microsoft.com/windows/win32/api/combaseapi/ne-combaseapi-regcls
             Report(verifyPackagedProxy
-                ? "Scope: package identity and LOCAL_SERVER COM activation of a same-process temporary IWidgetProvider class. Cross-process proxy marshaling and Widgets host/display integration are not verified."
+                ? "Scope: package identity and same-process LOCAL_SERVER activation; a separate cross-process activation and QueryInterface check follows. Widgets host/display integration is not verified."
                 : "Scope: in-process COM factory/CCW and IWidgetProvider. Cross-process proxy marshaling, packaged activation and Widgets host/display integration require separate verification.");
             Report(stage = verifyPackagedProxy ? "CoCreateInstance packaged local-server IWidgetProvider" : "CoCreateInstance in-process IWidgetProvider");
             Marshal.ThrowExceptionForHR(CoCreateInstance(ref classId, 0, verifyPackagedProxy ? 4u : 1u, ref iid, out var instance));

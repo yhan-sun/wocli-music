@@ -35,6 +35,7 @@ if ($msix.Count -ne 1 -or (Get-FileHash -LiteralPath $msix[0].FullName -Algorith
     throw 'The MakeAppx-validated MSIX is missing or does not match build-info.json.'
 }
 $buildInfo | Add-Member -NotePropertyName providerPackagedActivationSelfTestPassed -NotePropertyValue $false -Force
+$buildInfo | Add-Member -NotePropertyName providerCrossProcessProxyVerified -NotePropertyValue $false -Force
 function Save-BuildInfo {
     [IO.File]::WriteAllText($buildInfoPath, ($buildInfo | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
@@ -142,8 +143,8 @@ try {
     $packages = @(Get-AppxPackage -Name $packageName | Where-Object { $_.InstallLocation -eq $layout })
     if ($packages.Count -ne 1) { throw 'The expected development Layout was not registered.' }
     $package = $packages[0]
-    Write-Host "Testing package identity and LOCAL_SERVER COM activation of a same-process temporary class: $($package.PackageFullName)"
-    Write-Host 'This does not verify cross-process proxy marshaling or Widgets host/display integration.'
+    Write-Host "Testing package identity and cross-process LOCAL_SERVER COM activation: $($package.PackageFullName)"
+    Write-Host 'This does not verify actual Widgets host callbacks or display integration.'
     # https://learn.microsoft.com/powershell/module/appx/invoke-commandindesktoppackage
     # PreventBreakaway is required so the helper's provider child also has identity.
     $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -191,9 +192,10 @@ try {
 if ($cleanupErrors.Count) { throw 'Package test cleanup failed; see warnings.' }
 if (-not $testPassed) { throw 'Packaged activation test did not complete.' }
 $buildInfo.providerPackagedActivationSelfTestPassed = $true
+$buildInfo.providerCrossProcessProxyVerified = $true
 Save-BuildInfo
-Write-Host 'Package identity and LOCAL_SERVER COM activation passed for a same-process temporary class. Cross-process proxy marshaling and Widgets host/display integration were not verified.'
+Write-Host 'Package identity and cross-process LOCAL_SERVER activation and QueryInterface passed. Widgets host callbacks and display were not verified.'
 if ($env:GITHUB_STEP_SUMMARY) {
-    '- Package identity and LOCAL_SERVER COM activation passed for a same-process temporary class on the runner; preview unregistered and Developer Mode restored. Cross-process proxy marshaling and Widgets host/display integration were not verified.' |
+    '- Packaged cross-process LOCAL_SERVER activation and QueryInterface passed; preview unregistered and Developer Mode restored. Widgets host callbacks and display were not verified.' |
         Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }

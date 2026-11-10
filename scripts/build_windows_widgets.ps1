@@ -390,7 +390,7 @@ try {
         providerComSelfTestPassed = $selfTestPassed
         providerComSelfTestScope = 'in-process COM factory and interfaces; no packaged proxy or Widgets host test'
         providerPackagedActivationSelfTestPassed = $false
-        providerPackagedActivationSelfTestScope = 'package identity and LOCAL_SERVER activation of a same-process temporary class; no cross-process proxy or Widgets host test'
+        providerPackagedActivationSelfTestScope = 'package identity and cross-process LOCAL_SERVER activation and QueryInterface; no Widgets host callbacks or display test'
         providerCrossProcessProxyVerified = $false
         packageBytes = $packageBytes
         layoutBytes = $payloadBytes
@@ -415,9 +415,9 @@ Widgets host is still required; the user's China-region device is not UI-tested.
 Picker preview images are illustrative assets, not captured host screenshots.
 The basic COM self-test checks the in-process factory and interfaces only.
 See providerPackagedActivationSelfTestPassed in build-info.json for the separate
-CI-only package-identity and LOCAL_SERVER COM activation test result. That test
-uses a same-process temporary class; cross-process proxy marshaling and the
-actual Widgets host remain unverified (providerCrossProcessProxyVerified=false).
+CI-only package-identity and cross-process LOCAL_SERVER activation test result.
+The test verifies activation and QueryInterface, not actual Widgets host
+callbacks or display. See providerCrossProcessProxyVerified in build-info.json.
 The widget provider is a separate Windows host process. Quitting the player does
 not guarantee that it exits, and Windows may activate it again.
 Use the player bundled with this component, or the matching player release.
