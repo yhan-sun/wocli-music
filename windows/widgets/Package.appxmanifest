@@ -9,7 +9,7 @@
   IgnorableNamespaces="uap uap3 com virtualization rescap">
   <Identity Name="Wocli.Music.WidgetsPreview"
     Publisher="CN=wocli-music.WidgetsPreview"
-    Version="0.4.11.1" ProcessorArchitecture="x64" />
+    Version="0.4.13.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>wocli 系统歌词预览</DisplayName>
     <PublisherDisplayName>wocli-music</PublisherDisplayName>

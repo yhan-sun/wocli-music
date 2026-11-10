@@ -418,10 +418,9 @@ See providerPackagedActivationSelfTestPassed in build-info.json for the separate
 CI-only package-identity and LOCAL_SERVER COM activation test result. That test
 uses a same-process temporary class; cross-process proxy marshaling and the
 actual Widgets host remain unverified (providerCrossProcessProxyVerified=false).
-The matching player must come from this same development branch. Stable 0.4.10
-does not implement the required lyrics_snapshot IPC or wocli widgets commands.
-The included player reports 0.4.11-alpha.2, an explicitly experimental build.
-It is not the published stable binary. See sourceCommit in build-info.json.
+Use the player bundled with this component, or the matching player release.
+Older versions may not implement the required lyrics_snapshot IPC or widgets
+commands. See sourceCommit in build-info.json for the matching source revision.
 
 MSIX: $packageName
 MSIX bytes: $packageBytes

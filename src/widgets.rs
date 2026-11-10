@@ -191,7 +191,7 @@ fn status_at(dir: &Path, paths: &Paths) -> Result<Value> {
         } else if fresh {
             "官方 Adaptive Card 小组件：展开 Windows 小组件面板后查看歌词；组件心跳和更新成功不代表屏幕上当前可见。"
         } else {
-            "尚无此曲库的卡片组件心跳。请安装 0.4.11-alpha.2 或更新的组件，在 Windows 小组件面板添加并打开 wocli 歌词卡片。旧 Feed 组件不适用。"
+            "尚无此曲库的卡片组件心跳。请安装与播放器配套的系统歌词组件预览，在 Windows 小组件面板添加并打开 wocli 歌词卡片。旧 Feed 组件不适用。"
         }
     }))
 }

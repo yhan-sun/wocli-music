@@ -133,7 +133,7 @@ wocli daily undo --id 123     # 恢复推荐资格
 
 ### 3. 原生桌面伴侣
 - **macOS**：顶部菜单栏逐句滚动歌词，无缝联动系统 Control Center 与硬件媒体键。
-- **Windows**：稳定版通过 Win32/GDI 在任务栏空白区显示歌词。`0.4.11-alpha.2` 开发预览另提供微软官方 Adaptive Card 歌词小组件，字体、颜色和按钮由 Windows 渲染；按 `Win+W` 展开面板后查看歌词并控制播放。普通卡片不依赖 Feed 的 EEA 地区限制，需要安装配套组件；不会替换任务栏天气文字。[安装与兼容范围](docs/windows-taskbar-lyrics.md)。
+- **Windows**：默认通过 Win32/GDI 在任务栏空白区显示歌词。另提供微软官方 Adaptive Card 歌词小组件开发预览，字体、颜色和按钮由 Windows 渲染；按 `Win+W` 展开面板后查看歌词并控制播放。需单独下载并开发注册配套组件；不会替换任务栏天气文字。[安装与兼容范围](docs/windows-taskbar-lyrics.md)。
 - Windows 卡片预览安装后，运行 `wocli widgets on` 开启、`wocli widgets off` 关闭，并在面板内添加 **wocli 歌词**。小卡片提供暂停／继续；中、大卡片另提供上一首、下一首。
 - macOS 菜单栏及稳定版旧任务栏歌词使用 `wocli lyrics-bar on`／`wocli lyrics-bar off`。
 

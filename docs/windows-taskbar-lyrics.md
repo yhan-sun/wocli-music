@@ -2,7 +2,7 @@
 
 ## 当前方案：展开面板查看歌词
 
-`0.4.11-alpha.2` 使用微软官方 `IWidgetProvider`、`WidgetManager.UpdateWidget` 和 Adaptive Card，在 Windows 11 的 Widgets 面板内显示歌词及播放控制。点击任务栏天气／小组件入口，或按 `Win+W` 展开面板后查看。用户已确认接受这个位置，并要求使用官方接口和系统渲染。
+系统歌词组件开发预览使用微软官方 `IWidgetProvider`、`WidgetManager.UpdateWidget` 和 Adaptive Card，在 Windows 11 的 Widgets 面板内显示歌词及播放控制。点击任务栏天气／小组件入口，或按 `Win+W` 展开面板后查看。
 
 卡片由 Windows Widgets Host 渲染：布局使用 Adaptive Card 标准元素，字体、颜色、按钮及主题由系统处理。歌曲和歌词作为纯文本交给控件，不解释为网页或 Markdown 链接。支持系统提供的小、中、大尺寸。
 
@@ -30,15 +30,17 @@
 
 ## 构建与安装
 
+在对应版本的 GitHub Release 下载 `wocli-system-widgets-preview-0.4.13-windows-x86_64.zip`，完整解压后按其中 `PREVIEW.txt` 注册。普通播放器更新不会自动安装小组件。
+
 在有 PowerShell 7.4、Python、.NET 8 SDK、Windows SDK 22621 或更高版本的 Windows 开发环境运行：
 
 ```powershell
 cargo build --release --locked
 python .\scripts\build_native.py --platform windows-x86_64
-.\scripts\build_windows_widgets.ps1 -PlayerBinary .\target\release\wocli.exe -NativeBundleDirectory .\build\native\wocli-music-0.4.11-alpha.2-windows-x86_64
+.\scripts\build_windows_widgets.ps1 -PlayerBinary .\target\release\wocli.exe -NativeBundleDirectory .\build\native\wocli-music-0.4.13-windows-x86_64
 ```
 
-输出位于 `artifacts/system-widgets-preview/x64`，含匹配的 `wocli.exe`、自包含 .NET 的 `Layout`、未签名 MSIX、微软签名的 Windows App Runtime 框架依赖、校验和与第三方许可。版本为 `0.4.11-alpha.2`，MSIX 版本为 `0.4.11.1`；实际源码提交和部署信息见 `build-info.json`。
+输出位于 `artifacts/system-widgets-preview/x64`，含匹配的 `wocli.exe`、自包含 .NET 的 `Layout`、未签名 MSIX、微软签名的 Windows App Runtime 框架依赖、校验和与第三方许可。播放器版本为 `0.4.13`，MSIX 版本为 `0.4.13.0`；实际源码提交和部署信息见 `build-info.json`。
 
 组件使用 .NET 8 和 Windows App SDK `2.6.4`。配套框架包为 `Microsoft.WindowsAppRuntime.2`、版本 `2.6.4.0`；构建从实际还原的微软 MSIX 读取依赖身份并校验签名，不沿用 alpha.1 的 1.8 框架包。选择器里的浅色／深色预览图是标明用途的卡片示意，不是实机截图。
 
@@ -56,7 +58,7 @@ python .\scripts\build_native.py --platform windows-x86_64
 
 关闭歌词：`./wocli.exe widgets off`。卸载开发注册的方法见 `PREVIEW.txt`；共享配置目录不随组件卸载删除。组件一次只连接一个曲库，用相应 `--home` 再执行 `widgets on` 可以切换。曲库的 `windows-lyrics-system` 标记持续禁用旧自绘条，关闭组件或切换曲库也不会重新显示旧条。
 
-从 alpha.1 升级时按新包 `PREVIEW.txt` 处理旧开发注册，再注册新 `Layout` 并添加卡片。alpha.1 的 Feed 启用开关不能替代新卡片的添加步骤。稳定版 v0.4.10 不具备新组件 IPC；请使用 alpha.2 包中的播放器和组件配套测试。
+从旧预览升级时按新包 `PREVIEW.txt` 处理旧开发注册，再注册新 `Layout` 并添加卡片。alpha.1 的 Feed 启用开关不能替代新卡片的添加步骤。v0.4.12 及更早的稳定版不具备新组件 IPC；请使用配套播放器和组件测试。
 
 ## 验证范围
 
