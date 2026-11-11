@@ -1,6 +1,7 @@
 //! Explorer child-window hosting. No desktop/topmost fallback and no Explorer injection.
 use super::taskbar_layout::{
-    classic_slot, modern_slot_free, pixels, snapshot_fresh, GeometryKey, Rect,
+    classic_slot, modern_slot_free, modern_slot_prefer, pixels, snapshot_fresh, GeometryKey, Rect,
+    TaskbarPosition,
 };
 use crate::store::Paths;
 use std::{
@@ -369,6 +370,7 @@ pub struct TaskbarLyrics {
     active: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     last_enabled: bool,
+    position: TaskbarPosition,
 }
 impl TaskbarLyrics {
     pub fn new(paths: &Paths, class: Vec<u16>) -> Self {
@@ -376,6 +378,10 @@ impl TaskbarLyrics {
         let active = Arc::new(AtomicBool::new(false));
         let generation = Arc::new(AtomicU64::new(0));
         let updates = spawn_probe(cancel.clone(), active.clone(), generation.clone());
+        let position = paths
+            .settings()
+            .map(|s| TaskbarPosition::parse(&s.lyrics_bar_position))
+            .unwrap_or_default();
         Self {
             hwnd: 0,
             paths: paths.clone(),
@@ -390,6 +396,7 @@ impl TaskbarLyrics {
             active,
             generation,
             last_enabled: false,
+            position,
         }
     }
     pub unsafe fn reset(&mut self) {
@@ -511,6 +518,13 @@ impl TaskbarLyrics {
         true
     }
     pub unsafe fn refresh(&mut self, enabled: bool) {
+        if let Ok(settings) = self.paths.settings() {
+            let pos = TaskbarPosition::parse(&settings.lyrics_bar_position);
+            if pos != self.position {
+                self.position = pos;
+                self.generation.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         if enabled != self.last_enabled {
             self.generation.fetch_add(1, Ordering::Relaxed);
             self.snapshot = None;
@@ -583,8 +597,10 @@ impl TaskbarLyrics {
                     ) =>
                 {
                     match &snapshot.occupied {
-                        Ok(occupied) => modern_slot_free(bar, notify, occupied, dpi)
-                            .and_then(|r| client_rect(parent, r)),
+                        Ok(occupied) => {
+                            modern_slot_prefer(bar, notify, occupied, dpi, self.position)
+                                .and_then(|r| client_rect(parent, r))
+                        }
                         Err(note) => {
                             let note = note.clone();
                             self.hide();

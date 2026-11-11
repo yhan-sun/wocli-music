@@ -1237,9 +1237,9 @@ mod windows {
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-        InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor, DT_CENTER,
-        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL,
-        PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        GetStockObject, InvalidateRect, ReleaseDC, RoundRect, SelectObject, SetBkMode,
+        SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+        FW_BOLD, FW_NORMAL, NULL_PEN, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
@@ -1325,6 +1325,33 @@ mod windows {
 
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe fn is_system_light_theme() -> bool {
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        };
+        let subkey = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+        let val_name = to_wide("SystemUsesLightTheme");
+        let mut hkey = 0;
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) == 0 {
+            let mut data: u32 = 0;
+            let mut data_size = std::mem::size_of::<u32>() as u32;
+            let mut typ: u32 = 0;
+            let res = RegQueryValueExW(
+                hkey,
+                val_name.as_ptr(),
+                null(),
+                &mut typ,
+                &mut data as *mut u32 as *mut u8,
+                &mut data_size,
+            );
+            RegCloseKey(hkey);
+            if res == 0 && typ == REG_DWORD {
+                return data != 0;
+            }
+        }
+        false
     }
 
     fn taskbar_created_msg() -> u32 {
@@ -1665,6 +1692,7 @@ mod windows {
 
                     let (text, phase) = PAINT_STATE.with(|snapshot| snapshot.borrow().clone());
                     let hover = HOVER_BTN.load(Ordering::Relaxed);
+                    let is_light = is_system_light_theme();
 
                     let dp = |v| {
                         super::taskbar_layout::pixels(
@@ -1678,10 +1706,14 @@ mod windows {
                         windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
                     );
                     if let Some(buttons) = layout.buttons {
-                        // Color-key pixels pass mouse input through to Explorer.
-                        // Give each button a solid face matching its entire hitbox.
-                        let normal_brush = CreateSolidBrush(0x00202020);
-                        let hover_brush = CreateSolidBrush(0x00404040);
+                        // 1. 按钮命中与高亮：
+                        // 非悬停时使用与色键完全视觉一致的 0x000B0B0B 填充（微差 1 确保接收鼠标消息，不漏到 Explorer），杜绝生硬黑色方块；
+                        // 悬停时绘制 Windows 11 Fluent 风格半透明圆角药丸胶囊。
+                        let idle_brush = CreateSolidBrush(0x000B0B0B);
+                        let hover_brush =
+                            CreateSolidBrush(if is_light { 0x00E5E5E5 } else { 0x00333333 });
+                        let null_pen = GetStockObject(NULL_PEN as i32);
+
                         for (index, button) in buttons.iter().enumerate() {
                             let btn_rc = RECT {
                                 left: button.left,
@@ -1689,27 +1721,36 @@ mod windows {
                                 right: button.right,
                                 bottom: button.bottom,
                             };
-                            FillRect(
-                                mem_dc,
-                                &btn_rc,
-                                if hover == index as u8 + 1 {
-                                    hover_brush
-                                } else {
-                                    normal_brush
-                                },
-                            );
+                            if hover == index as u8 + 1 {
+                                let old_brush = SelectObject(mem_dc, hover_brush);
+                                let old_pen = SelectObject(mem_dc, null_pen);
+                                RoundRect(
+                                    mem_dc,
+                                    btn_rc.left,
+                                    btn_rc.top + dp(2),
+                                    btn_rc.right,
+                                    btn_rc.bottom - dp(2),
+                                    dp(6),
+                                    dp(6),
+                                );
+                                SelectObject(mem_dc, old_pen);
+                                SelectObject(mem_dc, old_brush);
+                            } else {
+                                FillRect(mem_dc, &btn_rc, idle_brush);
+                            }
                         }
-                        DeleteObject(normal_brush);
+                        DeleteObject(idle_brush);
                         DeleteObject(hover_brush);
 
-                        // 2. 绘制上一首、播放/暂停、下一首矢量文字图标
-                        let btn_font_name = to_wide("Segoe UI Symbol");
+                        // 2. 绘制媒体控制图标：
+                        // 优先 Segoe Fluent Icons，自动优雅降级
+                        let btn_font_name = to_wide("Segoe Fluent Icons");
                         let btn_font = CreateFontW(
-                            -dp(14),
+                            -dp(13),
                             0,
                             0,
                             0,
-                            FW_BOLD as i32,
+                            FW_NORMAL as i32,
                             0,
                             0,
                             0,
@@ -1735,28 +1776,20 @@ mod windows {
                             let wide_glyph = to_wide(glyph);
                             let glyph_len = wide_glyph.len() as i32 - 1;
 
-                            // 阴影
-                            let mut shadow_rc = btn_rc;
-                            shadow_rc.left += 1;
-                            shadow_rc.top += 1;
-                            shadow_rc.right += 1;
-                            shadow_rc.bottom += 1;
-                            SetTextColor(mem_dc, 0x00000000);
-                            DrawTextW(
-                                mem_dc,
-                                wide_glyph.as_ptr(),
-                                glyph_len,
-                                &mut shadow_rc,
-                                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                            );
-
-                            // Use a lighter neutral on hover.
-                            let color = if hover == index as u8 + 1 {
-                                0x00F0F0F0
+                            let icon_color = if is_light {
+                                if hover == index as u8 + 1 {
+                                    0x00000000
+                                } else {
+                                    0x00404040
+                                }
                             } else {
-                                0x00D0D0D0
+                                if hover == index as u8 + 1 {
+                                    0x00FFFFFF
+                                } else {
+                                    0x00D0D0D0
+                                }
                             };
-                            SetTextColor(mem_dc, color);
+                            SetTextColor(mem_dc, icon_color);
                             DrawTextW(
                                 mem_dc,
                                 wide_glyph.as_ptr(),
@@ -1769,10 +1802,12 @@ mod windows {
                         SelectObject(mem_dc, old_btn_font);
                         DeleteObject(btn_font);
                     }
-                    // Use a regular system UI font; Windows handles fallback for CJK.
-                    let font_name = to_wide("Segoe UI");
+
+                    // 3. 绘制歌词文本：
+                    // 采用 Windows 11 原生 Segoe UI Variable Text（系统自动处理微软雅黑等 CJK 回退）
+                    let font_name = to_wide("Segoe UI Variable Text");
                     let font = CreateFontW(
-                        -dp(14),
+                        -dp(13),
                         0,
                         0,
                         0,
@@ -1800,14 +1835,12 @@ mod windows {
                     if wide_text.len() > 1 {
                         let text_len = wide_text.len() as i32 - 1;
 
-                        // 绘制深黑 4 邻域阴影，确保在任何壁纸与任务栏主题下清晰易读
-                        SetTextColor(mem_dc, 0x00000000);
-                        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1)] {
+                        if is_light {
+                            // 浅色主题：极轻微的高亮反衬 + 清晰的高对比度深色字
                             let mut shadow_rect = text_rect;
-                            shadow_rect.left += dx;
-                            shadow_rect.right += dx;
-                            shadow_rect.top += dy;
-                            shadow_rect.bottom += dy;
+                            shadow_rect.top += 1;
+                            shadow_rect.bottom += 1;
+                            SetTextColor(mem_dc, 0x00FAFAFA);
                             DrawTextW(
                                 mem_dc,
                                 wide_text.as_ptr(),
@@ -1819,9 +1852,27 @@ mod windows {
                                     | DT_NOPREFIX
                                     | DT_END_ELLIPSIS,
                             );
+                            SetTextColor(mem_dc, 0x001A1A1A);
+                        } else {
+                            // 深色主题：1px 柔和暗影沉淀 + 纯净白字，彻底告别粗糙 4 邻域黑边
+                            let mut shadow_rect = text_rect;
+                            shadow_rect.top += 1;
+                            shadow_rect.bottom += 1;
+                            SetTextColor(mem_dc, 0x00141414);
+                            DrawTextW(
+                                mem_dc,
+                                wide_text.as_ptr(),
+                                text_len,
+                                &mut shadow_rect,
+                                DT_LEFT
+                                    | DT_VCENTER
+                                    | DT_SINGLELINE
+                                    | DT_NOPREFIX
+                                    | DT_END_ELLIPSIS,
+                            );
+                            SetTextColor(mem_dc, 0x00F8F8F8);
                         }
 
-                        SetTextColor(mem_dc, 0x00F0F0F0);
                         DrawTextW(
                             mem_dc,
                             wide_text.as_ptr(),

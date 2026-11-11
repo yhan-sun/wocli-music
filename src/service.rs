@@ -83,6 +83,7 @@ pub struct Status {
     pub total: u64,
     pub downloads: Vec<Job>,
     pub lyrics_bar: bool,
+    pub lyrics_bar_position: String,
     pub tray: bool,
     pub boss: bool,
     pub buffering: bool,
@@ -273,6 +274,7 @@ impl Service {
             volume: self.settings.volume,
             mode: self.settings.mode.clone(),
             lyrics_bar: self.settings.lyrics_bar,
+            lyrics_bar_position: self.settings.lyrics_bar_position.clone(),
             tray: self.settings.tray,
             boss: self.boss,
             buffering: self.phase == "playing" && self.player.buffering(),
@@ -1410,6 +1412,15 @@ impl Service {
                         settings.lyrics_bar = request["value"]
                             .as_bool()
                             .ok_or_else(|| Error::new("lyrics_bar 应为 true 或 false"))?
+                    }
+                    "lyrics_bar_position" => {
+                        let pos = request["value"]
+                            .as_str()
+                            .ok_or_else(|| Error::new("lyrics_bar_position 应为字符串"))?;
+                        if !["auto", "left", "right"].contains(&pos) {
+                            return Err(Error::new("lyrics_bar_position 应为 auto、left 或 right"));
+                        }
+                        settings.lyrics_bar_position = pos.to_string();
                     }
                     "tray" => {
                         settings.tray = request["value"]

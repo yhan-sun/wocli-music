@@ -74,15 +74,28 @@ alpha.1 曾尝试通过 `FeedManager.TryShowAnnouncement` 在任务栏入口请�
 
 alpha.2 已改为上述官方 Adaptive Card 面板卡片。不能将旧公告测试结果当作新卡片的实机验收，也不能将 Feed 地区限制泛化到普通 Adaptive Card 小组件。
 
-## v0.4.10 旧实现：开启与诊断
+## 任务栏嵌入歌词：开启与位置配置
 
 ```powershell
 wocli tray start
 wocli lyrics-bar on
+# 设置歌词在任务栏的位置：left (居中图标左侧) | right (右侧托盘前) | auto (自动探测)
+wocli lyrics-bar left
+wocli lyrics-bar right
+wocli lyrics-bar auto
 wocli play "歌名 歌手"
 wocli tray status
 wocli tray status --json
 ```
+
+- **原生视觉质感（Fluent Design 适配）**：
+  - 自动识别 Windows 系统深色/浅色模式（注册表 `SystemUsesLightTheme`），自适应文字颜色与悬停高亮。
+  - 采用 Windows 11 任务栏原生字体 `Segoe UI Variable Text`（自动平滑回退至 `Segoe UI` 与微软雅黑）。
+  - 控制按钮采用无边框设计，非悬停时不显示任何生硬色块；悬停时绘制 Windows 11 原生圆角药丸胶囊高亮（RoundRect）。
+  - 优化文本阴影与透明通道，杜绝色键抠图黑边与多重粗糙重影。
+- **左右槽位自适应布局**：
+  - Windows 11 图标居中时，支持放置在**左侧空白槽位**（小组件/开始按钮与应用图标之间）或**右侧空白槽位**（应用图标与系统托盘之间）。
+  - `auto` 模式优先使用右侧托盘前空白，若右侧空间拥挤则自动回退至左侧空白。
 
 `lyrics_surface` 提供 `mode: taskbar-child`、`attached`、`visible` 与 `note`。`attached` 表示窗口确实挂在任务栏父窗口下，`visible` 表示已通过当前布局检查并请求显示；任务栏自动隐藏或被全屏窗口遮住时，不代表屏幕上一定能看到它。
 

@@ -567,13 +567,62 @@ pub fn run(raw: Vec<String>) -> Result<()> {
         }
         "lyrics-bar" => {
             let sub = args.pos.get(1).map(String::as_str).unwrap_or("status");
-            let current = paths.settings()?.lyrics_bar;
+            let mut s = paths.settings()?;
+            if matches!(sub, "left" | "right" | "auto") {
+                if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
+                    request(
+                        &paths,
+                        json!({"op":"config","key":"lyrics_bar_position","value":sub}),
+                    )?;
+                } else {
+                    s.lyrics_bar_position = sub.into();
+                    paths.save_settings(&s)?;
+                }
+                if !args.flag("--json") {
+                    let pos_desc = match sub {
+                        "left" => "居中图标左侧",
+                        "right" => "右侧托盘前",
+                        _ => "自动探测（优先右侧，空间不足回退左侧）",
+                    };
+                    println!("任务栏歌词位置已设为：{pos_desc}");
+                }
+                return Ok(());
+            }
+            if matches!(sub, "pos" | "position") {
+                let target_pos = args.pos.get(2).map(String::as_str).unwrap_or("auto");
+                if !["auto", "left", "right"].contains(&target_pos) {
+                    return Err(Error::new("位置参数应为 auto、left 或 right"));
+                }
+                if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
+                    request(
+                        &paths,
+                        json!({"op":"config","key":"lyrics_bar_position","value":target_pos}),
+                    )?;
+                } else {
+                    s.lyrics_bar_position = target_pos.into();
+                    paths.save_settings(&s)?;
+                }
+                if !args.flag("--json") {
+                    let pos_desc = match target_pos {
+                        "left" => "居中图标左侧",
+                        "right" => "右侧托盘前",
+                        _ => "自动探测（优先右侧，空间不足回退左侧）",
+                    };
+                    println!("任务栏歌词位置已设为：{pos_desc}");
+                }
+                return Ok(());
+            }
+            let current = s.lyrics_bar;
             let target = match sub {
                 "on" | "enable" | "1" | "true" => true,
                 "off" | "disable" | "0" | "false" => false,
                 "toggle" => !current,
                 "status" => current,
-                _ => return Err(Error::new("用法：wocli lyrics-bar [on|off|toggle|status]")),
+                _ => {
+                    return Err(Error::new(
+                        "用法：wocli lyrics-bar [on|off|toggle|status|left|right|auto]",
+                    ))
+                }
             };
             if sub != "status" {
                 if ipc::request(&paths, json!({"op":"status"}), false)?.is_some() {
@@ -582,14 +631,17 @@ pub fn run(raw: Vec<String>) -> Result<()> {
                         json!({"op":"config","key":"lyrics_bar","value":target}),
                     )?;
                 } else {
-                    let mut s = paths.settings()?;
                     s.lyrics_bar = target;
                     paths.save_settings(&s)?;
                 }
             }
-            let res = json!({"lyrics_bar": target});
+            let res = json!({"lyrics_bar": target, "position": s.lyrics_bar_position});
             if !args.flag("--json") {
-                println!("任务栏歌词：{}", if target { "已开启" } else { "已关闭" });
+                println!(
+                    "任务栏歌词：{} (位置: {})",
+                    if target { "已开启" } else { "已关闭" },
+                    s.lyrics_bar_position
+                );
             }
             res
         }

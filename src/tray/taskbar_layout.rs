@@ -79,6 +79,24 @@ impl LyricsContentLayout {
             .map_or(0, |index| index as u8 + 1)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TaskbarPosition {
+    #[default]
+    Auto,
+    Left,
+    Right,
+}
+
+impl TaskbarPosition {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => Self::Auto,
+        }
+    }
+}
+
 /// Find an actual empty slot, preferring the gap immediately before the system tray.
 ///
 /// On Windows 10, `notify` is `Some(Rect)` from `TrayNotifyWnd`.
@@ -89,6 +107,17 @@ pub fn modern_slot_free(
     notify: Option<Rect>,
     occupied: &[Rect],
     dpi: u32,
+) -> Option<Rect> {
+    modern_slot_prefer(taskbar, notify, occupied, dpi, TaskbarPosition::Auto)
+}
+
+/// Find an empty slot on the taskbar with position preference (Auto, Left, or Right).
+pub fn modern_slot_prefer(
+    taskbar: Rect,
+    notify: Option<Rect>,
+    occupied: &[Rect],
+    dpi: u32,
+    position: TaskbarPosition,
 ) -> Option<Rect> {
     if taskbar.height() < pixels(24, dpi)
         || taskbar.height() > pixels(120, dpi)
@@ -168,24 +197,68 @@ pub fn modern_slot_free(
         }
         return None;
     }
-    let mut end = right;
-    for (start, stop) in merged
-        .into_iter()
-        .rev()
-        .chain(std::iter::once((left, left)))
-    {
-        if end - stop >= minimum {
-            let width = desired.min(end - stop);
-            return Some(Rect {
-                left: end - width,
-                top,
-                right: end,
-                bottom: top + height,
-            });
+
+    // Collect candidate gaps of at least minimum width
+    let mut gaps: Vec<(i32, i32)> = Vec::new();
+    let mut cur = left;
+    for &(occ_start, occ_end) in &merged {
+        if occ_start > cur && occ_start - cur >= minimum {
+            gaps.push((cur, occ_start));
         }
-        end = end.min(start);
+        cur = cur.max(occ_end);
     }
-    None
+    if right > cur && right - cur >= minimum {
+        gaps.push((cur, right));
+    }
+
+    if gaps.is_empty() {
+        return None;
+    }
+
+    match position {
+        TaskbarPosition::Left => {
+            let (gap_start, gap_end) = gaps[0];
+            let width = desired.min(gap_end - gap_start);
+            Some(Rect {
+                left: gap_start,
+                top,
+                right: gap_start + width,
+                bottom: top + height,
+            })
+        }
+        TaskbarPosition::Right => {
+            let (gap_start, gap_end) = *gaps.last().unwrap();
+            let width = desired.min(gap_end - gap_start);
+            Some(Rect {
+                left: gap_end - width,
+                top,
+                right: gap_end,
+                bottom: top + height,
+            })
+        }
+        TaskbarPosition::Auto => {
+            // Prefer the rightmost gap (adjacent to tray/notification area);
+            // if only the left gap has space, anchor to the left (after start/widgets).
+            let (gap_start, gap_end) = *gaps.last().unwrap();
+            let width = desired.min(gap_end - gap_start);
+            let center = taskbar.left + taskbar.width() / 2;
+            if gap_end <= center {
+                Some(Rect {
+                    left: gap_start,
+                    top,
+                    right: gap_start + width,
+                    bottom: top + height,
+                })
+            } else {
+                Some(Rect {
+                    left: gap_end - width,
+                    top,
+                    right: gap_end,
+                    bottom: top + height,
+                })
+            }
+        }
+    }
 }
 #[cfg(test)]
 fn modern_slot(taskbar: Rect, notify: Rect, occupied: &[Rect], dpi: u32) -> Option<Rect> {
@@ -347,6 +420,48 @@ mod tests {
         assert!(!slot.overlaps(tray));
         assert!(!slot.overlaps(buttons));
         assert!(modern_slot(bar, tray, &[tray], 96).is_none());
+    }
+    #[test]
+    fn taskbar_position_selection_left_and_right() {
+        let bar = rect(0, 1032, 1920, 1080);
+        let start_widgets = rect(10, 1032, 60, 1080);
+        let centered_apps = rect(700, 1032, 1200, 1080);
+        let tray_cluster = rect(1650, 1032, 1910, 1080);
+        let occupied = [start_widgets, centered_apps, tray_cluster];
+
+        // Explicit Left: placed in gap between start_widgets (60) and centered_apps (700)
+        let left_slot =
+            modern_slot_prefer(bar, None, &occupied, 96, TaskbarPosition::Left).unwrap();
+        assert_eq!(left_slot.left, 66);
+        assert_eq!(left_slot.width(), 400);
+        assert!(!left_slot.overlaps(start_widgets));
+        assert!(!left_slot.overlaps(centered_apps));
+
+        // Explicit Right: placed in gap before tray_cluster
+        let right_slot =
+            modern_slot_prefer(bar, None, &occupied, 96, TaskbarPosition::Right).unwrap();
+        assert_eq!(right_slot.right, 1644);
+        assert_eq!(right_slot.width(), 400);
+        assert!(!right_slot.overlaps(centered_apps));
+        assert!(!right_slot.overlaps(tray_cluster));
+
+        // Auto: prefers right gap when available
+        let auto_slot =
+            modern_slot_prefer(bar, None, &occupied, 96, TaskbarPosition::Auto).unwrap();
+        assert_eq!(auto_slot.right, 1644);
+
+        // Auto fallback: when right side is crowded, automatically places on left
+        let apps_extending_right = rect(700, 1032, 1600, 1080);
+        let crowded_right = [start_widgets, apps_extending_right, tray_cluster];
+        let fallback_slot =
+            modern_slot_prefer(bar, None, &crowded_right, 96, TaskbarPosition::Auto).unwrap();
+        assert_eq!(fallback_slot.left, 66);
+        assert_eq!(fallback_slot.width(), 400);
+
+        assert_eq!(TaskbarPosition::parse("left"), TaskbarPosition::Left);
+        assert_eq!(TaskbarPosition::parse("RIGHT"), TaskbarPosition::Right);
+        assert_eq!(TaskbarPosition::parse("auto"), TaskbarPosition::Auto);
+        assert_eq!(TaskbarPosition::parse("unknown"), TaskbarPosition::Auto);
     }
 }
 

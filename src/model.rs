@@ -88,6 +88,7 @@ pub struct Settings {
     pub direct: bool,
     pub lyric_offset: i64,
     pub lyrics_bar: bool,
+    pub lyrics_bar_position: String,
     pub tray: bool,
 }
 impl Default for Settings {
@@ -99,6 +100,7 @@ impl Default for Settings {
             direct: false,
             lyric_offset: 0,
             lyrics_bar: true,
+            lyrics_bar_position: "auto".into(),
             tray: true,
         }
     }
