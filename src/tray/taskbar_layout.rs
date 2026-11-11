@@ -28,11 +28,10 @@ pub fn pixels(value: i32, dpi: u32) -> i32 {
     ((value as i64 * dpi.clamp(96, 768) as i64 + 48) / 96) as i32
 }
 
-/// The same geometry is used for painting and hit testing so resizing or DPI
-/// scaling cannot leave controls visually separated from their clickable areas.
+/// Layout for taskbar lyrics content, dedicating the full available width
+/// to pure, transparent text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LyricsContentLayout {
-    pub buttons: Option<[Rect; 3]>,
     pub text: Rect,
 }
 
@@ -40,26 +39,10 @@ impl LyricsContentLayout {
     pub fn new(width: i32, height: i32, dpi: u32) -> Self {
         let width = width.max(0);
         let height = height.max(0);
-        let dp = |value| pixels(value, dpi);
-        // Below this width, preserve at least 120 logical pixels for lyrics;
-        // playback controls remain available from the tray menu.
-        let buttons = (width >= dp(240) && height >= dp(20)).then(|| {
-            let left = dp(4);
-            let size = dp(32);
-            let gap = dp(2);
-            std::array::from_fn(|i| Rect {
-                left: left + i as i32 * (size + gap),
-                top: 0,
-                right: left + i as i32 * (size + gap) + size,
-                bottom: height,
-            })
-        });
-        let left = buttons
-            .map_or(dp(8), |items| items[2].right + dp(8))
-            .min(width);
-        let right = width.saturating_sub(dp(8)).max(left);
+        let pad = pixels(6, dpi);
+        let left = pad.min(width);
+        let right = width.saturating_sub(pad).max(left);
         Self {
-            buttons,
             text: Rect {
                 left,
                 top: 0,
@@ -67,16 +50,6 @@ impl LyricsContentLayout {
                 bottom: height,
             },
         }
-    }
-
-    pub fn button_at(self, x: i32, y: i32) -> u8 {
-        self.buttons
-            .and_then(|buttons| {
-                buttons
-                    .iter()
-                    .position(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
-            })
-            .map_or(0, |index| index as u8 + 1)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -301,27 +274,16 @@ mod tests {
         }
     }
     #[test]
-    fn lyrics_keep_readable_space_and_hit_targets_match_scaled_buttons() {
+    fn lyrics_layout_occupies_full_usable_width() {
         for dpi in [96, 144, 192] {
             let height = pixels(32, dpi);
-            for width in [100, 180, 239] {
+            for width in [100, 180, 240, 320] {
                 let layout = LyricsContentLayout::new(pixels(width, dpi), height, dpi);
-                assert!(layout.buttons.is_none());
-                assert_eq!(layout.button_at(pixels(10, dpi), height / 2), 0);
+                assert_eq!(layout.text.top, 0);
+                assert_eq!(layout.text.bottom, height);
+                assert!(layout.text.width() <= pixels(width, dpi));
+                assert!(layout.text.width() >= pixels(width - 12, dpi));
             }
-            let layout = LyricsContentLayout::new(pixels(240, dpi), height, dpi);
-            let buttons = layout.buttons.unwrap();
-            assert!(layout.text.width() >= pixels(120, dpi));
-            for (index, button) in buttons.iter().enumerate() {
-                assert_eq!(layout.button_at(button.left, button.top), index as u8 + 1);
-                assert_eq!(
-                    layout.button_at(button.right - 1, button.bottom - 1),
-                    index as u8 + 1
-                );
-                assert!(!button.overlaps(layout.text));
-            }
-            assert_eq!(layout.button_at(buttons[0].right, height / 2), 0);
-            assert_eq!(layout.button_at(layout.text.left, height / 2), 0);
         }
     }
     #[test]

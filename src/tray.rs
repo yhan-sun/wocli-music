@@ -1230,16 +1230,16 @@ mod windows {
     use super::*;
     use std::cell::RefCell;
     use std::ptr::null;
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use windows_sys::Win32::Foundation::{
         GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-        GetStockObject, InvalidateRect, ReleaseDC, RoundRect, SelectObject, SetBkMode,
-        SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-        FW_BOLD, FW_NORMAL, NULL_PEN, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        GetStockObject, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+        DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
+        FW_NORMAL, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
@@ -1253,13 +1253,13 @@ mod windows {
         DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect,
         GetCursorPos, GetMessageW, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
         RegisterClassW, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer,
-        SetWindowTextW, TrackPopupMenuEx, TranslateMessage, WindowFromPoint, CS_DBLCLKS,
-        CS_HREDRAW, CS_VREDRAW, HICON, HTCLIENT, ICONINFO, IDC_HAND, IDI_APPLICATION,
-        MA_NOACTIVATE, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-        TPM_RIGHTBUTTON, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
-        WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
-        WM_NCHITTEST, WM_NCRBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
-        WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW,
+        SetWindowTextW, TrackPopupMenuEx, TranslateMessage, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
+        HICON, HTCLIENT, ICONINFO, IDC_ARROW, IDI_APPLICATION, MA_NOACTIVATE, MF_DISABLED,
+        MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_CLOSE,
+        WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCRBUTTONUP,
+        WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WM_USER,
+        WNDCLASSW,
     };
 
     const WM_TRAY: u32 = WM_USER + 101;
@@ -1292,7 +1292,6 @@ mod windows {
     const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
     const VK_KEY_B: u32 = 0x42;
 
-    static HOVER_BTN: AtomicU8 = AtomicU8::new(0);
     static RESET_PENDING: AtomicBool = AtomicBool::new(false);
     static READD_PENDING: AtomicBool = AtomicBool::new(false);
     static CLOSE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -1477,19 +1476,6 @@ mod windows {
         CopyIcon(LoadIconW(0, IDI_APPLICATION))
     }
 
-    fn button_at(hwnd: HWND, x: i32, y: i32) -> u8 {
-        unsafe {
-            let mut area: RECT = std::mem::zeroed();
-            GetClientRect(hwnd, &mut area);
-            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
-            super::taskbar_layout::LyricsContentLayout::new(
-                area.right - area.left,
-                area.bottom - area.top,
-                dpi,
-            )
-            .button_at(x, y)
-        }
-    }
     unsafe extern "system" fn tray_wnd_proc(
         hwnd: HWND,
         msg: u32,
@@ -1520,16 +1506,6 @@ mod windows {
                         }
                         if update_status(state) {
                             return true;
-                        }
-
-                        // 检查鼠标是否已移出歌词窗口以重置悬停按钮状态
-                        if state.taskbar.hwnd != 0 && HOVER_BTN.load(Ordering::Relaxed) != 0 {
-                            let mut cur_pt: POINT = std::mem::zeroed();
-                            GetCursorPos(&mut cur_pt);
-                            if WindowFromPoint(cur_pt) != state.taskbar.hwnd {
-                                HOVER_BTN.store(0, Ordering::Relaxed);
-                                InvalidateRect(state.taskbar.hwnd, null(), 0);
-                            }
                         }
                     }
                     false
@@ -1618,40 +1594,11 @@ mod windows {
             WM_NCHITTEST => HTCLIENT as LRESULT,
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             WM_SETCURSOR => {
-                let mut point: POINT = std::mem::zeroed();
-                GetCursorPos(&mut point);
-                windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
-                if button_at(hwnd, point.x, point.y) != 0 {
-                    SetCursor(LoadCursorW(0, IDC_HAND));
-                    1
-                } else {
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
+                SetCursor(LoadCursorW(0, IDC_ARROW));
+                1
             }
-            WM_MOUSEMOVE => {
-                let x = (lparam & 0xFFFF) as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                let new_hover = button_at(hwnd, x, y);
-                let old_hover = HOVER_BTN.swap(new_hover, Ordering::Relaxed);
-                if old_hover != new_hover {
-                    InvalidateRect(hwnd, null(), 0);
-                }
-                0
-            }
-            WM_LBUTTONDOWN => {
-                let x = (lparam & 0xFFFF) as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                let op = match button_at(hwnd, x, y) {
-                    1 => Some("prev"),
-                    2 => Some("toggle"),
-                    3 => Some("next"),
-                    _ => None,
-                };
-                if let Some(op) = op {
-                    queue_command(json!({"op":op}));
-                }
-                0
-            }
+            WM_MOUSEMOVE => 0,
+            WM_LBUTTONDOWN => 0,
             WM_NCRBUTTONUP | WM_RBUTTONUP => {
                 // TrackPopupMenuEx pumps timer and command messages. Do not keep
                 // a RefCell borrow alive across its nested message loop.
@@ -1662,11 +1609,7 @@ mod windows {
                 0
             }
             WM_LBUTTONDBLCLK => {
-                let x = (lparam & 0xFFFF) as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                if button_at(hwnd, x, y) == 0 {
-                    open_console();
-                }
+                open_console();
                 0
             }
             WM_PAINT => {
@@ -1690,120 +1633,14 @@ mod windows {
 
                     SetBkMode(mem_dc, TRANSPARENT as i32);
 
-                    let (text, phase) = PAINT_STATE.with(|snapshot| snapshot.borrow().clone());
-                    let hover = HOVER_BTN.load(Ordering::Relaxed);
+                    let (text, _phase) = PAINT_STATE.with(|snapshot| snapshot.borrow().clone());
                     let is_light = is_system_light_theme();
 
-                    let dp = |v| {
-                        super::taskbar_layout::pixels(
-                            v,
-                            windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
-                        )
-                    };
-                    let layout = super::taskbar_layout::LyricsContentLayout::new(
-                        w,
-                        h,
-                        windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd),
-                    );
-                    if let Some(buttons) = layout.buttons {
-                        // 1. 按钮命中与高亮：
-                        // 非悬停时使用与色键完全视觉一致的 0x000B0B0B 填充（微差 1 确保接收鼠标消息，不漏到 Explorer），杜绝生硬黑色方块；
-                        // 悬停时绘制 Windows 11 Fluent 风格半透明圆角药丸胶囊。
-                        let idle_brush = CreateSolidBrush(0x000B0B0B);
-                        let hover_brush =
-                            CreateSolidBrush(if is_light { 0x00E5E5E5 } else { 0x00333333 });
-                        let null_pen = GetStockObject(NULL_PEN as i32);
+                    let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
+                    let dp = |v| super::taskbar_layout::pixels(v, dpi);
+                    let layout = super::taskbar_layout::LyricsContentLayout::new(w, h, dpi);
 
-                        for (index, button) in buttons.iter().enumerate() {
-                            let btn_rc = RECT {
-                                left: button.left,
-                                top: button.top,
-                                right: button.right,
-                                bottom: button.bottom,
-                            };
-                            if hover == index as u8 + 1 {
-                                let old_brush = SelectObject(mem_dc, hover_brush);
-                                let old_pen = SelectObject(mem_dc, null_pen);
-                                RoundRect(
-                                    mem_dc,
-                                    btn_rc.left,
-                                    btn_rc.top + dp(2),
-                                    btn_rc.right,
-                                    btn_rc.bottom - dp(2),
-                                    dp(6),
-                                    dp(6),
-                                );
-                                SelectObject(mem_dc, old_pen);
-                                SelectObject(mem_dc, old_brush);
-                            } else {
-                                FillRect(mem_dc, &btn_rc, idle_brush);
-                            }
-                        }
-                        DeleteObject(idle_brush);
-                        DeleteObject(hover_brush);
-
-                        // 2. 绘制媒体控制图标：
-                        // 优先 Segoe Fluent Icons，自动优雅降级
-                        let btn_font_name = to_wide("Segoe Fluent Icons");
-                        let btn_font = CreateFontW(
-                            -dp(13),
-                            0,
-                            0,
-                            0,
-                            FW_NORMAL as i32,
-                            0,
-                            0,
-                            0,
-                            1,
-                            0,
-                            0,
-                            4, // ANTIALIASED_QUALITY
-                            0,
-                            btn_font_name.as_ptr(),
-                        );
-                        let old_btn_font = SelectObject(mem_dc, btn_font);
-
-                        let btn_configs = ["⏮", if phase == "playing" { "⏸" } else { "▶" }, "⏭"];
-
-                        for (index, (button, glyph)) in buttons.iter().zip(btn_configs).enumerate()
-                        {
-                            let mut btn_rc = RECT {
-                                left: button.left,
-                                top: button.top,
-                                right: button.right,
-                                bottom: button.bottom,
-                            };
-                            let wide_glyph = to_wide(glyph);
-                            let glyph_len = wide_glyph.len() as i32 - 1;
-
-                            let icon_color = if is_light {
-                                if hover == index as u8 + 1 {
-                                    0x00000000
-                                } else {
-                                    0x00404040
-                                }
-                            } else {
-                                if hover == index as u8 + 1 {
-                                    0x00FFFFFF
-                                } else {
-                                    0x00D0D0D0
-                                }
-                            };
-                            SetTextColor(mem_dc, icon_color);
-                            DrawTextW(
-                                mem_dc,
-                                wide_glyph.as_ptr(),
-                                glyph_len,
-                                &mut btn_rc,
-                                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                            );
-                        }
-
-                        SelectObject(mem_dc, old_btn_font);
-                        DeleteObject(btn_font);
-                    }
-
-                    // 3. 绘制歌词文本：
+                    // 绘制原生纯净歌词文本：
                     // 采用 Windows 11 原生 Segoe UI Variable Text（系统自动处理微软雅黑等 CJK 回退）
                     let font_name = to_wide("Segoe UI Variable Text");
                     let font = CreateFontW(
@@ -1835,43 +1672,10 @@ mod windows {
                     if wide_text.len() > 1 {
                         let text_len = wide_text.len() as i32 - 1;
 
-                        if is_light {
-                            // 浅色主题：极轻微的高亮反衬 + 清晰的高对比度深色字
-                            let mut shadow_rect = text_rect;
-                            shadow_rect.top += 1;
-                            shadow_rect.bottom += 1;
-                            SetTextColor(mem_dc, 0x00FAFAFA);
-                            DrawTextW(
-                                mem_dc,
-                                wide_text.as_ptr(),
-                                text_len,
-                                &mut shadow_rect,
-                                DT_LEFT
-                                    | DT_VCENTER
-                                    | DT_SINGLELINE
-                                    | DT_NOPREFIX
-                                    | DT_END_ELLIPSIS,
-                            );
-                            SetTextColor(mem_dc, 0x001A1A1A);
-                        } else {
-                            // 深色主题：1px 柔和暗影沉淀 + 纯净白字，彻底告别粗糙 4 邻域黑边
-                            let mut shadow_rect = text_rect;
-                            shadow_rect.top += 1;
-                            shadow_rect.bottom += 1;
-                            SetTextColor(mem_dc, 0x00141414);
-                            DrawTextW(
-                                mem_dc,
-                                wide_text.as_ptr(),
-                                text_len,
-                                &mut shadow_rect,
-                                DT_LEFT
-                                    | DT_VCENTER
-                                    | DT_SINGLELINE
-                                    | DT_NOPREFIX
-                                    | DT_END_ELLIPSIS,
-                            );
-                            SetTextColor(mem_dc, 0x00F8F8F8);
-                        }
+                        // 纯净高对比度字体颜色：浅色模式深黑灰色，深色模式高亮纯白
+                        // 不额外绘制偏移阴影层，彻底根除透明色键抗锯齿产生的黑边脏边缘
+                        let text_color = if is_light { 0x001A1A1A } else { 0x00FFFFFF };
+                        SetTextColor(mem_dc, text_color);
 
                         DrawTextW(
                             mem_dc,
@@ -2273,6 +2077,7 @@ mod windows {
             lwc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
             lwc.lpfnWndProc = Some(lyrics_wnd_proc);
             lwc.hInstance = hinstance;
+            lwc.hCursor = LoadCursorW(0, IDC_ARROW);
             lwc.lpszClassName = lyrics_class_name.as_ptr();
             RegisterClassW(&lwc);
 
